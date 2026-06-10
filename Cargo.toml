@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/wallet-core", "crates/wallet-rpc"]
+# The desktop (Tauri) app is its own crate under desktop/src-tauri; keep it out
+# of this workspace so `cargo build` of the core stays lean and toolchain-free
+# (mirrors ../dinner).
+exclude = [".probe", "desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# krusty-kms is experimental and not published to crates.io. Pin to an exact
+# commit; bumps must go through review (see spec/wallet-companion-spec.md §14).
+[workspace.dependencies]
+krusty-kms = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "1e368295c382f0981edad44a4b928a262acf12dd" }
+krusty-kms-common = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "1e368295c382f0981edad44a4b928a262acf12dd" }
+# Must match krusty-kms's Felt type to avoid version-skew mismatches.
+starknet-types-core = { version = "0.2.0", features = ["hash"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+zeroize = { version = "1", features = ["derive"] }
+hex = { version = "0.4", features = ["serde"] }
+# Vault crypto — mainstream, audited; independent of krusty internals.
+argon2 = "0.5"
+aes-gcm = "0.10"
+getrandom = "0.2"
+sha3 = "0.10"
+# wallet-rpc
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time"] }
+async-trait = "0.1"
+axum = "0.7"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -1,0 +1,25 @@
+[package]
+name = "wallet-rpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Loopback JSON-RPC service for the Starknet wallet companion: auth, approval broker, and wallet_* / companion_* handlers."
+
+[dependencies]
+wallet-core = { path = "../wallet-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+getrandom = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+sha2 = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }

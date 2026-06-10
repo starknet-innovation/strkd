@@ -1,0 +1,624 @@
+//! strkd desktop (Tauri 2). Menu-bar companion that hosts the wallet core:
+//! starts the loopback JSON-RPC service (so agents/apps can call it), surfaces
+//! approval prompts from the service as menu-bar confirmation dialogs, and
+//! exposes IPC commands for the app's own UI (onboarding, unlock, accounts,
+//! request log).
+//!
+//! No key material crosses into this crate's own logic beyond what `wallet-rpc`
+//! / `wallet-core` already own — the session lives inside the shared
+//! `ServerState`. The one exception is onboarding, where a freshly generated
+//! mnemonic is briefly held (zeroized) so the user can back it up and set a
+//! passphrase.
+
+mod settings;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use settings::Settings;
+
+use tauri::image::Image;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tokio::sync::oneshot;
+use zeroize::Zeroizing;
+
+const TRAY_ID: &str = "strkd-tray";
+/// The tray icon is derived from the same generated icon as the app/Dock icon
+/// (`tauri icon` regenerates `128x128.png`), so changing `app-icon.png` updates
+/// the menu-bar icon too. The pending "red dot" variant is overlaid at runtime.
+const TRAY_BASE: &[u8] = include_bytes!("../icons/128x128.png");
+
+fn tray_image(dot: bool) -> Option<Image<'static>> {
+    if !dot {
+        return Image::from_bytes(TRAY_BASE).ok();
+    }
+    // Overlay a red notification dot (top-right) on the base icon.
+    let mut rgba = image::load_from_memory(TRAY_BASE).ok()?.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let (cx, cy, r) = (w as f32 * 0.74, h as f32 * 0.26, w as f32 * 0.20);
+    let ring = w as f32 * 0.04;
+    for y in 0..h {
+        for x in 0..w {
+            let d = (((x as f32 - cx).powi(2)) + ((y as f32 - cy).powi(2))).sqrt();
+            if d <= r {
+                rgba.put_pixel(x, y, image::Rgba([255, 59, 48, 255])); // red
+            } else if d <= r + ring {
+                rgba.put_pixel(x, y, image::Rgba([245, 245, 250, 255])); // light border
+            }
+        }
+    }
+    Some(Image::new_owned(rgba.into_raw(), w, h))
+}
+
+/// Reflect the pending-approval count in the menu bar: a red-dot icon + tooltip
+/// while requests are waiting, plain otherwise. Non-invasive (no window focus).
+fn refresh_tray(app: &AppHandle, pending: usize) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_icon(tray_image(pending > 0));
+        let tip = if pending > 0 {
+            format!("strkd — {pending} pending request(s)")
+        } else {
+            "strkd — Starknet wallet companion".to_string()
+        };
+        let _ = tray.set_tooltip(Some(&tip));
+    }
+}
+
+use wallet_core::{generate_mnemonic, validate_mnemonic, AccountRef, ChainId, Registry};
+use wallet_rpc::{
+    bind_loopback, ChannelApprover, Decision, LogEntry, PendingApproval, RequestLog, ServerState,
+    VaultStore, WalletSession,
+};
+
+/// Tauri-managed app state. The wallet session, clients, log and approver all
+/// live inside the shared `ServerState` (which the loopback service also uses);
+/// this struct adds the desktop-only bits.
+struct DesktopState {
+    server: Arc<ServerState>,
+    vault_store: VaultStore,
+    config_path: PathBuf,
+    chain: ChainId,
+    service_url: String,
+    /// In-flight approval prompts awaiting a user decision, keyed by id.
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Decision>>>>,
+    /// Mnemonic staged during onboarding (between generate/import and finalize).
+    onboarding: Mutex<Option<Zeroizing<String>>>,
+}
+
+fn chain_name(c: ChainId) -> &'static str {
+    match c {
+        ChainId::Mainnet => "SN_MAIN",
+        ChainId::Sepolia => "SN_SEPOLIA",
+    }
+}
+
+/// Show + focus the main window (from the tray, or when a prompt arrives).
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IPC commands
+// ---------------------------------------------------------------------------
+
+/// Overall app/service status for the UI's header + routing (onboarding vs
+/// unlock vs main).
+#[tauri::command]
+async fn status(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
+    let session = state.server.session.lock().await;
+    let accounts = session.registry().map(|r| r.accounts.len()).unwrap_or(0);
+    Ok(serde_json::json!({
+        "locked": session.is_locked(),
+        "needs_onboarding": !state.vault_store.exists(),
+        "network": chain_name(session.chain()),
+        "version": env!("CARGO_PKG_VERSION"),
+        "service_url": state.service_url,
+        "accounts": accounts,
+        // When false, the wallet is sign-only (no broadcast / fee estimation):
+        // set STRKD_RPC_URL to enable. No URL echoed (it may embed an API key).
+        "node_configured": state.server.has_node_for(session.chain()),
+    }))
+}
+
+/// Generate a fresh mnemonic and stage it for backup. Returns it for one-time
+/// display; the user confirms they've saved it before `finalize_setup`.
+#[tauri::command]
+async fn generate(state: State<'_, DesktopState>, word_count: usize) -> Result<String, String> {
+    let m = generate_mnemonic(word_count).map_err(|e| e.to_string())?;
+    *state.onboarding.lock().unwrap() = Some(Zeroizing::new(m.clone()));
+    Ok(m)
+}
+
+/// Stage an imported mnemonic (validated) for `finalize_setup`.
+#[tauri::command]
+async fn import(state: State<'_, DesktopState>, phrase: String) -> Result<(), String> {
+    validate_mnemonic(&phrase).map_err(|_| "invalid mnemonic".to_string())?;
+    *state.onboarding.lock().unwrap() = Some(Zeroizing::new(phrase));
+    Ok(())
+}
+
+/// Encrypt the staged mnemonic under `passphrase`, write the vault, and enter
+/// the unlocked state.
+#[tauri::command]
+async fn finalize_setup(state: State<'_, DesktopState>, passphrase: String) -> Result<(), String> {
+    let mnemonic = {
+        let mut g = state.onboarding.lock().unwrap();
+        g.take()
+            .ok_or("no mnemonic staged; generate or import first")?
+    };
+    let session =
+        WalletSession::new_unlocked(state.chain, mnemonic.to_string(), passphrase, Registry::default());
+    let vault = session.reseal().map_err(|e| e.to_string())?;
+    state.vault_store.save(&vault).map_err(|e| e.to_string())?;
+    *state.server.session.lock().await = session;
+    Ok(())
+}
+
+/// Unlock an existing vault with `passphrase`.
+#[tauri::command]
+async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<(), String> {
+    let vault = state
+        .vault_store
+        .load()
+        .map_err(|e| e.to_string())?
+        .ok_or("no vault file")?;
+    let mut session = state.server.session.lock().await;
+    session
+        .unlock(&vault, &passphrase)
+        .map_err(|_| "incorrect passphrase or corrupt vault".to_string())?;
+    drop(session);
+    state.server.touch_activity(); // start the auto-lock idle clock fresh
+    Ok(())
+}
+
+/// Re-lock the wallet (wipes the in-memory seed).
+#[tauri::command]
+async fn lock(state: State<'_, DesktopState>) -> Result<(), String> {
+    state.server.session.lock().await.lock();
+    Ok(())
+}
+
+/// Set the wallet's active network. Accounts (keys/addresses) are the same on
+/// both networks; this changes which network operations (deploy/fund/sign) and
+/// deploy-status target, and which per-network node is used.
+#[tauri::command]
+async fn set_network(state: State<'_, DesktopState>, network: String) -> Result<(), String> {
+    let chain = match network.to_lowercase().as_str() {
+        "mainnet" | "sn_main" => ChainId::Mainnet,
+        "testnet" | "sepolia" | "sn_sepolia" => ChainId::Sepolia,
+        other => return Err(format!("unknown network '{other}'")),
+    };
+    state.server.session.lock().await.set_chain(chain);
+    Ok(())
+}
+
+/// Current settings (per-network RPC URLs). IPC-only; carries an endpoint that
+/// may embed an API key, so it's never exposed over the HTTP service.
+#[tauri::command]
+async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
+    Ok(settings::load(&state.config_path))
+}
+
+/// Persist settings and rebuild the node client for the active network at
+/// runtime (no restart needed).
+#[tauri::command]
+async fn set_settings(state: State<'_, DesktopState>, settings: Settings) -> Result<(), String> {
+    settings.validate()?;
+    settings::save(&state.config_path, &settings).map_err(|e| e.to_string())?;
+    // Register a node for each network (so switchStarknetChain picks the right one).
+    state
+        .server
+        .set_node(ChainId::Sepolia, settings.node_for(ChainId::Sepolia));
+    state
+        .server
+        .set_node(ChainId::Mainnet, settings.node_for(ChainId::Mainnet));
+    Ok(())
+}
+
+/// All accounts in the registry (empty while locked).
+#[tauri::command]
+async fn list_accounts(state: State<'_, DesktopState>) -> Result<Vec<AccountRef>, String> {
+    let session = state.server.session.lock().await;
+    Ok(session.registry().map(|r| r.accounts.clone()).unwrap_or_default())
+}
+
+/// Derive the next user-domain account, persist the vault, return it. Rolls the
+/// in-memory add back if the write fails.
+#[tauri::command]
+async fn add_user_account(
+    state: State<'_, DesktopState>,
+    label: String,
+) -> Result<AccountRef, String> {
+    let mut session = state.server.session.lock().await;
+    let account = session.create_user_account(label).map_err(|e| e.to_string())?;
+    match session.reseal() {
+        Ok(vault) => {
+            if let Err(e) = state.vault_store.save(&vault) {
+                session.rollback_account(&account.address);
+                return Err(e.to_string());
+            }
+        }
+        Err(e) => {
+            session.rollback_account(&account.address);
+            return Err(e.to_string());
+        }
+    }
+    Ok(account)
+}
+
+/// Deployment status of an account: `Some(true/false)` if a node is configured,
+/// `None` if not (can't tell without a node).
+#[tauri::command]
+async fn deploy_status(
+    state: State<'_, DesktopState>,
+    address: String,
+) -> Result<Option<bool>, String> {
+    let chain = state.server.session.lock().await.chain();
+    let node = match state.server.node_for(chain) {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let felt = wallet_core::Felt::from_hex(&address).map_err(|_| "bad address".to_string())?;
+    match node.is_deployed(&felt).await {
+        Ok(b) => Ok(Some(b)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Deploy an account: estimate the deploy fee, sign DEPLOY_ACCOUNT, and broadcast.
+/// Requires a node (Settings → RPC URL) and the account to already hold funds for
+/// its own deploy fee. The user clicking Deploy is the consent.
+#[tauri::command]
+async fn deploy_account(
+    state: State<'_, DesktopState>,
+    address: String,
+) -> Result<serde_json::Value, String> {
+    let want = {
+        let f = wallet_core::Felt::from_hex(&address).map_err(|_| "bad address".to_string())?;
+        format!("0x{:064x}", f)
+    };
+    let session = state.server.session.lock().await;
+    let chain = session.chain();
+    let node = state
+        .server
+        .node_for(chain)
+        .ok_or("set a Starknet RPC URL in Settings to deploy")?;
+
+    let account = session
+        .registry()
+        .map_err(|e| e.to_string())?
+        .accounts
+        .iter()
+        .find(|a| a.address == want)
+        .cloned()
+        .ok_or("unknown account")?;
+
+    // Estimate the deploy fee from the deployment data.
+    let d = session.deployment_data_for(&account).map_err(|e| e.to_string())?;
+    let bounds = node
+        .estimate_deploy_account(&d.address, &d.class_hash, &d.constructor_calldata, &d.salt)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let params = wallet_core::InvokeV3Params {
+        nonce: wallet_core::Felt::ZERO,
+        tip: 0,
+        l1_gas: bounds.l1_gas,
+        l2_gas: bounds.l2_gas,
+        l1_data_gas: bounds.l1_data_gas,
+        ..Default::default()
+    };
+    let signed = session
+        .sign_deploy_account_for(&account, &params)
+        .map_err(|e| e.to_string())?;
+
+    let hash = node
+        .add_deploy_account(
+            &signed.class_hash,
+            &signed.constructor_calldata,
+            &signed.salt,
+            &[signed.r, signed.s],
+            &bounds,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "transaction_hash": format!("0x{:x}", hash) }))
+}
+
+/// Paired clients with their grant status (for the Agents control panel).
+#[tauri::command]
+async fn list_clients(state: State<'_, DesktopState>) -> Result<Vec<wallet_rpc::ClientInfo>, String> {
+    Ok(state.server.clients.lock().await.list())
+}
+
+/// Grant a client an auto-approval window of `days` (clamped to 1..=90 = 3 months).
+/// While active, that client's own-account operations skip the prompt; funding
+/// always still prompts.
+#[tauri::command]
+async fn grant_permission(
+    state: State<'_, DesktopState>,
+    client_id: String,
+    days: u64,
+) -> Result<(), String> {
+    let days = days.clamp(1, 90);
+    let until = wallet_rpc::now_unix_ms() + days * 24 * 60 * 60 * 1000;
+    if state.server.clients.lock().await.grant(&client_id, until) {
+        Ok(())
+    } else {
+        Err("unknown client".into())
+    }
+}
+
+/// Revoke a client's auto-approval grant immediately.
+#[tauri::command]
+async fn revoke_permission(state: State<'_, DesktopState>, client_id: String) -> Result<(), String> {
+    if state.server.clients.lock().await.revoke_grant(&client_id) {
+        Ok(())
+    } else {
+        Err("unknown client".into())
+    }
+}
+
+/// The most recent request-log entries (newest first).
+#[tauri::command]
+async fn recent_log(state: State<'_, DesktopState>, limit: usize) -> Result<Vec<LogEntry>, String> {
+    Ok(state.server.log.lock().await.recent(limit))
+}
+
+/// Answer a pending approval prompt. Sync (no await) — just resolves the oneshot
+/// the service is blocked on.
+#[tauri::command]
+fn respond_approval(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    id: u64,
+    approved: bool,
+) -> Result<(), String> {
+    let (tx, remaining) = {
+        let mut g = state.pending.lock().unwrap();
+        (g.remove(&id), g.len())
+    };
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(if approved {
+                Decision::Approve
+            } else {
+                Decision::Reject
+            });
+            refresh_tray(&app, remaining);
+            Ok(())
+        }
+        None => Err("no pending approval with that id (it may have timed out)".into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Approval bridge: service prompts → menu-bar dialogs
+// ---------------------------------------------------------------------------
+
+/// Drain approval prompts from the service's `ChannelApprover`, surface each to
+/// the UI as an `approval-request` event, and auto-reject after 60s (spec §8).
+fn spawn_approval_bridge(
+    app: AppHandle,
+    mut rx: tokio::sync::mpsc::Receiver<PendingApproval>,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Decision>>>>,
+) {
+    let next_id = Arc::new(AtomicU64::new(1));
+    tauri::async_runtime::spawn(async move {
+        while let Some(p) = rx.recv().await {
+            let PendingApproval { request, respond } = p;
+            let id = next_id.fetch_add(1, Ordering::Relaxed);
+            let count = {
+                let mut g = pending.lock().unwrap();
+                g.insert(id, respond);
+                g.len()
+            };
+
+            // Notify the UI: it shows the in-app dialog and posts a menu-bar
+            // notification (with Approve/Deny buttons) from the frontend. A red
+            // dot on the tray icon signals pending work. We do NOT steal focus.
+            let _ = app.emit(
+                "approval-request",
+                serde_json::json!({
+                    "id": id,
+                    "client_label": request.client_label,
+                    "method": request.method,
+                    "summary": request.summary,
+                }),
+            );
+            refresh_tray(&app, count);
+
+            // Auto-reject if the user doesn't respond within the window.
+            let pending2 = pending.clone();
+            let app2 = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let remaining = {
+                    let mut g = pending2.lock().unwrap();
+                    let existed = g.remove(&id).map(|tx| {
+                        let _ = tx.send(Decision::Reject);
+                    });
+                    if existed.is_some() {
+                        Some(g.len())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(remaining) = remaining {
+                    refresh_tray(&app2, remaining);
+                }
+            });
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        // Closing the window hides it — the app stays in the menu bar.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        .setup(|app| {
+            // macOS: run as a regular app so the strkd icon shows in the Dock
+            // (clicking it re-shows the window — see the Reopen handler in run()).
+            // The app still lives in the menu bar via the tray; closing the
+            // window only hides it.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+            // Data dir + file paths (spec §10).
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("no app data dir: {e}"))?;
+            std::fs::create_dir_all(&data_dir)?;
+            let vault_path = data_dir.join("vault.bin");
+            let log_path = data_dir.join("requests.db");
+            let port_lock = data_dir.join("port.lock");
+            let config_path = data_dir.join("config.json");
+
+            // Default network for v1.
+            let chain = ChainId::Sepolia;
+            let vault_store = VaultStore::new(&vault_path);
+
+            // Approval bridge plumbing.
+            let (approver, rx) = ChannelApprover::new(32);
+            let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Decision>>>> =
+                Arc::new(Mutex::new(HashMap::new()));
+
+            // File-backed request log (full payloads on by default — spec §9).
+            let log = RequestLog::open(&log_path, true).map_err(|e| format!("open log: {e}"))?;
+
+            // Session starts locked; onboarding/unlock populates it.
+            let session_arc = Arc::new(tokio::sync::Mutex::new(WalletSession::new_locked(chain)));
+            let mut state = ServerState::with_log(session_arc, Arc::new(approver), log)
+                .with_vault_store(vault_store.clone())
+                .with_clients_path(data_dir.join("clients.json"));
+            // Nodes (broadcast + fee estimation) come from saved settings
+            // (Settings tab → config.json), one per network. Changeable at runtime
+            // via set_settings — no restart. Sign-only until an RPC URL is set.
+            let saved = settings::load(&config_path);
+            if let Some(node) = saved.node_for(ChainId::Sepolia) {
+                state = state.with_node(ChainId::Sepolia, node);
+            }
+            if let Some(node) = saved.node_for(ChainId::Mainnet) {
+                state = state.with_node(ChainId::Mainnet, node);
+            }
+            let server = Arc::new(state);
+
+            // Start the loopback service (binds 127.0.0.1, writes port.lock).
+            let (addr, _handle) = tauri::async_runtime::block_on(bind_loopback(
+                server.clone(),
+                Some(port_lock.as_path()),
+            ))
+            .map_err(|e| format!("bind service: {e}"))?;
+            let service_url = format!("http://{addr}");
+
+            // Surface approval prompts as menu-bar dialogs.
+            spawn_approval_bridge(app.handle().clone(), rx, pending.clone());
+
+            // Auto-lock after inactivity (spec §5.3). Activity = an RPC request or
+            // an unlock; the UI's status polling doesn't count. Timeout from
+            // Settings (auto_lock_minutes; 0 = never). A busy agent under a grant
+            // keeps the session unlocked; set 0 for fully-unattended agents.
+            {
+                let lock_server = server.clone();
+                let cfg = config_path.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        let mins = settings::load(&cfg).auto_lock_minutes;
+                        if mins == 0 {
+                            continue;
+                        }
+                        let idle = wallet_rpc::now_unix_ms()
+                            .saturating_sub(lock_server.last_activity_ms());
+                        if idle >= mins * 60 * 1000 {
+                            let mut s = lock_server.session.lock().await;
+                            if !s.is_locked() {
+                                s.lock();
+                            }
+                        }
+                    }
+                });
+            }
+
+            app.manage(DesktopState {
+                server,
+                vault_store,
+                config_path,
+                chain,
+                service_url,
+                pending,
+                onboarding: Mutex::new(None),
+            });
+
+            // Menu-bar tray.
+            let open = MenuItemBuilder::with_id("open", "Open strkd").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+                .tooltip("strkd — Starknet wallet companion")
+                .menu(&menu);
+            if let Some(icon) = tray_image(false) {
+                tray = tray.icon(icon);
+            }
+            let tray = tray
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "quit" => app.exit(0),
+                    "open" => show_main(app),
+                    _ => {}
+                })
+                .build(app)?;
+            app.manage(tray);
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            status,
+            generate,
+            import,
+            finalize_setup,
+            unlock,
+            lock,
+            set_network,
+            get_settings,
+            set_settings,
+            list_accounts,
+            add_user_account,
+            deploy_status,
+            deploy_account,
+            list_clients,
+            grant_permission,
+            revoke_permission,
+            recent_log,
+            respond_approval
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building strkd desktop")
+        .run(|_app, _event| {
+            // Clicking the Dock icon while the window is hidden re-shows it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main(_app);
+            }
+        });
+}
