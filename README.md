@@ -19,7 +19,16 @@ API plus a small `companion_*` extension namespace, and delegates cryptography t
 
 ## Status
 
-Phase 0 (crypto core) is built and green; the service and app shell are next.
+All three layers are built. The crypto core (`wallet-core`) and the loopback
+service (`wallet-rpc`) are green — **92 tests, clippy clean** — covering
+derivation, signing, the vault, the full `wallet_*` + `companion_*` handlers,
+auth, the approval broker, permission grants, and the request log. The Tauri
+menu-bar app (`desktop/`) compiles and its frontend builds, but the **GUI is not
+yet run-verified** (tray, dialogs, notifications, auto-lock, Dock icon need a
+human launch). Broadcasting + fee estimation work against a node configured in
+the Settings tab; Sepolia reads/estimates are live-verified, while the broadcast
+hop still needs a funded-account submit. Next up: **Phase 3** (Tongo / STRK20).
+
 For the authoritative, always-current state, see
 **[`docs/project/status.md`](./docs/project/status.md)**.
 
