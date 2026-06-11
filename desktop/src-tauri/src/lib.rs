@@ -54,8 +54,12 @@ fn tray_image(dot: bool) -> Option<Image<'static>> {
     Some(Image::new_owned(rgba.into_raw(), w, h))
 }
 
-/// Reflect the pending-approval count in the menu bar: a red-dot icon + tooltip
-/// while requests are waiting, plain otherwise. Non-invasive (no window focus).
+/// Reflect the pending-approval count on every surface we have: a red-dot tray
+/// icon + tooltip in the menu bar, AND a Dock-tile badge (the standard macOS
+/// count bubble). Both clear when nothing is pending. The Dock badge is the most
+/// reliable signal — it shows even if OS notification permission is denied, and
+/// needs the `Regular` activation policy (set in setup) so the app has a Dock
+/// tile. Non-invasive (never steals window focus).
 fn refresh_tray(app: &AppHandle, pending: usize) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(tray_image(pending > 0));
@@ -65,6 +69,10 @@ fn refresh_tray(app: &AppHandle, pending: usize) {
             "strkd — Starknet wallet companion".to_string()
         };
         let _ = tray.set_tooltip(Some(&tip));
+    }
+    // Dock-tile badge: visible on the Dock icon regardless of notification perms.
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_badge_count(if pending > 0 { Some(pending as i64) } else { None });
     }
 }
 

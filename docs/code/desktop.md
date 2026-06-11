@@ -60,14 +60,30 @@ and emits an `approval-request` event to the frontend. The frontend shows
 (spec §8). Key material never enters the prompt.
 
 **Non-invasive notification (no focus stealing):** on a new request the bridge
-does **not** raise the window. It emits the event and swaps the tray icon to a
-**red-dot** variant with a "N pending" tooltip (cleared on response/timeout — see
-`refresh_tray`). The frontend (`notify.ts`) posts a menu-bar **notification with
-Approve / Deny buttons** (`@tauri-apps/plugin-notification`: `registerActionTypes`
-+ `onAction` → `respond_approval` on the front-of-queue request). Notifications +
-action buttons need the OS notification permission and are platform-specific
-(**GUI, not run-verified**); the in-app `ApprovalDialog` is the reliable
-fallback, and the red-dot tray badge works regardless.
+does **not** raise the window. It emits the event and updates three pending
+indicators via `refresh_tray` (cleared on response/timeout): the **tray icon**
+gets a red-dot overlay + "N pending" tooltip, and the **Dock tile** gets a
+**badge count** (`WebviewWindow::set_badge_count`, macOS — needs the `Regular`
+activation policy so a Dock tile exists). The frontend (`notify.ts`) also posts a
+menu-bar **notification with Approve / Deny buttons**
+(`@tauri-apps/plugin-notification`: `registerActionTypes` + `onAction` →
+`respond_approval` on the front-of-queue request).
+
+Indicator reliability, in order: the in-app **`ApprovalDialog`** is the
+ground-truth prompt; the **Dock badge** + **tray red-dot** always reflect pending
+count; the **OS notification** is best-effort — it needs notification permission
+(System Settings → Notifications → strkd) and is most reliable from the
+**installed, bundled app**, not `tauri dev`. All of this is **GUI, not
+run-verified**.
+
+> **No indicator at all is usually correct, not a bug.** A prompt (and therefore
+> every indicator) only fires when an operation actually needs approval. Two
+> recent features legitimately suppress it: (1) if the wallet has **auto-locked**,
+> incoming requests are rejected with `-32001 LOCKED` *before* prompting; (2) if
+> the caller holds an **active grant**, its own-account ops **auto-approve** with
+> no prompt (funding still prompts). Either way the **Activity tab** records what
+> happened (`error -32001` vs `approved`) — that's the place to diagnose "why
+> didn't I get prompted?".
 
 **Auto-lock.** A background task locks the wallet after `auto_lock_minutes` of
 inactivity (Settings; default 15, **0 = never**). "Activity" is any RPC request

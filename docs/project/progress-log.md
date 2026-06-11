@@ -8,6 +8,40 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-06-11 — Pending-approval visibility: Dock badge; diagnosed missing notif/red-dot
+
+**Reported:** no menu-bar notifications, and no red dot on the tray or Dock icon.
+
+**Diagnosis (joint symptom → shared cause).** The red dot (Rust) and the
+notification (frontend) both fire from the *same* approval event, so losing both
+together means **no prompt is reaching the UI**. Two features we just shipped
+legitimately suppress the prompt: **auto-lock** (a locked wallet rejects requests
+with `-32001` *before* prompting — confirmed: handlers touch the session, which
+errors when locked, ahead of `gated_approval`) and **grants** (`gated_approval`
+auto-approves a granted client's own-account ops with no prompt). Separately, the
+OS **notification** needs permission + (reliably) the bundled app — that's why it
+"stopped" after we moved notifications from Rust to the frontend.
+
+**Did**
+- Added a **Dock-tile badge** with the pending count
+  (`WebviewWindow::set_badge_count`, macOS) to `refresh_tray`, alongside the tray
+  red-dot. It's the most reliable signal — visible even if notification
+  permission is denied — and now works because the app is `Regular` (has a Dock
+  tile). Clears at zero pending. Desktop builds; clippy clean.
+- Documented the indicator hierarchy + the "no indicator is usually correct"
+  rule (lock/grant suppression; Activity tab is the diagnostic) in `desktop.md`.
+
+**Not a code bug**
+- The notification path + capability are correct; non-display is a macOS
+  permission / bundled-app matter. The dialog + badge + tray dot don't depend on
+  it. If prompts aren't firing at all, the cause is lock/grant (by design) — check
+  the Activity tab.
+
+**Not run-verified**
+- Dock badge render, tray dot, and OS notification all need the running app.
+
+---
+
 ## 2026-06-11 — `companion_reportIssue`: agent feedback → prefilled GitHub issue link
 
 **Did**
