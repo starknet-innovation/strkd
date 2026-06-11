@@ -5,7 +5,7 @@ progresses — it must always reflect the present. History lives in
 [`progress-log.md`](./progress-log.md). Process lives in
 [`workflow.md`](./workflow.md).
 
-_Last updated: 2026-06-09_
+_Last updated: 2026-06-11_
 
 ---
 
@@ -128,10 +128,10 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 
 ## Test & build state
 
-| Check | Command | State (2026-06-09) |
+| Check | Command | State (2026-06-11) |
 |---|---|---|
 | Build | `cargo build` | ✅ |
-| Tests (core) | `cargo test` | ✅ 92 passed (21 core + 50 dispatch + 5 log + 2 persistence + 3 session + 2 clients + 5 transport-unit + 4 HTTP) |
+| Tests (core) | `cargo test` | ✅ 96 passed (21 core + 54 dispatch + 5 log + 2 persistence + 3 session + 2 clients + 5 transport-unit + 4 HTTP) |
 | Lint (core) | `cargo clippy --all-targets` | ✅ clean |
 | Desktop build | `cd desktop && npm run build` + `(cd src-tauri && cargo build)` | ✅ compiles; clippy clean. GUI **not run-verified** |
 | Installable bundle | `cd desktop && npm run tauri build` | ✅ produces `strkd.app` + `.dmg` (release) |

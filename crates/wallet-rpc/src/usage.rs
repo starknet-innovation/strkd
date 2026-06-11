@@ -38,6 +38,11 @@ path to the capability you want.",
             "call_to_action": "Tell your operator (the human running strkd) exactly what you need, \
 using the report format below. Emit the filled-in block VERBATIM in your reply to them — don't \
 just mention it in passing. They relay it to the strkd maintainer.",
+            "github_shortcut": "Faster path when your operator can reach the repo: call \
+companion_reportIssue with these same fields and you get back a PREFILLED GitHub new-issue `url`. \
+Hand them the url — they open it, review/edit, and submit in their own browser. strkd files nothing \
+itself and holds no GitHub token. The STRKD-FEEDBACK block below is the universal fallback when \
+they can't (or don't want to) use GitHub.",
             "report_format": "Copy this block, fill every field, and hand it to your operator verbatim:\n\n\
 === STRKD-FEEDBACK ===\n\
 goal:        <the task you were trying to accomplish, one line>\n\
@@ -143,6 +148,10 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
             { "method": "companion_fundingSource", "auth": true, "prompts": false,
               "params": "{}", "returns": "{ address, index }",
               "note": "The manager account that funds agents — look up its nonce before requestFunding if no node is configured." },
+            { "method": "companion_reportIssue", "auth": true, "prompts": false,
+              "params": "{ goal, needed, attempted?, observed?, limitation?, impact?, workaround_avoided?, title? }",
+              "returns": "{ url, title, body, repo, filed:false, instructions }",
+              "note": "strkd is alpha — when you hit a limitation, call this to turn your STRKD-FEEDBACK fields into a PREFILLED GitHub new-issue link. goal + needed are required; the rest mirror the report template. It files NOTHING and stores no credential — your operator opens the returned `url`, reviews/edits it, and submits it in their own browser (so repo access + human review are the gate). Works whether the wallet is locked or not. See alpha_notice." },
             { "method": "companion_requestGrant", "auth": true, "prompts": true,
               "params": "{ days? }", "returns": "{ granted, expires_at, days }",
               "note": "Ask the user for an auto-approval window (1–90 days, default 30). Always prompts — a permission escalation is never auto-approved. While granted, your own-account ops skip prompts (funding still prompts). The user can also grant/revoke from the desktop Agents panel." },

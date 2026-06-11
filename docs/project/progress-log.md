@@ -8,6 +8,42 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-06-11 — `companion_reportIssue`: agent feedback → prefilled GitHub issue link
+
+**Did**
+- Added **`companion_reportIssue`** (auth, **no prompt**): takes the STRKD-FEEDBACK
+  fields (`goal` + `needed` required; attempted/observed/limitation/impact/
+  workaround_avoided/context/title optional) and returns a **prefilled GitHub
+  `issues/new?title=…&body=…` link** plus the rendered title/body. It **files
+  nothing** and stores **no GitHub token** — the operator opens the URL, reviews/
+  edits, and submits in their own browser. Target repo defaults to
+  `starknet-innovation/strkd`, overridable via `ServerState::with_issue_repo`
+  (slug-validated to `owner/name`).
+- Agent-authored text is **percent-encoded** (RFC 3986 query) so it can't break
+  out of the query; body capped to ~5000 chars for URL-length safety; title
+  tagged `[agent-feedback]`. Returns `filed:false` explicitly.
+- Usage doc: new method entry + an `alpha_notice.github_shortcut` pointing agents
+  at it (STRKD-FEEDBACK block stays the universal fallback). Docs + completeness
+  test updated. **+4 dispatch tests** (URL shape/encoding, required fields, never
+  prompts, requires pairing). **96 tests green, clippy clean**; desktop builds.
+
+**Why / decisions**
+- Chose the **prefilled-link** path over API auto-filing (maintainer's call): the
+  repo is private and strkd is multi-operator, so a stored PAT + repo-write power
+  doesn't generalize and adds credential risk. A deep-link keeps the human as the
+  gate (their own GitHub identity/permissions, review before submit) and needs no
+  secret in the wallet. The agent → operator relay block remains for everyone
+  without repo access.
+- No prompt: building a URL posts nothing, so it shouldn't burn a 60s approval.
+- No desktop change needed — default repo slug is correct; reports also land in
+  the Activity log like any RPC call.
+
+**Not run-verified**
+- That the generated URL actually opens a well-formed GitHub draft is a manual
+  check (paste one into a browser). The URL construction + encoding are unit-tested.
+
+---
+
 ## 2026-06-11 — Agent endpoint: alpha disclaimer + "report, don't work around" CTA
 
 **Did**

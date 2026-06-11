@@ -41,6 +41,9 @@ pub struct ServerState {
     /// The app's auto-lock task locks the wallet after this goes stale. Desktop
     /// status-polling (IPC, not RPC) deliberately does NOT touch it.
     last_activity_ms: AtomicU64,
+    /// GitHub repo (`owner/name`) that `companion_reportIssue` points its
+    /// prefilled "new issue" links at. Not a secret; no token is involved.
+    issue_repo: String,
     pub api_version: String,
     pub spec_versions: Vec<String>,
 }
@@ -69,10 +72,27 @@ impl ServerState {
             nodes: RwLock::new(HashMap::new()),
             watched_assets: RwLock::new(Vec::new()),
             last_activity_ms: AtomicU64::new(now_unix_ms()),
+            issue_repo: DEFAULT_ISSUE_REPO.to_string(),
             api_version: "0.1.0".to_string(),
             // Placeholder until confirmed against the target Starknet node.
             spec_versions: vec!["0.8.1".to_string()],
         }
+    }
+
+    /// Override the GitHub repo (`owner/name`) that `companion_reportIssue`
+    /// targets. Ignored (keeps the default) unless `repo` is a plain
+    /// `owner/name` slug, so we never build a malformed/abusable URL.
+    pub fn with_issue_repo(mut self, repo: impl Into<String>) -> Self {
+        let repo = repo.into();
+        if is_valid_repo_slug(&repo) {
+            self.issue_repo = repo;
+        }
+        self
+    }
+
+    /// The GitHub repo (`owner/name`) feedback links target.
+    pub fn issue_repo(&self) -> &str {
+        &self.issue_repo
     }
 
     /// Attach an on-disk vault store so registry changes are persisted.
@@ -144,6 +164,64 @@ impl ServerState {
 /// param of `companion_requestFunding`.
 const STRK_TOKEN_ADDRESS: &str =
     "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
+
+/// Default GitHub repo (`owner/name`) that `companion_reportIssue` builds its
+/// prefilled "new issue" links against. Overridable via
+/// [`ServerState::with_issue_repo`].
+const DEFAULT_ISSUE_REPO: &str = "starknet-innovation/strkd";
+
+/// `owner/name` with only GitHub-legal slug characters, exactly one `/`.
+fn is_valid_repo_slug(s: &str) -> bool {
+    let mut parts = s.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(name), None) => {
+            !owner.is_empty()
+                && !name.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+        }
+        _ => false,
+    }
+}
+
+/// Percent-encode a string for use as a URL query-component value (RFC 3986:
+/// keep unreserved chars, `%XX` everything else — spaces → `%20`, newlines →
+/// `%0A`). Keeps agent-authored text from breaking out of the `?title=&body=`
+/// query.
+fn encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Truncate to at most `max` chars (char-safe), appending `…` if cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{kept}…")
+    }
+}
+
+/// Append a `**Label:** value` markdown line to `body` if `val` is non-blank.
+fn push_field(body: &mut String, label: &str, val: &str) {
+    let v = val.trim();
+    if !v.is_empty() {
+        body.push_str("**");
+        body.push_str(label);
+        body.push_str(":** ");
+        body.push_str(v);
+        body.push_str("\n\n");
+    }
+}
 
 fn felt_hex(f: &Felt) -> String {
     format!("0x{:x}", f)
@@ -386,6 +464,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "wallet_switchStarknetChain" => handle_switch_chain(state, &client, &params).await,
         "wallet_watchAsset" => handle_watch_asset(state, &client, &params).await,
         "companion_fundingSource" => handle_funding_source(state).await,
+        "companion_reportIssue" => handle_report_issue(state, &client, &params),
         "companion_estimateFee" => handle_estimate_fee(state, &client, &params).await,
         "companion_requestGrant" => handle_request_grant(state, &client, &params).await,
         "companion_requestFunding" => handle_request_funding(state, &client, &params).await,
@@ -1035,6 +1114,76 @@ async fn handle_add_invoke(
     }
 
     sign_and_submit(state, chain, &account, &calls, nonce, bounds, submit, proof_facts, proof).await
+}
+
+/// Turn an agent's structured feedback into a **prefilled GitHub "new issue"
+/// link**. strkd is alpha; when an agent hits a limitation it should report it
+/// (see the `alpha_notice` in the usage doc) rather than work around it. This
+/// files NOTHING and stores no credential — it returns a URL the operator opens,
+/// reviews, edits, and submits in their own browser under their own GitHub
+/// identity (so repo access / human review are the gate). Synchronous: it builds
+/// a string, touches no session/key material, and works whether locked or not.
+fn handle_report_issue(
+    state: &ServerState,
+    client: &PairedClient,
+    params: &Value,
+) -> Result<Value, WalletRpcError> {
+    // goal + needed are the two fields a fix actually needs; the rest mirror the
+    // STRKD-FEEDBACK template and are optional.
+    let goal = param_str(params, "goal")?;
+    let needed = param_str(params, "needed")?;
+    if goal.trim().is_empty() || needed.trim().is_empty() {
+        return Err(WalletRpcError::InvalidRequest(
+            "`goal` and `needed` must be non-empty".into(),
+        ));
+    }
+
+    let raw_title = opt_param_str(params, "title").unwrap_or_else(|| goal.clone());
+    // Tagged so the maintainer can filter agent-filed issues.
+    let title = format!("[agent-feedback] {}", truncate_chars(raw_title.trim(), 120));
+
+    let mut body = String::new();
+    push_field(&mut body, "Goal", &goal);
+    push_field(&mut body, "Needed", &needed);
+    for (label, key) in [
+        ("Attempted", "attempted"),
+        ("Observed", "observed"),
+        ("Limitation", "limitation"),
+        ("Impact", "impact"),
+        ("Workaround avoided", "workaround_avoided"),
+        ("Context", "context"),
+    ] {
+        if let Some(v) = opt_param_str(params, key) {
+            push_field(&mut body, label, &v);
+        }
+    }
+    body.push_str(&format!(
+        "---\n_Filed via strkd `companion_reportIssue` by **{}** ({}). strkd is alpha — \
+review and edit before submitting, and remove anything sensitive._",
+        client.label, client.id
+    ));
+    // Keep the prefilled URL within practical browser/server limits (~8 KB once
+    // encoded); the operator can add detail in the browser if it's clipped.
+    let body = truncate_chars(&body, 5000);
+
+    let url = format!(
+        "https://github.com/{}/issues/new?title={}&body={}",
+        state.issue_repo,
+        encode_query(&title),
+        encode_query(&body),
+    );
+
+    Ok(json!({
+        "url": url,
+        "title": title,
+        "body": body,
+        "repo": state.issue_repo,
+        // Make it unambiguous that strkd posted nothing.
+        "filed": false,
+        "instructions": "Give this `url` to your operator. Opening it loads a prefilled GitHub \
+issue draft; they review, edit, and submit it in their browser. strkd does not file it for you, \
+and stores no GitHub credential."
+    }))
 }
 
 /// Reveal the funding-source (manager) account address so an agent can look up

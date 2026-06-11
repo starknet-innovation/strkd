@@ -41,7 +41,12 @@ strkd is alpha, plus a call-to-action telling agents **not to work around
 limitations** but to emit a structured `=== STRKD-FEEDBACK ===` block (goal /
 attempted / observed / limitation / needed / impact / workaround-avoided /
 context) for their operator to relay to the maintainer — so gaps surface as
-actionable reports instead of silent hacks. It's **open** (no auth, no transport
+actionable reports instead of silent hacks. For operators who can reach the repo,
+`companion_reportIssue` turns those same fields into a **prefilled GitHub
+new-issue link** (`issues/new?title=…&body=…`) the operator opens, reviews, and
+submits in their own browser — strkd files nothing itself and holds no GitHub
+token, so repo access + human review stay the gate. The target repo defaults to
+`starknet-innovation/strkd` (`ServerState::with_issue_repo` to override). It's **open** (no auth, no transport
 guard) — public info only — so a client can discover it before pairing.
 `usage.rs` is the single source of truth, and `tests/server.rs` asserts the doc
 lists every implemented method + the core sections (incl. `alpha_notice` and its
@@ -70,6 +75,7 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `wallet_watchAsset` | paired | **yes** | add a token to the watch list (display-only, in-memory) |
 | `companion_createAgentAccount` | paired (agent) | **yes** | derive next agent account |
 | `companion_fundingSource` | paired | no | manager (funding-source) account address |
+| `companion_reportIssue` | paired | no | build a **prefilled GitHub new-issue link** from an agent's feedback (`goal` + `needed` required); files nothing, stores no token — the operator opens + submits it |
 | `companion_estimateFee` | paired | no | suggested `resource_bounds` (canonical hex) + nonce from the node — opt-in fee help for sign-only callers |
 | `companion_requestGrant` | paired | **yes (always)** | agent asks for an auto-approval window (1–90 days); always prompts (escalation is never auto-approved) |
 | `companion_requestFunding` | paired (agent) | **yes** | sign a STRK transfer **manager → agent's own account** (sign-only) |

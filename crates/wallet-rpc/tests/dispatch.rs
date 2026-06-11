@@ -1099,6 +1099,91 @@ async fn funding_rejects_zero_amount() {
 }
 
 #[tokio::test]
+async fn report_issue_builds_prefilled_github_url() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "agent").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "companion_reportIssue",
+        json!({
+            "goal": "sponsor an account deploy with a paymaster",
+            "needed": "a companion_deployAccount option that accepts a paymaster",
+            "observed": "error -32601",
+            "impact": "blocked",
+            "workaround_avoided": "none — did not handle keys myself"
+        }),
+    )
+    .await;
+    let v = resp.result.expect("report_issue should succeed");
+    let url = v["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("https://github.com/starknet-innovation/strkd/issues/new?title="),
+        "url = {url}"
+    );
+    assert!(url.contains("&body="));
+    // Agent-authored text is percent-encoded — no raw space/newline escapes the query.
+    assert!(!url.contains(' '));
+    assert!(!url.contains('\n'));
+    assert!(v["title"].as_str().unwrap().starts_with("[agent-feedback] "));
+    assert_eq!(v["filed"], json!(false));
+    assert_eq!(v["repo"], json!("starknet-innovation/strkd"));
+    let body = v["body"].as_str().unwrap();
+    assert!(body.contains("paymaster"));
+    assert!(body.contains("**Needed:**"));
+    // Optional fields appear only when supplied.
+    assert!(body.contains("**Impact:**"));
+    assert!(!body.contains("**Limitation:**"));
+}
+
+#[tokio::test]
+async fn report_issue_requires_goal_and_needed() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "agent").await;
+    // Missing `needed`.
+    let resp = call(
+        &state,
+        Some(&token),
+        "companion_reportIssue",
+        json!({ "goal": "do a thing" }),
+    )
+    .await;
+    assert_eq!(err_code(&resp), 114);
+}
+
+#[tokio::test]
+async fn report_issue_never_prompts() {
+    // Under an approver that would REJECT companion_reportIssue, building the
+    // feedback link still succeeds — it posts nothing and never consults the user.
+    let state = state_rejecting(&["companion_reportIssue"]);
+    let token = pair(&state, "agent").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "companion_reportIssue",
+        json!({ "goal": "g", "needed": "n" }),
+    )
+    .await;
+    assert!(
+        resp.result.is_some(),
+        "report_issue must not depend on approval"
+    );
+}
+
+#[tokio::test]
+async fn report_issue_requires_pairing() {
+    let state = state_with(Decision::Approve, false);
+    let resp = call(
+        &state,
+        None,
+        "companion_reportIssue",
+        json!({ "goal": "g", "needed": "n" }),
+    )
+    .await;
+    assert_eq!(err_code(&resp), 118); // NOT_REGISTERED
+}
+
+#[tokio::test]
 async fn requests_are_logged() {
     let state = state_with(Decision::Approve, false);
     let token = pair(&state, "app").await; // 1 logged

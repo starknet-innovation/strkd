@@ -158,6 +158,7 @@ async fn usage_endpoint_is_open_and_self_describing() {
         "companion_requestFunding",
         "companion_deployAccount",
         "companion_estimateFee",
+        "companion_reportIssue",
         "companion_requestGrant",
         "wallet_signTypedData",
         "wallet_addInvokeTransaction",
