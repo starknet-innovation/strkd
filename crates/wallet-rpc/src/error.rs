@@ -34,6 +34,10 @@ pub enum WalletRpcError {
     Node(String),
     /// -32005 — an operation needed a node but none is configured.
     NoNode,
+    /// -32006 — the request is well-formed but the on-chain state blocks it
+    /// (e.g. the sender account isn't deployed, or is already deployed). Carries
+    /// a human-actionable message naming the account and the fix.
+    Precondition(String),
     /// -32601 — method is unknown or not implemented in this phase.
     NotImplemented(String),
     /// -32700 — request body was not valid JSON.
@@ -55,6 +59,7 @@ impl WalletRpcError {
             WalletRpcError::TransportRejected(_) => -32003,
             WalletRpcError::Node(_) => -32004,
             WalletRpcError::NoNode => -32005,
+            WalletRpcError::Precondition(_) => -32006,
             WalletRpcError::NotImplemented(_) => -32601,
             WalletRpcError::Parse => -32700,
         }
@@ -77,6 +82,7 @@ impl WalletRpcError {
                 "no Starknet node configured: supply nonce + resource_bounds, or set an RPC URL"
                     .into()
             }
+            WalletRpcError::Precondition(m) => m.clone(),
             WalletRpcError::NotImplemented(m) => format!("not implemented: {m}"),
             WalletRpcError::Parse => "parse error: body is not valid JSON".into(),
         }

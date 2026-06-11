@@ -115,9 +115,10 @@ tauri's `image-png` feature.
 | `get_settings` / `set_settings` | read/write RPC URLs + `auto_lock_minutes` (`config.json`); `set_settings` rebuilds the node at runtime |
 | `list_clients` / `grant_permission(days)` / `revoke_permission` | Agents-tab permission control |
 | `list_accounts` | registry accounts (empty while locked) |
-| `add_user_account(label)` | derive next user account, persist (rollback on failure) |
+| `add_user_account(label)` | derive next user account, persist (rollback on failure); **logged** to Activity |
+| `balance(address)` | STRK balance in fri (string; `null` if no node) — works for undeployed accounts |
 | `deploy_status(address)` | `Some(true/false)` if a node is set, else `None` |
-| `deploy_account(address)` | estimate → sign DEPLOY_ACCOUNT → broadcast (needs node + a funded account) |
+| `deploy_account(address)` | already-deployed pre-check → estimate → sign DEPLOY_ACCOUNT → broadcast (needs node + a funded account); **logged** to Activity |
 | `recent_log(limit)` | recent request-log entries |
 | `list_clients` | paired clients + grant status |
 | `grant_permission(client_id, days)` | grant auto-approval (clamped 1–90 days) |
@@ -140,10 +141,18 @@ active network (`set_network`) — accounts (keys/addresses) are identical on bo
 networks (krusty's OZ class hash matches across them), so the same list shows
 under each subtab; what changes is **deployment status** and where operations
 run. The **default network is Sepolia (testnet)** (`ChainId::Sepolia`, hardcoded
-at startup; not persisted across restarts yet). Each row has a **copy-address**
-button and, for accounts the node reports **undeployed** on the active network, a
-**Deploy** button (estimate → sign DEPLOY_ACCOUNT → broadcast; needs a node + a
-funded account).
+at startup; not persisted across restarts yet). Each row shows its **STRK
+balance** (when a node is configured) and a **copy-address** button, and — for
+accounts the node reports **undeployed** on the active network — a **Deploy**
+button (estimate → sign DEPLOY_ACCOUNT → broadcast; needs a node + a funded
+account). Deploy UX guards against the common foot-guns: clicking **Deploy on a
+zero-balance account wiggles** the button and explains (it pays its own fee)
+rather than failing on-chain; after a successful broadcast the button stays in a
+**"Deploying…" pending** state and **polls** until the node confirms deployment,
+so it never reverts to "Deploy" and lets you submit a second nonce-conflicting tx
+(the already-deployed pre-check in `deploy_account` is the backstop). Node-derived
+data (balance + deployment status) refreshes **every ~10 s** (and on network
+switch / after deploy); each fetch hits the node fresh at the `latest` block.
 
 The **Connect** tab (`Connect.tsx`) shows the local endpoint and a
 **copy-paste prompt** for the user to hand their agent — it points the agent at

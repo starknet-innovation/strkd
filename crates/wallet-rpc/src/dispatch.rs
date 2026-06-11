@@ -162,7 +162,7 @@ impl ServerState {
 /// Starknet mainnet and Sepolia, but it is **not** treated as authoritative:
 /// verify against the target network, and callers may override via the `token`
 /// param of `companion_requestFunding`.
-const STRK_TOKEN_ADDRESS: &str =
+pub const STRK_TOKEN_ADDRESS: &str =
     "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
 
 /// Default GitHub repo (`owner/name`) that `companion_reportIssue` builds its
@@ -1434,6 +1434,26 @@ async fn handle_request_funding(
 
     // Nonce + fee for the manager: caller-supplied or node-resolved.
     let chain = state.session.lock().await.chain();
+
+    // Pre-check: the manager pays the transfer fee, so it must be deployed on the
+    // active network. If it isn't, fee-estimation below would fail with an opaque
+    // node "Contract not found" — surface a clear, actionable error instead.
+    if let Some(node) = state.node_for(chain) {
+        if !node
+            .is_deployed(&manager_sender)
+            .await
+            .map_err(|e| WalletRpcError::Node(e.to_string()))?
+        {
+            return Err(WalletRpcError::Precondition(format!(
+                "funding source (manager) account {} is not deployed on {}. \
+Deploy and fund it on {} first — it pays the transfer fee.",
+                manager.address,
+                chain_name(chain),
+                chain_name(chain),
+            )));
+        }
+    }
+
     let encoded = wallet_core::encode_calls(&calls);
     let (nonce, bounds) = resolve_exec(state, chain, &manager_sender, &encoded, params).await?;
 
@@ -1503,6 +1523,26 @@ async fn handle_deploy_account(
     };
 
     let chain = state.session.lock().await.chain();
+
+    // Pre-check: refuse to (re)deploy an already-deployed account. Without this a
+    // second deploy reuses nonce 0 and the node rejects it with a confusing
+    // "invalid nonce" error (the account's nonce is already 1).
+    if let Some(node) = state.node_for(chain) {
+        let addr = Felt::from_hex(&account.address)
+            .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
+        if node
+            .is_deployed(&addr)
+            .await
+            .map_err(|e| WalletRpcError::Node(e.to_string()))?
+        {
+            return Err(WalletRpcError::Precondition(format!(
+                "account {} is already deployed on {}",
+                account.address,
+                chain_name(chain),
+            )));
+        }
+    }
+
     // Deployment data (class hash, salt, ctor calldata) for the fee estimate.
     let d = {
         let session = state.session.lock().await;

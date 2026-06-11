@@ -78,6 +78,11 @@ pub trait StarknetRpc: Send + Sync {
     /// Whether `address` has a deployed contract class (false = counterfactual).
     async fn is_deployed(&self, address: &Felt) -> Result<bool, NodeError>;
 
+    /// ERC-20 `balanceOf(holder)` on `token`, as the low 128 bits (fri for STRK).
+    /// Realistic balances fit in u128; a non-zero high word is treated as
+    /// saturating-max so the UI never under-reports.
+    async fn balance_of(&self, token: &Felt, holder: &Felt) -> Result<u128, NodeError>;
+
     /// Estimate the fee to deploy an OZ account (nonce 0, SKIP_VALIDATE).
     async fn estimate_deploy_account(
         &self,
@@ -434,6 +439,35 @@ impl StarknetRpc for HttpStarknetRpc {
             Err(NodeError::Rpc(_)) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    async fn balance_of(&self, token: &Felt, holder: &Felt) -> Result<u128, NodeError> {
+        // balanceOf returns a u256 as [low, high].
+        let r = self
+            .call(
+                "starknet_call",
+                json!({
+                    "request": {
+                        "contract_address": fh(token),
+                        "entry_point_selector": fh(&wallet_core::get_selector_from_name("balanceOf")),
+                        "calldata": [fh(holder)],
+                    },
+                    "block_id": BLOCK_TAG,
+                }),
+            )
+            .await?;
+        let low = r
+            .get(0)
+            .ok_or_else(|| NodeError::Decode("balanceOf: empty result".into()))?;
+        let high_nonzero = r
+            .get(1)
+            .and_then(|v| v.as_str())
+            .map(|s| Felt::from_hex(s).map(|f| f != Felt::ZERO).unwrap_or(false))
+            .unwrap_or(false);
+        if high_nonzero {
+            return Ok(u128::MAX); // absurdly large; saturate rather than under-report
+        }
+        Self::parse_u128(low, "balance")
     }
 
     async fn estimate_deploy_account(

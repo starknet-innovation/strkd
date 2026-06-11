@@ -131,7 +131,7 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 | Check | Command | State (2026-06-11) |
 |---|---|---|
 | Build | `cargo build` | ✅ |
-| Tests (core) | `cargo test` | ✅ 96 passed (21 core + 54 dispatch + 5 log + 2 persistence + 3 session + 2 clients + 5 transport-unit + 4 HTTP) |
+| Tests (core) | `cargo test` | ✅ 98 passed (21 core + 56 dispatch + 5 log + 2 persistence + 3 session + 2 clients + 5 transport-unit + 4 HTTP) |
 | Lint (core) | `cargo clippy --all-targets` | ✅ clean |
 | Desktop build | `cd desktop && npm run build` + `(cd src-tauri && cargo build)` | ✅ compiles; clippy clean. GUI **not run-verified** |
 | Installable bundle | `cd desktop && npm run tauri build` | ✅ produces `strkd.app` + `.dmg` (release) |

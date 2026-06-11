@@ -114,10 +114,19 @@ hash extension itself is krusty's parity-tested `compute_invoke_v3_hash_with_pro
 
 The trait also covers **account deployment**: `is_deployed` (via
 `getClassHashAt`), `estimate_deploy_account`, and `add_deploy_account`
-(`starknet_addDeployAccountTransaction`). `wallet-core::sign_deploy_account_v3`
+(`starknet_addDeployAccountTransaction`), plus `balance_of` (ERC-20 `balanceOf`
+via `starknet_call`, used for the desktop balance display). `wallet-core::sign_deploy_account_v3`
 computes the DEPLOY_ACCOUNT v3 hash from the OZ deployment data and signs it; the
 desktop's `deploy_account` command estimates → signs → broadcasts. The account
 must be **pre-funded** (it pays its own deploy fee).
+
+**Precondition pre-checks (`-32006`).** Two handlers verify on-chain state
+*before* touching the node so callers get a clear, actionable error instead of an
+opaque one: `companion_requestFunding` checks the **manager is deployed** on the
+active network (else the node would fail fee-estimation with "Contract not
+found"), and `companion_deployAccount` checks the account **isn't already
+deployed** (else a second deploy reuses nonce 0 → confusing "invalid nonce"). The
+desktop `deploy_account` command applies the same already-deployed guard.
 
 **Wire format — live-verified (2026-06-09)** against a Sepolia **v0.10** node
 (`sepolia.nodes.starknet.org/rpc/v0_10`) using the real client: `getNonce`,
@@ -224,7 +233,7 @@ node_probe`.)
 
 | File | Covers |
 |---|---|
-| `tests/dispatch.rs` (50) | public vs authed methods, unpaired rejection (118), permissions reflect pairing, app/agent **scoping**, agent-account creation, app-can't-create-agent (forbidden), typed-data sign success/reject(113)/scope, invoke sign-only/scope/empty-calls(114), **submit without node (-32005), submit with mock node broadcasts, auto nonce+fee when omitted, runtime set/clear node, entrypoint-name alias**, funding (source/transfer/reject/forbidden/unowned/zero-amount) + **turnkey-with-node**, **deploy-account (sign-only / submit / no-node-errors)**, **declare (sign-only / submit / missing-class-hash-114)**, **SNIP-36 proof-carrying invoke (proof_facts extends+echoes hash / submit requires proof)**, **switchChain (success/unknown-117/reject-113), watchAsset**, **grant auto-approves own-account ops / does NOT auto-approve funding / revoke+expiry re-prompt**, **estimateFee returns canonical hex bounds / errors without node**, **getStatus reports grant state**, **reattach keeps a client's accounts**, **requestGrant approved→active / always prompts under an existing grant**, **dispatch records activity (auto-lock)**, deferred → not-implemented, locked blocks access, logging. |
+| `tests/dispatch.rs` (56) | public vs authed methods, unpaired rejection (118), permissions reflect pairing, app/agent **scoping**, agent-account creation, app-can't-create-agent (forbidden), typed-data sign success/reject(113)/scope, invoke sign-only/scope/empty-calls(114), **submit without node (-32005), submit with mock node broadcasts, auto nonce+fee when omitted, runtime set/clear node, entrypoint-name alias**, funding (source/transfer/reject/forbidden/unowned/zero-amount) + **turnkey-with-node**, **deploy-account (sign-only / submit / no-node-errors)**, **declare (sign-only / submit / missing-class-hash-114)**, **SNIP-36 proof-carrying invoke (proof_facts extends+echoes hash / submit requires proof)**, **switchChain (success/unknown-117/reject-113), watchAsset**, **grant auto-approves own-account ops / does NOT auto-approve funding / revoke+expiry re-prompt**, **estimateFee returns canonical hex bounds / errors without node**, **getStatus reports grant state**, **reattach keeps a client's accounts**, **requestGrant approved→active / always prompts under an existing grant**, **dispatch records activity (auto-lock)**, **funding errors clearly when manager not deployed (-32006), deploy errors when already deployed (-32006)**, deferred → not-implemented, locked blocks access, logging. |
 | `server.rs` unit (5) | `is_loopback_host` parsing (IPv4/host/IPv6, with/without port); `transport_guard` accepts a well-formed native request and rejects Origin/Referer, non-loopback Host, and missing custom header. |
 | `tests/server.rs` (3) | real loopback HTTP via reqwest: `port.lock` written with bound port, public call, unauth rejected (118), pair → bearer-authed call; **403 without `X-Companion-Client`; 403 when `Origin` present**. |
 | `tests/log.rs` (5) | SQLite log: newest-first ordering, full-payloads on keeps params/result, off redacts them but keeps the summary, toggle applies to subsequent rows, file-backed persistence across reopen. |

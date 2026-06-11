@@ -237,27 +237,87 @@ async fn list_accounts(state: State<'_, DesktopState>) -> Result<Vec<AccountRef>
     Ok(session.registry().map(|r| r.accounts.clone()).unwrap_or_default())
 }
 
+/// Record a user-initiated (desktop UI) action in the shared request log, so
+/// account creation / deployment show up in the Activity tab alongside agent RPC
+/// calls. `decision` is "user" and the client reads "desktop (you)" to set these
+/// apart from paired agents. Only locks the log (never the session), so it's safe
+/// to call while a session guard is held.
+async fn log_ui_action(
+    state: &DesktopState,
+    method: &str,
+    network: &str,
+    outcome: &str,
+    error_code: Option<i64>,
+    result_json: Option<String>,
+) {
+    state.server.log.lock().await.record(LogEntry {
+        ts_unix_ms: wallet_rpc::now_unix_ms(),
+        method: method.to_string(),
+        client: Some("desktop (you)".into()),
+        network: Some(network.to_string()),
+        decision: "user".into(),
+        outcome: outcome.to_string(),
+        error_code,
+        latency_ms: 0,
+        params_json: None,
+        result_json,
+    });
+}
+
+/// STRK balance of `address` (fri, as a string to avoid JS precision loss).
+/// `None` when no node is configured. Works for counterfactual (undeployed)
+/// accounts — they can hold tokens before deployment.
+#[tauri::command]
+async fn balance(state: State<'_, DesktopState>, address: String) -> Result<Option<String>, String> {
+    let chain = state.server.session.lock().await.chain();
+    let node = match state.server.node_for(chain) {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let token = wallet_core::Felt::from_hex(wallet_rpc::dispatch::STRK_TOKEN_ADDRESS)
+        .map_err(|_| "bad STRK token address".to_string())?;
+    let holder = wallet_core::Felt::from_hex(&address).map_err(|_| "bad address".to_string())?;
+    node.balance_of(&token, &holder)
+        .await
+        .map(|v| Some(v.to_string()))
+        .map_err(|e| e.to_string())
+}
+
 /// Derive the next user-domain account, persist the vault, return it. Rolls the
-/// in-memory add back if the write fails.
+/// in-memory add back if the write fails. Logged to the Activity tab.
 #[tauri::command]
 async fn add_user_account(
     state: State<'_, DesktopState>,
     label: String,
 ) -> Result<AccountRef, String> {
     let mut session = state.server.session.lock().await;
-    let account = session.create_user_account(label).map_err(|e| e.to_string())?;
-    match session.reseal() {
-        Ok(vault) => {
-            if let Err(e) = state.vault_store.save(&vault) {
-                session.rollback_account(&account.address);
-                return Err(e.to_string());
-            }
-        }
+    let network = chain_name(session.chain()).to_string();
+    let account = match session.create_user_account(label) {
+        Ok(a) => a,
         Err(e) => {
-            session.rollback_account(&account.address);
-            return Err(e.to_string());
+            let msg = e.to_string();
+            log_ui_action(&state, "ui_addUserAccount", &network, &format!("error: {msg}"), Some(163), None).await;
+            return Err(msg);
         }
+    };
+    let save = match session.reseal() {
+        Ok(vault) => state.vault_store.save(&vault).map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = save {
+        session.rollback_account(&account.address);
+        log_ui_action(&state, "ui_addUserAccount", &network, &format!("error: {e}"), Some(163), None).await;
+        return Err(e);
     }
+    log_ui_action(
+        &state,
+        "ui_addUserAccount",
+        &network,
+        "ok",
+        None,
+        Some(format!("{{\"address\":\"{}\",\"label\":\"{}\"}}", account.address, account.label)),
+    )
+    .await;
     Ok(account)
 }
 
@@ -294,6 +354,7 @@ async fn deploy_account(
     };
     let session = state.server.session.lock().await;
     let chain = session.chain();
+    let network = chain_name(chain).to_string();
     let node = state
         .server
         .node_for(chain)
@@ -307,13 +368,36 @@ async fn deploy_account(
         .find(|a| a.address == want)
         .cloned()
         .ok_or("unknown account")?;
+    let addr_felt =
+        wallet_core::Felt::from_hex(&account.address).map_err(|_| "bad address".to_string())?;
+
+    // Small helper to log + return an error outcome to the Activity tab.
+    macro_rules! fail {
+        ($code:expr, $msg:expr) => {{
+            let msg: String = $msg;
+            log_ui_action(&state, "ui_deployAccount", &network, &format!("error: {msg}"), Some($code), None).await;
+            return Err(msg);
+        }};
+    }
+
+    // Pre-check: don't re-deploy an already-deployed account. A second deploy
+    // reuses nonce 0 and the node rejects it with a confusing "invalid nonce"
+    // (the account's nonce is already 1) — surface a clear message instead.
+    match node.is_deployed(&addr_felt).await {
+        Ok(true) => fail!(-32006, format!("account {} is already deployed on {network}", account.address)),
+        Ok(false) => {}
+        Err(e) => fail!(-32004, e.to_string()),
+    }
 
     // Estimate the deploy fee from the deployment data.
     let d = session.deployment_data_for(&account).map_err(|e| e.to_string())?;
-    let bounds = node
+    let bounds = match node
         .estimate_deploy_account(&d.address, &d.class_hash, &d.constructor_calldata, &d.salt)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(b) => b,
+        Err(e) => fail!(-32004, e.to_string()),
+    };
 
     let params = wallet_core::InvokeV3Params {
         nonce: wallet_core::Felt::ZERO,
@@ -327,7 +411,7 @@ async fn deploy_account(
         .sign_deploy_account_for(&account, &params)
         .map_err(|e| e.to_string())?;
 
-    let hash = node
+    let hash = match node
         .add_deploy_account(
             &signed.class_hash,
             &signed.constructor_calldata,
@@ -336,9 +420,22 @@ async fn deploy_account(
             &bounds,
         )
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(h) => h,
+        Err(e) => fail!(-32004, e.to_string()),
+    };
 
-    Ok(serde_json::json!({ "transaction_hash": format!("0x{:x}", hash) }))
+    let tx = format!("0x{:x}", hash);
+    log_ui_action(
+        &state,
+        "ui_deployAccount",
+        &network,
+        "ok",
+        None,
+        Some(format!("{{\"transaction_hash\":\"{tx}\",\"address\":\"{}\"}}", account.address)),
+    )
+    .await;
+    Ok(serde_json::json!({ "transaction_hash": tx }))
 }
 
 /// Paired clients with their grant status (for the Agents control panel).
@@ -612,6 +709,7 @@ pub fn run() {
             set_settings,
             list_accounts,
             add_user_account,
+            balance,
             deploy_status,
             deploy_account,
             list_clients,

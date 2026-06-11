@@ -162,7 +162,7 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
             { "method": "companion_requestFunding", "auth": "agent", "prompts": "always",
               "params": "{ amount (fri), recipient?, token?, funding_source_index?, submit?, nonce?, resource_bounds? }",
               "returns": "{ transaction_hash, recipient, amount, submitted } (+ signature/signed_transaction when not submitted)",
-              "note": "Funds one of YOUR accounts with STRK from the user's manager account. recipient defaults to your first account; you can only fund accounts you own. ALWAYS requires the user's approval (even under a grant) — it spends the user's funds." },
+              "note": "Funds one of YOUR accounts with STRK from the user's manager account. recipient defaults to your first account; you can only fund accounts you own. ALWAYS requires the user's approval (even under a grant) — it spends the user's funds. If the manager isn't deployed on the active network, returns -32006 naming the manager + the fix (not an opaque node error)." },
             { "method": "companion_deployAccount", "auth": true, "prompts": true,
               "params": "{ account?, submit?, resource_bounds? }",
               "returns": "{ transaction_hash, contract_address, submitted } (+ signature/signed_transaction when not submitted)",
@@ -212,6 +212,7 @@ proof_facts/proof so you can assemble the broadcast yourself. Omit both for a no
             "-32003": "TRANSPORT_REJECTED — missing X-Companion-Client, non-loopback Host, or Origin present",
             "-32004": "NODE_ERROR — fee estimate / nonce / broadcast failed at the Starknet node",
             "-32005": "NO_NODE — broadcast/estimate needs a node; pass nonce + resource_bounds, or ask the user to set an RPC URL",
+            "-32006": "PRECONDITION_FAILED — the request is valid but on-chain state blocks it (e.g. the manager/funding-source account is not deployed on the active network, or the account is already deployed). The message names the account + the human fix. Surface it to the user.",
             "-32601": "NOT_IMPLEMENTED — method not available in this build",
             "-32700": "PARSE_ERROR — body is not valid JSON"
         },

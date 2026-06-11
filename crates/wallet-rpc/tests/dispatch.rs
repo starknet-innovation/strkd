@@ -17,6 +17,15 @@ use wallet_rpc::{
 struct MockNode {
     nonce: Felt,
     hash: Felt,
+    /// Addresses `is_deployed` reports as deployed. `state_with_node` seeds this
+    /// with the user-root (manager) address, so funding's manager pre-check
+    /// passes while freshly-derived agent accounts read as undeployed.
+    deployed: Vec<Felt>,
+    /// When true, `is_deployed` is true for every address (exercises the
+    /// "already deployed" deploy pre-check).
+    all_deployed: bool,
+    /// What `balance_of` returns (fri).
+    balance: u128,
 }
 
 #[async_trait]
@@ -48,8 +57,11 @@ impl StarknetRpc for MockNode {
     ) -> Result<Felt, NodeError> {
         Ok(self.hash)
     }
-    async fn is_deployed(&self, _address: &Felt) -> Result<bool, NodeError> {
-        Ok(false)
+    async fn is_deployed(&self, address: &Felt) -> Result<bool, NodeError> {
+        Ok(self.all_deployed || self.deployed.iter().any(|a| a == address))
+    }
+    async fn balance_of(&self, _token: &Felt, _holder: &Felt) -> Result<u128, NodeError> {
+        Ok(self.balance)
     }
     async fn estimate_deploy_account(
         &self,
@@ -100,11 +112,35 @@ impl StarknetRpc for MockNode {
     }
 }
 
-/// State with a mock node attached (enables auto nonce/fee + broadcast).
+/// State with a mock node attached (enables auto nonce/fee + broadcast). The
+/// manager (user-root) account reads as **deployed** so funding's pre-check
+/// passes; freshly-derived agent accounts read as undeployed.
 fn state_with_node(decision: Decision, nonce: &str, hash: &str) -> Arc<ServerState> {
+    let (_, root) = user_registry();
+    state_with_node_opts(
+        decision,
+        nonce,
+        hash,
+        vec![Felt::from_hex(&root).unwrap()],
+        false,
+    )
+}
+
+/// Like [`state_with_node`] but with explicit `is_deployed` behaviour: addresses
+/// in `deployed` (plus all addresses when `all_deployed`) report as deployed.
+fn state_with_node_opts(
+    decision: Decision,
+    nonce: &str,
+    hash: &str,
+    deployed: Vec<Felt>,
+    all_deployed: bool,
+) -> Arc<ServerState> {
     let node = MockNode {
         nonce: Felt::from_hex(nonce).unwrap(),
         hash: Felt::from_hex(hash).unwrap(),
+        deployed,
+        all_deployed,
+        balance: 1_000_000_000_000_000_000, // 1 STRK
     };
     Arc::new(
         ServerState::new(
@@ -789,6 +825,9 @@ async fn node_can_be_set_and_cleared_at_runtime() {
         Some(Arc::new(MockNode {
             nonce: Felt::from_hex("0x0").unwrap(),
             hash: Felt::from_hex("0xcafe").unwrap(),
+            deployed: vec![],
+            all_deployed: false,
+            balance: 1_000_000_000_000_000_000,
         })),
     );
     assert!(state.has_node_for(ChainId::Sepolia));
@@ -1029,6 +1068,31 @@ async fn agent_with_account(state: &ServerState) -> (String, String) {
     let created = call(state, Some(&token), "companion_createAgentAccount", json!({"label": "bot"})).await;
     let addr = created.result.unwrap()["address"].as_str().unwrap().to_string();
     (token, addr)
+}
+
+#[tokio::test]
+async fn funding_errors_clearly_when_manager_not_deployed() {
+    // Manager (user-root) reads as NOT deployed on the active network → a clear,
+    // actionable precondition error (-32006) naming the manager + the fix, NOT an
+    // opaque node "Contract not found" (GitHub issue #1).
+    let state = state_with_node_opts(Decision::Approve, "0x3", "0xfeed", vec![], false);
+    let (token, _) = agent_with_account(&state).await;
+    let resp = call(&state, Some(&token), "companion_requestFunding", funding_params("1000")).await;
+    assert_eq!(err_code(&resp), -32006);
+    let msg = resp.error.unwrap().message;
+    assert!(msg.contains("not deployed"), "message should explain the cause: {msg}");
+}
+
+#[tokio::test]
+async fn deploy_account_already_deployed_errors() {
+    // Account already on-chain → a clear precondition error (-32006) instead of a
+    // confusing "invalid nonce" from reusing nonce 0 (the bug the maintainer hit
+    // when the UI let them click Deploy twice).
+    let state = state_with_node_opts(Decision::Approve, "0x0", "0xdeed", vec![], true);
+    let (agent, _) = agent_with_account(&state).await;
+    let resp = call(&state, Some(&agent), "companion_deployAccount", json!({ "submit": true })).await;
+    assert_eq!(err_code(&resp), -32006);
+    assert!(resp.error.unwrap().message.contains("already deployed"));
 }
 
 #[tokio::test]

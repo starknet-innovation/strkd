@@ -69,6 +69,8 @@ export const api = {
   listAccounts: () => invoke<Account[]>("list_accounts"),
   addUserAccount: (label: string) => invoke<Account>("add_user_account", { label }),
   deployStatus: (address: string) => invoke<boolean | null>("deploy_status", { address }),
+  // STRK balance in fri (string, to avoid JS precision loss); null when no node.
+  balance: (address: string) => invoke<string | null>("balance", { address }),
   deployAccount: (address: string) => invoke<{ transaction_hash: string }>("deploy_account", { address }),
   recentLog: (limit: number) => invoke<LogEntry[]>("recent_log", { limit }),
   listClients: () => invoke<ClientInfo[]>("list_clients"),

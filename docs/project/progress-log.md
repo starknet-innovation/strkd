@@ -8,6 +8,52 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-06-11 — Deploy/funding correctness + Accounts UX (balances, wiggle, pending) + user-action logging
+
+Triggered by a maintainer deploy session: clicking Deploy too early failed with a
+raw node "resources exceed balance (0)"; after funding, the first deploy
+succeeded but the UI reverted to "Deploy", a second click hit "invalid nonce"
+(nonce already 1). Also closes the agent-filed GitHub issue #1 (opaque
+Contract-not-found when the manager isn't deployed).
+
+**Did (core — `wallet-rpc`)**
+- New `WalletRpcError::Precondition` (**-32006**): valid request, wrong on-chain
+  state, with a human-actionable message.
+- `companion_requestFunding`: **pre-check that the manager is deployed** on the
+  active network → clear -32006 naming the manager + fix, instead of the node's
+  opaque "Contract not found" (**fixes GitHub issue #1**).
+- `companion_deployAccount`: **pre-check already-deployed** → clear -32006 instead
+  of a confusing "invalid nonce" on a second deploy.
+- Node trait gains `balance_of` (ERC-20 `balanceOf` via `starknet_call`).
+- Tests: MockNode is now address-aware for `is_deployed` (+ `balance_of`); +2
+  dispatch tests (manager-not-deployed, already-deployed). **98 tests green.**
+
+**Did (desktop)**
+- **Balance display** per account (`balance` IPC command; fri string → STRK,
+  BigInt-formatted; works for undeployed accounts).
+- **Deploy on a zero-balance account wiggles** the button + explains, instead of
+  letting it fail on-chain.
+- **Post-deploy is "pending"**: after broadcast the button shows "Deploying…" and
+  **polls** until the node confirms — never reverts to "Deploy" → no double-submit
+  (plus the same already-deployed guard mirrored into the `deploy_account`
+  command). Fixes the maintainer's exact double-click bug.
+- **Periodic refresh** of balance + deploy status every ~10 s (answers "how often
+  does the RPC refresh?": on-demand + every 10 s, at `latest`).
+- **User-initiated actions logged**: `add_user_account` + `deploy_account` now
+  record to the request log (client "desktop (you)", decision "user"), so they
+  show in the **Activity tab** alongside agent calls.
+
+**Decisions**
+- Pre-checks live in the dispatch handlers (one source of truth for agents) AND
+  the desktop deploy command (its own node path). -32006 is a new custom code in
+  our condition range (alongside -32001..-32005), kept out of the spec's 111–163.
+
+**Not run-verified**
+- Balance render, wiggle animation, pending-poll, and the Activity rows are GUI —
+  need the running app. The error pre-checks + balance parsing are unit-tested.
+
+---
+
 ## 2026-06-11 — Pending-approval visibility: Dock badge; diagnosed missing notif/red-dot
 
 **Reported:** no menu-bar notifications, and no red dot on the tray or Dock icon.
