@@ -36,10 +36,16 @@ what's rejected, a `concepts` block (accounts/scoping, networks, funding,
 **permission grants**), the `approval_model` and `submit_model`, a step-by-step
 `quickstart`, the **complete method catalogue** (each with auth/prompts/params/
 returns/notes, plus the Call shape + accepted aliases), a `deferred` list, and
-**every error code**. It's **open** (no auth, no transport guard) — public info
-only — so a client can discover it before pairing. `usage.rs` is the single
-source of truth, and `tests/server.rs` asserts the doc lists every implemented
-method + the core sections, so it can't silently drift from the dispatcher. The
+**every error code**. It also carries an **`alpha_notice`**: a disclaimer that
+strkd is alpha, plus a call-to-action telling agents **not to work around
+limitations** but to emit a structured `=== STRKD-FEEDBACK ===` block (goal /
+attempted / observed / limitation / needed / impact / workaround-avoided /
+context) for their operator to relay to the maintainer — so gaps surface as
+actionable reports instead of silent hacks. It's **open** (no auth, no transport
+guard) — public info only — so a client can discover it before pairing.
+`usage.rs` is the single source of truth, and `tests/server.rs` asserts the doc
+lists every implemented method + the core sections (incl. `alpha_notice` and its
+feedback sentinel), so it can't silently drift from the dispatcher. The
 desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 [`desktop.md`](./desktop.md)).
 

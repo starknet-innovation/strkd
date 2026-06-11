@@ -133,9 +133,17 @@ async fn usage_endpoint_is_open_and_self_describing() {
     assert!(doc["methods"].is_array());
     assert!(doc["quickstart"].is_array());
     // Core sections the agent contract must carry.
-    for key in ["transport", "concepts", "approval_model", "submit_model", "errors", "notes"] {
+    for key in [
+        "transport", "concepts", "approval_model", "submit_model", "errors", "notes",
+        "alpha_notice",
+    ] {
         assert!(!doc[key].is_null(), "usage doc missing '{key}'");
     }
+    // The alpha disclaimer carries the "don't work around it, report it" CTA and a
+    // copy-pasteable feedback template the operator relays to the maintainer.
+    let report = doc["alpha_notice"]["report_format"].as_str().unwrap();
+    assert!(report.contains("=== STRKD-FEEDBACK ==="), "feedback template missing its sentinel");
+    assert!(doc["alpha_notice"]["do_not_work_around"].as_str().unwrap().contains("workaround"));
     // The full method catalogue is present (every implemented method is listed,
     // so the doc can't silently drift from the dispatcher).
     let methods: Vec<String> = doc["methods"]

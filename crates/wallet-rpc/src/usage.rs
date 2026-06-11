@@ -26,6 +26,38 @@ the user's screen and only proceeds if the human approves. Private keys never le
 — you get signatures, signed transactions, and (when a node is configured) on-chain broadcasts, \
 never keys.",
 
+        "alpha_notice": {
+            "status": "strkd is ALPHA software under active development. Expect missing methods, \
+rough edges, partial features, and capabilities that simply do not exist yet.",
+            "do_not_work_around": "If you hit a limitation — a missing method, a confusing or \
+unexpected error, a parameter that isn't accepted, or behaviour that blocks your task — DO NOT \
+invent a workaround, fake or guess a result, fall back to handling keys/seeds/signing yourself, \
+or silently abandon the step. A workaround hides the gap and makes it permanent. STOP and report \
+it instead. The maintainer reads these reports and fixes strkd, so a clear report is the FASTEST \
+path to the capability you want.",
+            "call_to_action": "Tell your operator (the human running strkd) exactly what you need, \
+using the report format below. Emit the filled-in block VERBATIM in your reply to them — don't \
+just mention it in passing. They relay it to the strkd maintainer.",
+            "report_format": "Copy this block, fill every field, and hand it to your operator verbatim:\n\n\
+=== STRKD-FEEDBACK ===\n\
+goal:        <the task you were trying to accomplish, one line>\n\
+attempted:   <method(s) + params you called — or \"no method exists for this\">\n\
+observed:    <the exact JSON-RPC error code + message, or \"capability missing\">\n\
+limitation:  <what strkd could not do, stated plainly>\n\
+needed:      <the specific method / param / behaviour that would unblock you>\n\
+impact:      <blocked | degraded | cosmetic> — <what you could NOT do as a result>\n\
+workaround_avoided: <what you were tempted to do instead, so we can design it away; \"none\" if N/A>\n\
+context:     strkd v<version> · network <from companion_getStatus> · <UTC timestamp>\n\
+=== END ===",
+            "guidance": [
+                "One report per distinct limitation — don't batch unrelated gaps into one block.",
+                "Be concrete in `needed`: 'a companion_getBalance {address} method' beats 'better balance support'.",
+                "Fill `context` from companion_getStatus (version + network) so the maintainer can reproduce.",
+                "If a call errored, paste the literal JSON-RPC error object into `observed` — don't paraphrase it.",
+                "After emitting the report, do the safe thing: stop, or ask the operator how to proceed. Never continue by mishandling keys, seeds, or the user's funds."
+            ]
+        },
+
         "discovery": "This wallet runs a loopback service. The desktop app writes its bound port \
 to `port.lock` in the app data dir as {port, nonce}; GET / (this document) is how a client learns \
 the API once it has the URL.",

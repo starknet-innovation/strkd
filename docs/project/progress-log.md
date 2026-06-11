@@ -8,6 +8,33 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-06-11 — Agent endpoint: alpha disclaimer + "report, don't work around" CTA
+
+**Did**
+- Added an **`alpha_notice`** block to the `GET /` agent contract (`usage.rs`):
+  (1) a disclaimer that strkd is alpha; (2) a call-to-action telling agents **not
+  to invent workarounds / fake results / handle keys themselves / silently give
+  up** when they hit a limitation; (3) a copy-pasteable **`=== STRKD-FEEDBACK ===`**
+  template the agent fills and hands to its operator to relay to the maintainer.
+  Template fields chosen to make the fix actionable: goal, attempted, observed
+  (literal JSON-RPC error), limitation, **needed** (the concrete capability),
+  impact, **workaround_avoided** (so we design the need away), context
+  (version/network from `companion_getStatus`).
+- Guarded it in `tests/server.rs` (the doc must carry `alpha_notice` + the
+  feedback sentinel). Updated `wallet-rpc.md`. **92 tests green, clippy clean.**
+
+**Why**
+- Maintainer wants agents to surface gaps as actionable reports, not paper over
+  them — workarounds hide the gap and make it permanent. The structured block is
+  greppable so a pasted report drops straight into a dev session.
+
+**Decisions**
+- Human-relay (agent → operator → maintainer), per the request — no new RPC
+  method or programmatic issue sink for now. Could add `companion_reportIssue`
+  later if we want strkd to capture reports itself.
+
+---
+
 ## 2026-06-10 — Dock icon now shows; first git commit + push to origin
 
 **Did**
