@@ -48,7 +48,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | Submit vs sign | **Both.** Default = **sign-only** (return payload + computed hash); caller opts in with `submit: true` to broadcast |
 | Node & fees | When submitting (or estimating), wallet uses a **configured RPC endpoint per network** and **auto-estimates** fees |
 | Account contract | **OpenZeppelin** accounts (counterfactual address from derived pubkey) |
-| Networks | **Sepolia + Mainnet**, switchable via `wallet_switchStarknetChain` |
+| Networks | **Sepolia + Mainnet**. Agents pick the chain **per request** (optional `chainId` on the operational methods) — explicit and race-free across concurrent clients. `wallet_switchStarknetChain` is **deprecated for agents** (it mutates one shared default for all clients); it remains for EIP-1193 compatibility and as the omitted-`chainId` fallback, which the human sets in Settings |
 | Confirmation scope | Prompt on **signing / state-changing** methods; read-only auto-served to paired callers |
 | Tx display | **Decode calls + max fee + network + caller**; no full simulation |
 | Logging | **Persist full payloads** by default (debugging), toggle to disable later; **never** log key material |

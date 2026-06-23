@@ -798,15 +798,48 @@ fn opt_fee_bounds(params: &Value) -> Result<Option<FeeBounds>, WalletRpcError> {
     }))
 }
 
+/// Resolve the chain for an operation: a per-request `chainId` (felt-encoded,
+/// e.g. `SN_SEPOLIA` / `SN_MAIN`) wins; otherwise fall back to the wallet's
+/// active default chain (set by the human in the desktop Settings). Per-request
+/// `chainId` is the recommended way for an agent to pick a network — it's
+/// explicit and avoids the cross-agent race of a single shared mutable active
+/// chain (one client switching the network out from under another). An
+/// unsupported chain → 117; a malformed value → 114.
+async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, WalletRpcError> {
+    match params.get("chainId") {
+        None | Some(Value::Null) => Ok(state.session.lock().await.chain()),
+        Some(Value::String(s)) => {
+            let felt = Felt::from_hex(s).map_err(|_| {
+                WalletRpcError::InvalidRequest(
+                    "invalid chainId (expected a felt-encoded chain id, e.g. SN_SEPOLIA / SN_MAIN)"
+                        .into(),
+                )
+            })?;
+            ChainId::from_felt(&felt).map_err(|_| WalletRpcError::ChainIdNotSupported)
+        }
+        Some(_) => Err(WalletRpcError::InvalidRequest(
+            "chainId must be a felt-encoded string".into(),
+        )),
+    }
+}
+
 /// Resolve the nonce + fee bounds for an invoke: caller-supplied values win,
 /// otherwise fetch the nonce and estimate the fee from the node. Errors with
 /// `NoNode` if a value is missing and no node is configured.
+///
+/// `proof_carrying` must be set for SNIP-36 proof-carrying invokes (non-empty
+/// `proof_facts`). Online fee estimation simulates the call *without*
+/// `proof_facts` in `tx_info`, so a contract that reads them (e.g.
+/// `proof_facts.at(8)`) reverts during estimation — and even if it didn't, the
+/// estimate would be for the wrong execution. Such invokes therefore require
+/// explicit `resource_bounds` rather than auto-estimation.
 async fn resolve_exec(
     state: &ServerState,
     chain: ChainId,
     sender: &Felt,
     encoded_calldata: &[Felt],
     params: &Value,
+    proof_carrying: bool,
 ) -> Result<(Felt, FeeBounds), WalletRpcError> {
     let nonce = match opt_nonce(params)? {
         Some(n) => n,
@@ -819,6 +852,15 @@ async fn resolve_exec(
     };
     let bounds = match opt_fee_bounds(params)? {
         Some(b) => b,
+        None if proof_carrying => {
+            return Err(WalletRpcError::InvalidRequest(
+                "proof-carrying invoke (proof_facts) requires explicit resource_bounds: \
+                 online fee estimation simulates the call without proof_facts and the \
+                 contract reverts reading them. Set resource_bounds manually (e.g. ~2× \
+                 current gas prices)."
+                    .into(),
+            ));
+        }
         None => {
             let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
             node.estimate_invoke(sender, encoded_calldata, &nonce)
@@ -868,7 +910,7 @@ async fn sign_and_submit(
     };
     let signed = {
         let session = state.session.lock().await;
-        session.sign_invoke_for(account, calls, &params_v3)?
+        session.sign_invoke_for(account, calls, chain, &params_v3)?
     };
     let sender = Felt::from_hex(&account.address)
         .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
@@ -955,7 +997,7 @@ async fn handle_add_declare(
     };
     let sender = Felt::from_hex(&account.address)
         .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
-    let chain = state.session.lock().await.chain();
+    let chain = resolve_chain(state, params).await?;
 
     // Nonce: caller-supplied or node-fetched.
     let nonce = match opt_nonce(params)? {
@@ -1011,7 +1053,7 @@ async fn handle_add_declare(
     };
     let signed = {
         let session = state.session.lock().await;
-        session.sign_declare_for(&account, &class_hash, &compiled_class_hash, &params_v3)?
+        session.sign_declare_for(&account, &class_hash, &compiled_class_hash, chain, &params_v3)?
     };
 
     if submit {
@@ -1045,6 +1087,34 @@ async fn handle_add_declare(
     }))
 }
 
+/// Normalize and sanity-check a base64-encoded SNIP-36 proof before it rides
+/// along on a broadcast. Proof artifacts are commonly newline-terminated (the
+/// prover CLI writes a trailing newline) or line-wrapped, and a stray newline or
+/// a url-safe-alphabet proof is a likely cause of the node rejecting the `proof`
+/// field. Strip ASCII whitespace and reject anything outside the standard base64
+/// alphabet here, with a clear error, rather than letting it surface as an opaque
+/// node error on broadcast. Intentionally no length/`%4` check — unpadded base64
+/// is legal and a strict check would falsely reject it.
+fn normalize_proof_b64(raw: &str) -> Result<String, WalletRpcError> {
+    let cleaned: String = raw.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = cleaned.as_bytes();
+    let pad = bytes.iter().rev().take_while(|&&b| b == b'=').count();
+    let body = &bytes[..bytes.len() - pad];
+    if body.is_empty() {
+        return Err(WalletRpcError::InvalidRequest(
+            "proof is empty or all padding after trimming whitespace".into(),
+        ));
+    }
+    if pad > 2 || body.iter().any(|&b| !(b.is_ascii_alphanumeric() || b == b'+' || b == b'/')) {
+        return Err(WalletRpcError::InvalidRequest(
+            "proof is not valid standard base64 (expected A-Za-z0-9+/ with optional trailing '='; \
+             check for url-safe '-'/'_', embedded '=' padding, or stray characters)"
+                .into(),
+        ));
+    }
+    Ok(cleaned)
+}
+
 async fn handle_add_invoke(
     state: &ServerState,
     client: &PairedClient,
@@ -1065,7 +1135,10 @@ async fn handle_add_invoke(
         None | Some(Value::Null) => Vec::new(),
         _ => return Err(WalletRpcError::InvalidRequest("proof_facts must be an array".into())),
     };
-    let proof: Option<String> = params.get("proof").and_then(|v| v.as_str()).map(str::to_string);
+    let proof: Option<String> = match params.get("proof").and_then(|v| v.as_str()) {
+        Some(s) => Some(normalize_proof_b64(s)?),
+        None => None,
+    };
     if submit && !proof_facts.is_empty() && proof.is_none() {
         return Err(WalletRpcError::InvalidRequest(
             "broadcasting a proof-carrying invoke (proof_facts) requires 'proof'".into(),
@@ -1085,12 +1158,13 @@ async fn handle_add_invoke(
     };
     let sender = Felt::from_hex(&account.address)
         .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
-    let chain = state.session.lock().await.chain();
+    let chain = resolve_chain(state, params).await?;
 
     // Nonce + fee: caller-supplied or node-resolved (before the prompt, so the
     // fee can be shown).
     let encoded = wallet_core::encode_calls(&calls);
-    let (nonce, bounds) = resolve_exec(state, chain, &sender, &encoded, params).await?;
+    let (nonce, bounds) =
+        resolve_exec(state, chain, &sender, &encoded, params, !proof_facts.is_empty()).await?;
 
     let kind = if proof_facts.is_empty() { "" } else { " (SNIP-36 proof-carrying)" };
     let decision = gated_approval(
@@ -1267,7 +1341,7 @@ async fn handle_estimate_fee(
     };
     let sender = Felt::from_hex(&account.address)
         .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
-    let chain = state.session.lock().await.chain();
+    let chain = resolve_chain(state, params).await?;
     let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
 
     let nonce = match opt_nonce(params)? {
@@ -1289,9 +1363,16 @@ async fn handle_estimate_fee(
     }))
 }
 
-/// Switch the active network (Sepolia ⇄ Mainnet). `chainId` is the felt-encoded
-/// CHAIN_ID. Switching also switches which per-network node is used, so a node
-/// configured only for the old chain won't be reused on the new one.
+/// Switch the active *default* network (Sepolia ⇄ Mainnet). `chainId` is the
+/// felt-encoded CHAIN_ID. Switching also switches which per-network node is used.
+///
+/// DEPRECATED for agents: this mutates a single shared default across ALL paired
+/// clients, so one client can change the network out from under another. Prefer
+/// passing a per-request `chainId` to the operational methods (invoke / declare /
+/// deploy / estimateFee / requestFunding) instead — it's explicit and race-free.
+/// Kept for EIP-1193 / browser-wallet compatibility and to set the fallback used
+/// when a request omits `chainId`. (The human sets the default in the desktop
+/// Settings; agents rarely need this.)
 async fn handle_switch_chain(
     state: &ServerState,
     client: &PairedClient,
@@ -1433,7 +1514,7 @@ async fn handle_request_funding(
     let calls = vec![call];
 
     // Nonce + fee for the manager: caller-supplied or node-resolved.
-    let chain = state.session.lock().await.chain();
+    let chain = resolve_chain(state, params).await?;
 
     // Pre-check: the manager pays the transfer fee, so it must be deployed on the
     // active network. If it isn't, fee-estimation below would fail with an opaque
@@ -1455,7 +1536,9 @@ Deploy and fund it on {} first — it pays the transfer fee.",
     }
 
     let encoded = wallet_core::encode_calls(&calls);
-    let (nonce, bounds) = resolve_exec(state, chain, &manager_sender, &encoded, params).await?;
+    // Manager/funding invokes are never proof-carrying.
+    let (nonce, bounds) =
+        resolve_exec(state, chain, &manager_sender, &encoded, params, false).await?;
 
     let strk = amount as f64 / 1e18;
     let decision = state
@@ -1522,7 +1605,7 @@ async fn handle_deploy_account(
         })?
     };
 
-    let chain = state.session.lock().await.chain();
+    let chain = resolve_chain(state, params).await?;
 
     // Pre-check: refuse to (re)deploy an already-deployed account. Without this a
     // second deploy reuses nonce 0 and the node rejects it with a confusing
@@ -1587,7 +1670,7 @@ async fn handle_deploy_account(
     };
     let signed = {
         let session = state.session.lock().await;
-        session.sign_deploy_account_for(&account, &params_v3)?
+        session.sign_deploy_account_for(&account, chain, &params_v3)?
     };
 
     if submit {

@@ -169,6 +169,7 @@ impl WalletSession {
         &self,
         account: &AccountRef,
         calls: &[Call],
+        chain: ChainId,
         params: &InvokeV3Params,
     ) -> Result<SignedInvoke, WalletRpcError> {
         let u = self.require_unlocked()?;
@@ -181,7 +182,7 @@ impl WalletSession {
             None,
             &sender,
             calls,
-            self.chain,
+            chain,
             params,
         )
         .map_err(WalletRpcError::from)
@@ -194,6 +195,7 @@ impl WalletSession {
         account: &AccountRef,
         class_hash: &Felt,
         compiled_class_hash: &Felt,
+        chain: ChainId,
         params: &InvokeV3Params,
     ) -> Result<SignedDeclare, WalletRpcError> {
         let u = self.require_unlocked()?;
@@ -207,7 +209,7 @@ impl WalletSession {
             &sender,
             class_hash,
             compiled_class_hash,
-            self.chain,
+            chain,
             params,
         )
         .map_err(WalletRpcError::from)
@@ -218,6 +220,7 @@ impl WalletSession {
     pub fn sign_deploy_account_for(
         &self,
         account: &AccountRef,
+        chain: ChainId,
         params: &InvokeV3Params,
     ) -> Result<SignedDeployAccount, WalletRpcError> {
         let u = self.require_unlocked()?;
@@ -226,7 +229,7 @@ impl WalletSession {
             account.domain,
             account.index,
             None,
-            self.chain,
+            chain,
             params,
         )
         .map_err(WalletRpcError::from)
