@@ -67,6 +67,59 @@ reuses the core crates by path.
 > but not run-verified** — confirming the tray/onboarding/approval flows means
 > running the app on a machine with a display.
 
+## The `strkd` CLI
+
+`strkd` (crate `wallet-cli`) is a thin command-line client for the running
+menu-bar app. It holds no keys — it discovers the app's loopback service via
+`port.lock`, pairs once, and speaks the same `wallet_*` / `companion_*` API that
+agents use. Signing and approvals still happen in the app.
+
+```bash
+strkd pair --name my-cli   # one-time; approve the prompt in the menu bar
+strkd status               # lock state, network, grant
+strkd accounts             # accounts this client may use
+strkd usage                # the wallet's self-describing API doc
+strkd sign  --account 0x… --data @typed_data.json
+strkd send  --account 0x… --to 0x… --function transfer --calldata 0x…,0x…
+strkd send  … --submit     # broadcast (IRREVERSIBLE); default is sign-only
+```
+
+Add `--json` for a clean machine contract (only JSON on stdout; errors as
+`{"error": …}` on stderr) and `-q`/`--quiet` to drop progress text — both work
+before or after the subcommand, so `strkd accounts --json | jq` pipes cleanly.
+
+### Install
+
+From this repo (needs a Rust toolchain):
+
+```bash
+cargo install --path crates/wallet-cli   # installs the `strkd` binary
+```
+
+Prebuilt binaries are distributed with [cargo-dist](https://opensource.axo.dev/cargo-dist/).
+Once a release is cut, end users install without a toolchain via Homebrew or the
+shell installer:
+
+```bash
+brew install starknet-innovation/tap/strkd
+# or:
+curl -LsSf https://github.com/starknet-innovation/strkd/releases/latest/download/strkd-installer.sh | sh
+```
+
+**Maintainers — first-time release setup.** The dist *policy* lives in
+`[workspace.metadata.dist]` (root `Cargo.toml`); the release workflow is
+generated, never hand-edited. Bootstrap once:
+
+```bash
+cargo install cargo-dist           # or: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/latest/download/cargo-dist-installer.sh | sh
+dist init                          # pins cargo-dist-version, writes .github/workflows/release.yml
+git tag v0.1.0 && git push --tags  # tag → CI builds binaries + publishes installers
+```
+
+Re-run `dist generate` after editing the dist config. While strkd is **alpha
+(test seeds only)**, keep the public Homebrew/curl channels gated and prefer
+`cargo install` for internal dogfooding.
+
 ---
 
 ## Documentation

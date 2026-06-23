@@ -1,0 +1,23 @@
+[package]
+name = "wallet-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "strkd CLI: a thin client for the local wallet-companion service. Discovers the running app via port.lock, pairs, and speaks the wallet_*/companion_* JSON-RPC API."
+
+[[bin]]
+name = "strkd"
+path = "src/main.rs"
+
+# Deliberately a *thin client*: it talks to the loopback service over HTTP and
+# holds no key material, so it does NOT depend on wallet-core / wallet-rpc. That
+# keeps the CLI build lean (no axum/rusqlite/krusty) and the trust boundary in
+# one place — the desktop app.
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }

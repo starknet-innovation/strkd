@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wallet-core", "crates/wallet-rpc"]
+members = ["crates/wallet-core", "crates/wallet-rpc", "crates/wallet-cli"]
 # The desktop (Tauri) app is its own crate under desktop/src-tauri; keep it out
 # of this workspace so `cargo build` of the core stays lean and toolchain-free
 # (mirrors ../dinner).
@@ -10,6 +10,7 @@ exclude = [".probe", "desktop"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/starknet-innovation/strkd"
 
 # krusty-kms is experimental and not published to crates.io. Pin to an exact
 # commit; bumps must go through review (see spec/wallet-companion-spec.md §14).
@@ -35,3 +36,38 @@ axum = "0.7"
 sha2 = "0.10"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
+# wallet-cli
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+
+# ---------------------------------------------------------------------------
+# Distribution — cargo-dist (https://opensource.axo.dev/cargo-dist/).
+#
+# This block is the policy: which installers, which targets, where the Homebrew
+# formula lands. It is NOT complete on its own — run `dist init` once to pin
+# `cargo-dist-version` (to whatever `dist` you have installed) and to GENERATE
+# `.github/workflows/release.yml`. Never hand-edit that workflow; re-run
+# `dist generate` after changing anything here. Only `strkd` (wallet-cli) is a
+# binary, so it's the sole shipped artifact.
+# ---------------------------------------------------------------------------
+[workspace.metadata.dist]
+# Build installers for these. A tagged release (e.g. `v0.1.0`) triggers CI.
+installers = ["shell", "homebrew"]
+# Homebrew formula is published to this tap: `brew install starknet-innovation/tap/strkd`.
+tap = "starknet-innovation/homebrew-tap"
+publish-jobs = ["homebrew"]
+# Prebuilt binaries: Apple silicon + Intel macOS, x86_64 + arm64 Linux.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+ci = "github"
+# Don't auto-publish; cut releases deliberately while strkd is alpha.
+install-updater = false
+
+# Optimized release builds for the shipped binary.
+[profile.dist]
+inherits = "release"
+lto = "thin"
