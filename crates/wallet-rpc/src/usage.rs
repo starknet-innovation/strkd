@@ -64,8 +64,9 @@ context:     strkd v<version> · network <from companion_getStatus> · <UTC time
         },
 
         "discovery": "This wallet runs a loopback service. The desktop app writes its bound port \
-to `port.lock` in the app data dir as {port, nonce}; GET / (this document) is how a client learns \
-the API once it has the URL.",
+to `port.lock` in the app data dir as {port, nonce} — the port is stable across restarts, so once \
+you've discovered the URL you may cache it. GET / (this document) is how a client learns the API \
+once it has the URL.",
 
         "transport": {
             "protocol": "JSON-RPC 2.0 over HTTP POST to / (this base URL). GET / returns this doc.",
@@ -217,6 +218,7 @@ normal invoke." },
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",
             "117": "CHAIN_ID_NOT_SUPPORTED — only SN_SEPOLIA / SN_MAIN are supported",
             "118": "NOT_REGISTERED — pair first, or your token is unknown/invalid",
+            "163": "INTERNAL_ERROR — an unexpected internal failure (key material is never leaked in the message); safe to retry, and report it if it persists",
             "-32001": "LOCKED — the wallet is locked; ask the user to unlock it",
             "-32002": "FORBIDDEN — you tried to act outside your own accounts (or wrong client kind)",
             "-32003": "TRANSPORT_REJECTED — missing X-Companion-Client, non-loopback Host, or Origin present",
