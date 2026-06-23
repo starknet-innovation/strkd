@@ -74,8 +74,10 @@ impl ServerState {
             last_activity_ms: AtomicU64::new(now_unix_ms()),
             issue_repo: DEFAULT_ISSUE_REPO.to_string(),
             api_version: "0.1.0".to_string(),
-            // Placeholder until confirmed against the target Starknet node.
-            spec_versions: vec!["0.8.1".to_string()],
+            // The Starknet JSON-RPC spec the wallet's node client targets.
+            // Verified against the Sepolia node (starknet_specVersion → 0.10.2,
+            // 2026-06-23); the node HTTP client / V3 tx wire format track v0.10.
+            spec_versions: vec!["0.10.2".to_string()],
         }
     }
 

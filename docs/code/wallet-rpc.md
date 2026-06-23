@@ -59,19 +59,19 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | Method | Auth | Prompts | Notes |
 |---|---|---|---|
 | `wallet_supportedWalletApi` | public | no | API versions |
-| `wallet_supportedSpecs` | public | no | Spec versions (placeholder until confirmed against node) |
+| `wallet_supportedSpecs` | public | no | Spec versions (`0.10.2`, verified against the Sepolia node) |
 | `wallet_getPermissions` | public | no | `["accounts"]` if paired, else `[]` |
-| `companion_getStatus` | public | no | `{locked, network, api_version}` |
+| `companion_getStatus` | public | no | `{locked, network, api_version, grant}` (`grant` is per-client when a token is sent, else null) |
 | `companion_requestPairing` | public | **yes** | `{name, kind}` → `{client_id, token}` |
 | `wallet_requestChainId` | paired | no | chain id felt |
 | `wallet_requestAccounts` | paired | no | scoped addresses |
 | `companion_listAccounts` | paired | no | scoped accounts (detailed) |
 | `wallet_deploymentData` | paired | no | OZ counterfactual deploy data for first in-scope account |
 | `wallet_signTypedData` | paired | **yes** | SNIP-12 sign → `[r, s]` |
-| `wallet_addInvokeTransaction` | paired | **yes** | encode multicall, V3 hash, sign; `submit:true` broadcasts (needs node). With a node, nonce + fee auto-filled; else caller supplies them. Call = `{contract_address, entry_point_selector, calldata}` — selector accepts a **name or 0x**; aliases `contractAddress`/`to`, `entrypoint`/`entry_point`/`selector`. **SNIP-36:** optional `proof_facts` (extends the signed hash via `Poseidon(proof_facts)`) + `proof` (base64, required on broadcast) |
+| `wallet_addInvokeTransaction` | paired | **yes** | encode multicall, V3 hash, sign; `submit:true` broadcasts (needs node). With a node, nonce + fee auto-filled; else caller supplies them. Call = `{contract_address, entry_point_selector, calldata}` — selector accepts a **name or 0x**; aliases `contractAddress`/`to`, `entrypoint`/`entry_point`/`selector`. Optional per-request `chainId`. **SNIP-36:** optional `proof_facts` (extends the signed hash via `Poseidon(proof_facts)`) + `proof` (standard base64, required on broadcast); proof-carrying invokes **require explicit `resource_bounds`** (auto-estimation simulates without `proof_facts`, so a contract reading them reverts) |
 | `companion_deployAccount` | paired | **yes** | deploy one of the caller's own accounts (DEPLOY_ACCOUNT v3); sign-only or `submit:true`; account must be funded |
 | `wallet_addDeclareTransaction` | paired | **yes** | declare a class; sign needs `class_hash` + `compiled_class_hash`; estimate/`submit:true` need the full `contract_class` |
-| `wallet_switchStarknetChain` | paired | **yes** | switch active network (Sepolia ⇄ Mainnet); also switches the per-network node |
+| `wallet_switchStarknetChain` | paired | **yes** | **deprecated for agents** — sets the shared *default* network (Sepolia ⇄ Mainnet) for all clients; prefer a per-request `chainId`. Also switches the per-network node |
 | `wallet_watchAsset` | paired | **yes** | add a token to the watch list (display-only, in-memory) |
 | `companion_createAgentAccount` | paired (agent) | **yes** | derive next agent account |
 | `companion_fundingSource` | paired | no | manager (funding-source) account address |
@@ -88,6 +88,14 @@ a node**, it's sign-only: pass `nonce` + `resource_bounds`
 (`l1_gas`/`l2_gas`/`l1_data_gas`, each `{max_amount, max_price_per_unit}`); omit
 `submit`. The approval prompt shows the decoded calls, network, and fee.
 
+**Network selection.** The operational methods (`wallet_addInvokeTransaction`,
+`wallet_addDeclareTransaction`, `companion_deployAccount`, `companion_estimateFee`,
+`companion_requestFunding`) take an optional per-request `chainId` (felt-encoded,
+`SN_SEPOLIA` / `SN_MAIN`), resolved by `resolve_chain`; omit it to use the wallet's
+active default. This is the race-free way for concurrent clients to pick a network —
+`wallet_switchStarknetChain` is deprecated for agents because it mutates the one
+shared default for everyone.
+
 Still **deferred** (return `-32601`): `addStarknetChain` (arbitrary custom chains
 need a generalized `ChainId` beyond Sepolia/Mainnet) and the `strk20*` privacy
 methods (Phase 3).
@@ -97,8 +105,8 @@ methods (Phase 3).
 `node.rs` is the I/O seam for Starknet (Phase 2). `StarknetRpc` (trait) exposes
 `get_nonce`, `estimate_invoke`, `add_invoke`; `HttpStarknetRpc` is the reqwest
 JSON-RPC impl. Nodes are kept **per network** (`HashMap<ChainId, _>` behind an `RwLock`), so
-`switchStarknetChain` also switches the RPC endpoint and a node configured only
-for one chain is never reused on another. Attach at construction via
+the per-request `chainId` (or the active default) also selects the RPC endpoint, and a
+node configured only for one chain is never reused on another. Attach at construction via
 `with_node(chain, node)`, or **swap at runtime** via `set_node(chain, …)` (the
 Settings panel registers both networks when the user saves). `has_node_for` /
 `node_for` read them (the clone is never held across an await). When present,
