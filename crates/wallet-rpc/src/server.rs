@@ -1,7 +1,10 @@
 //! Loopback HTTP transport (spec §7.1).
 //!
 //! Binds `127.0.0.1` only, accepts JSON-RPC over `POST /`, and writes a
-//! `port.lock` discovery file so local callers can find the ephemeral port.
+//! `port.lock` discovery file so local callers can find the bound port. The
+//! port is *sticky*: on restart we re-bind whatever `port.lock` last recorded,
+//! so the service URL stays stable across reboots. We fall back to an
+//! OS-assigned ephemeral port only on first run or if that port is taken.
 
 use std::io;
 use std::net::SocketAddr;
@@ -112,14 +115,17 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .with_state(state)
 }
 
-/// Bind a loopback listener on an ephemeral port, optionally write the
-/// `port.lock` discovery file, and spawn the server. Returns the bound address
-/// and the server task handle.
+/// Bind a loopback listener, optionally write the `port.lock` discovery file,
+/// and spawn the server. Returns the bound address and the server task handle.
+///
+/// The port is sticky: if `port.lock` already records a port (from a prior
+/// run), we try to re-bind it so the service URL is stable across restarts. If
+/// no lock exists or that port is unavailable, the OS assigns an ephemeral one.
 pub async fn bind_loopback(
     state: Arc<ServerState>,
     port_lock_path: Option<&Path>,
 ) -> io::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listener = bind_sticky(port_lock_path.and_then(read_locked_port)).await?;
     let addr = listener.local_addr()?;
     if let Some(path) = port_lock_path {
         write_port_lock(path, addr.port())?;
@@ -129,6 +135,25 @@ pub async fn bind_loopback(
         let _ = axum::serve(listener, app).await;
     });
     Ok((addr, handle))
+}
+
+/// Try to bind the previously-used `port` on loopback; on failure (no prior
+/// port, or it's in use) fall back to an OS-assigned ephemeral port.
+async fn bind_sticky(port: Option<u16>) -> io::Result<tokio::net::TcpListener> {
+    if let Some(p) = port.filter(|p| *p != 0) {
+        if let Ok(listener) = tokio::net::TcpListener::bind(("127.0.0.1", p)).await {
+            return Ok(listener);
+        }
+    }
+    tokio::net::TcpListener::bind("127.0.0.1:0").await
+}
+
+/// Read the `port` field from an existing `port.lock`, if it parses. A missing,
+/// unreadable, or malformed file yields `None` — we just fall back to ephemeral.
+fn read_locked_port(path: &Path) -> Option<u16> {
+    let bytes = std::fs::read(path).ok()?;
+    let doc: Value = serde_json::from_slice(&bytes).ok()?;
+    doc.get("port")?.as_u64()?.try_into().ok()
 }
 
 /// Write `{ "port": <port>, "nonce": <hex> }` with `0600` perms (unix).
@@ -195,5 +220,39 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert("host", "127.0.0.1:5000".parse().unwrap());
         assert!(transport_guard(&h).is_err());
+    }
+
+    #[test]
+    fn locked_port_round_trips_through_port_lock() {
+        let path = std::env::temp_dir().join(format!("strkd-portlock-{}.json", std::process::id()));
+        write_port_lock(&path, 54321).unwrap();
+        assert_eq!(read_locked_port(&path), Some(54321));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn locked_port_is_none_when_absent_or_malformed() {
+        let missing = std::env::temp_dir().join("strkd-portlock-does-not-exist.json");
+        assert_eq!(read_locked_port(&missing), None);
+
+        let bad = std::env::temp_dir().join(format!("strkd-portlock-bad-{}.json", std::process::id()));
+        std::fs::write(&bad, b"not json").unwrap();
+        assert_eq!(read_locked_port(&bad), None);
+        let _ = std::fs::remove_file(&bad);
+    }
+
+    #[tokio::test]
+    async fn bind_sticky_reuses_a_free_port_and_falls_back_when_taken() {
+        // First bind grabs an ephemeral port; the sticky path should re-bind it.
+        let first = bind_sticky(None).await.unwrap();
+        let port = first.local_addr().unwrap().port();
+        drop(first);
+
+        let again = bind_sticky(Some(port)).await.unwrap();
+        assert_eq!(again.local_addr().unwrap().port(), port, "should reuse the freed port");
+
+        // With that port still held, a second sticky bind must fall back, not error.
+        let fallback = bind_sticky(Some(port)).await.unwrap();
+        assert_ne!(fallback.local_addr().unwrap().port(), port, "should fall back to a free port");
     }
 }
