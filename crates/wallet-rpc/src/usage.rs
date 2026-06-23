@@ -84,10 +84,15 @@ are expected to be local native processes."
 accounts YOU created (companion_createAgentAccount); requestAccounts/listAccounts are scoped to \
 them. A new account is counterfactual (off-chain) until you deploy it (companion_deployAccount). \
 An account's address is identical on Mainnet and Sepolia.",
-            "networks": "The wallet has one active network (default: Sepolia / testnet). \
-wallet_requestChainId reports it; wallet_switchStarknetChain switches Sepolia⇄Mainnet (prompts). \
-Broadcasting/fee-estimation need an RPC node configured for the active network (in the app's \
-Settings); without one the wallet is sign-only.",
+            "networks": "Pick the network PER REQUEST: pass an optional chainId (felt-encoded, \
+e.g. SN_SEPOLIA / SN_MAIN) to the operational methods (wallet_addInvokeTransaction, \
+wallet_addDeclareTransaction, companion_deployAccount, companion_estimateFee, \
+companion_requestFunding). Omit it to use the wallet's default network. This is the recommended, \
+race-free way to choose a chain. wallet_requestChainId reports the current default. \
+wallet_switchStarknetChain is DEPRECATED for agents — it mutates a single shared default for ALL \
+clients (one agent can switch it out from under another); the human sets the default in the app's \
+Settings. Broadcasting/fee-estimation need an RPC node configured for the chosen network (in the \
+app's Settings); without one the wallet is sign-only on that network.",
             "funding": "Accounts pay their own fees. Get STRK with companion_requestFunding: it \
 transfers from the USER's manager account into one of YOUR accounts. This ALWAYS needs the user's \
 approval (it spends their funds) — see permissions.",
@@ -156,15 +161,15 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
               "params": "{ days? }", "returns": "{ granted, expires_at, days }",
               "note": "Ask the user for an auto-approval window (1–90 days, default 30). Always prompts — a permission escalation is never auto-approved. While granted, your own-account ops skip prompts (funding still prompts). The user can also grant/revoke from the desktop Agents panel." },
             { "method": "companion_estimateFee", "auth": true, "prompts": false,
-              "params": "{ account_address, calls, nonce? }",
+              "params": "{ account_address, calls, nonce?, chainId? }",
               "returns": "{ nonce, resource_bounds (canonical hex) }",
               "note": "Opt-in fee help for sign-only callers: suggested bounds + nonce from the node, even if you'll sign-only and broadcast elsewhere. Paste resource_bounds straight into addInvokeTransaction. Needs a node. Do NOT use for SNIP-36 virtual txs with private calldata (it simulates the calls online)." },
             { "method": "companion_requestFunding", "auth": "agent", "prompts": "always",
-              "params": "{ amount (fri), recipient?, token?, funding_source_index?, submit?, nonce?, resource_bounds? }",
+              "params": "{ amount (fri), recipient?, token?, funding_source_index?, submit?, nonce?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, recipient, amount, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "Funds one of YOUR accounts with STRK from the user's manager account. recipient defaults to your first account; you can only fund accounts you own. ALWAYS requires the user's approval (even under a grant) — it spends the user's funds. If the manager isn't deployed on the active network, returns -32006 naming the manager + the fix (not an opaque node error)." },
             { "method": "companion_deployAccount", "auth": true, "prompts": true,
-              "params": "{ account?, submit?, resource_bounds? }",
+              "params": "{ account?, submit?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, contract_address, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "Deploy one of YOUR accounts (DEPLOY_ACCOUNT v3). account defaults to your first. Must already hold funds for its deploy fee — fund it first. submit:true broadcasts; else broadcast the returned signed tx. Nonce is 0; fee auto-estimated with a node, else pass resource_bounds." },
 
@@ -172,7 +177,7 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",
               "note": "account_address must be one of yours." },
             { "method": "wallet_addInvokeTransaction", "auth": true, "prompts": true,
-              "params": "{ account_address, calls, submit?, nonce?, resource_bounds?, proof_facts?, proof? }",
+              "params": "{ account_address, calls, submit?, nonce?, resource_bounds?, proof_facts?, proof?, chainId? }",
               "call_shape": "calls = [{ contract_address, entry_point_selector, calldata: [felt…] }]. \
 entry_point_selector may be a FUNCTION NAME (e.g. \"transfer\") or a 0x selector. Aliases accepted: \
 contractAddress/to for the address; entrypoint/entry_point/selector for the selector.",
@@ -180,16 +185,21 @@ contractAddress/to for the address; entrypoint/entry_point/selector for the sele
               "note": "See submit_model for sign-only vs broadcast and nonce/fee rules. No need to hand-assemble the tx — signed_transaction is broadcast-ready. Sign-only forces you to supply resource_bounds unless you call companion_estimateFee first.",
               "snip36": "Proof-carrying invoke: pass proof_facts (felt[]) and the signed V3 hash is \
 extended with Poseidon(proof_facts) so the signature covers them (required at sign time). On \
-submit:true also pass proof (base64 STWO string) — required to broadcast. Sign-only echoes \
-proof_facts/proof so you can assemble the broadcast yourself. Omit both for a normal invoke." },
+submit:true also pass proof (standard-base64 STWO string; surrounding whitespace is stripped and \
+url-safe '-'/'_' is rejected) — required to broadcast. You MUST supply explicit \
+resource_bounds for proof-carrying invokes: strkd refuses to auto-estimate them (online estimation \
+simulates the call without proof_facts in tx_info, so a contract reading them reverts) and \
+companion_estimateFee is also unsafe here. Estimate bounds manually (~2× current gas prices). \
+Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
+normal invoke." },
             { "method": "wallet_addDeclareTransaction", "auth": true, "prompts": true,
-              "params": "{ account_address, class_hash, compiled_class_hash, contract_class?, submit?, nonce?, resource_bounds? }",
+              "params": "{ account_address, class_hash, compiled_class_hash, contract_class?, submit?, nonce?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, class_hash, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "Signing needs only class_hash + compiled_class_hash. Estimation and submit:true also need the full Sierra contract_class. Sign-only by default — broadcast the returned tx together with your contract_class." },
 
-            { "method": "wallet_switchStarknetChain", "auth": true, "prompts": true,
+            { "method": "wallet_switchStarknetChain", "auth": true, "prompts": true, "deprecated": true,
               "params": "{ chainId (felt: SN_SEPOLIA / SN_MAIN encoded) }", "returns": "true",
-              "note": "Switches the wallet's active network. Unknown chain → error 117." },
+              "note": "DEPRECATED for agents. Switches the wallet's shared DEFAULT network for ALL clients (one agent can switch it out from under another). Prefer a per-request chainId on the operational methods. Kept for EIP-1193 compatibility + as the omitted-chainId fallback (the human sets the default in Settings). Unknown chain → error 117." },
             { "method": "wallet_watchAsset", "auth": true, "prompts": true,
               "params": "{ asset: { address, symbol?, decimals?, name? } }", "returns": "true",
               "note": "Adds a token to the wallet's watch list (display only)." }

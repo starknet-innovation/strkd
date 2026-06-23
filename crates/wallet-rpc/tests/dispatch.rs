@@ -618,6 +618,108 @@ async fn add_invoke_submit_proof_carrying_requires_proof() {
 }
 
 #[tokio::test]
+async fn add_invoke_proof_normalizes_whitespace() {
+    // Prover CLI artifacts are often newline-terminated / line-wrapped. strkd
+    // strips ASCII whitespace so the broadcast carries clean base64 (a stray
+    // newline is a likely cause of node error 69 'proof field invalid').
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    let mut p = invoke_params(&address);
+    p["proof_facts"] = json!(["0x1"]);
+    p["proof"] = json!("  QUJD\nREVG  ");
+    let r = call(&state, Some(&token), "wallet_addInvokeTransaction", p)
+        .await
+        .result
+        .expect("signed proof-carrying invoke");
+    assert_eq!(r["signed_transaction"]["proof"], json!("QUJDREVG"));
+}
+
+#[tokio::test]
+async fn add_invoke_rejects_non_standard_base64_proof() {
+    // A url-safe-alphabet ('-'/'_') or otherwise malformed proof is rejected up
+    // front (114) rather than round-tripping to an opaque node rejection.
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    let mut p = invoke_params(&address);
+    p["proof_facts"] = json!(["0x1"]);
+    p["proof"] = json!("abc-def_");
+    let resp = call(&state, Some(&token), "wallet_addInvokeTransaction", p).await;
+    assert_eq!(err_code(&resp), 114);
+}
+
+#[tokio::test]
+async fn add_invoke_proof_carrying_without_bounds_refuses_estimation() {
+    // A proof-carrying invoke must carry explicit resource_bounds. Auto fee
+    // estimation simulates the call without proof_facts in tx_info, so a contract
+    // reading them (e.g. proof_facts.at(8)) reverts during estimation. A node is
+    // configured here, so this proves strkd refuses to estimate rather than
+    // merely lacking a node to estimate against.
+    let state = state_with_node(Decision::Approve, "0x0", "0xc0ffee");
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    let mut p = invoke_params(&address);
+    p.as_object_mut().unwrap().remove("resource_bounds");
+    p["proof_facts"] = json!(["0x1", "0x2", "0x3"]);
+
+    let resp = call(&state, Some(&token), "wallet_addInvokeTransaction", p).await;
+    assert_eq!(err_code(&resp), 114);
+}
+
+#[tokio::test]
+async fn add_invoke_per_request_chain_id_changes_hash() {
+    // A per-request chainId picks the network without mutating the shared default.
+    // Since chain_id is bound into the V3 hash, switching it must change the
+    // signed hash; and passing the default explicitly must match omitting it.
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    // Default network (Sepolia).
+    let base = call(&state, Some(&token), "wallet_addInvokeTransaction", invoke_params(&address)).await;
+    let base_hash = base.result.unwrap()["transaction_hash"].as_str().unwrap().to_string();
+
+    // Explicit chainId = SN_MAIN → different signed hash.
+    let mut mainnet = invoke_params(&address);
+    mainnet["chainId"] = json!("0x534e5f4d41494e");
+    let r = call(&state, Some(&token), "wallet_addInvokeTransaction", mainnet).await;
+    let mainnet_hash = r.result.expect("signed on mainnet")["transaction_hash"].as_str().unwrap().to_string();
+    assert_ne!(mainnet_hash, base_hash, "per-request chainId must flow into the signed hash");
+
+    // Explicit chainId = the default (SN_SEPOLIA) → same hash as omitting it.
+    let mut sep = invoke_params(&address);
+    sep["chainId"] = json!("0x534e5f5345504f4c4941");
+    let r2 = call(&state, Some(&token), "wallet_addInvokeTransaction", sep).await;
+    assert_eq!(r2.result.unwrap()["transaction_hash"].as_str().unwrap(), base_hash);
+}
+
+#[tokio::test]
+async fn add_invoke_unsupported_chain_id_maps_to_117() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let mut p = invoke_params(&address);
+    p["chainId"] = json!("0x1234"); // not SN_SEPOLIA / SN_MAIN
+    let resp = call(&state, Some(&token), "wallet_addInvokeTransaction", p).await;
+    assert_eq!(err_code(&resp), 117);
+}
+
+#[tokio::test]
+async fn add_invoke_malformed_chain_id_maps_to_114() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let mut p = invoke_params(&address);
+    p["chainId"] = json!("not-hex");
+    let resp = call(&state, Some(&token), "wallet_addInvokeTransaction", p).await;
+    assert_eq!(err_code(&resp), 114);
+}
+
+#[tokio::test]
 async fn add_invoke_rejected_maps_to_113() {
     let state = state_rejecting(&["wallet_addInvokeTransaction"]);
     let (_, address) = user_registry();

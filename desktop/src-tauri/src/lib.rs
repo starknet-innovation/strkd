@@ -61,18 +61,32 @@ fn tray_image(dot: bool) -> Option<Image<'static>> {
 /// needs the `Regular` activation policy (set in setup) so the app has a Dock
 /// tile. Non-invasive (never steals window focus).
 fn refresh_tray(app: &AppHandle, pending: usize) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(tray_image(pending > 0));
-        let tip = if pending > 0 {
-            format!("strkd — {pending} pending request(s)")
+    // macOS requires menu-bar (NSStatusItem) and Dock-tile updates to run on the
+    // main thread. refresh_tray is called from the approval bridge's async task,
+    // so marshal onto the main thread — otherwise the red dot / badge can fail to
+    // render even though the call "succeeds".
+    let handle = app.clone();
+    let res = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.tray_by_id(TRAY_ID) {
+            let _ = tray.set_icon(tray_image(pending > 0));
+            let tip = if pending > 0 {
+                format!("strkd — {pending} pending request(s)")
+            } else {
+                "strkd — Starknet wallet companion".to_string()
+            };
+            let _ = tray.set_tooltip(Some(&tip));
         } else {
-            "strkd — Starknet wallet companion".to_string()
-        };
-        let _ = tray.set_tooltip(Some(&tip));
-    }
-    // Dock-tile badge: visible on the Dock icon regardless of notification perms.
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_badge_count(if pending > 0 { Some(pending as i64) } else { None });
+            eprintln!("[strkd] refresh_tray: tray '{TRAY_ID}' not found");
+        }
+        // Dock-tile badge: visible on the Dock icon regardless of notification perms.
+        if let Some(w) = handle.get_webview_window("main") {
+            let _ = w.set_badge_count(if pending > 0 { Some(pending as i64) } else { None });
+        } else {
+            eprintln!("[strkd] refresh_tray: main window not found");
+        }
+    });
+    if let Err(e) = res {
+        eprintln!("[strkd] refresh_tray: run_on_main_thread failed: {e}");
     }
 }
 
@@ -408,7 +422,7 @@ async fn deploy_account(
         ..Default::default()
     };
     let signed = session
-        .sign_deploy_account_for(&account, &params)
+        .sign_deploy_account_for(&account, session.chain(), &params)
         .map_err(|e| e.to_string())?;
 
     let hash = match node

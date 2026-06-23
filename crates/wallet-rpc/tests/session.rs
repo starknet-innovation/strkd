@@ -47,7 +47,7 @@ fn sign_deploy_account_produces_hash_signature_and_deployment_fields() {
         l1_data_gas: ResourceBounds { max_amount: 100, max_price_per_unit: 1 },
         ..Default::default()
     };
-    let signed = s.sign_deploy_account_for(&acct, &params).unwrap();
+    let signed = s.sign_deploy_account_for(&acct, s.chain(), &params).unwrap();
 
     assert_ne!(signed.transaction_hash, Felt::ZERO);
     assert_ne!(signed.r, Felt::ZERO);
