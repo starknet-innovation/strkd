@@ -70,9 +70,10 @@ export function Proving() {
       </button>
 
       <p className="muted small">
-        Paired agents prove by calling <code>companion_prove</code> on the wallet's loopback
-        service. The prover never signs and holds no keys — it proves an already-signed payload.
-        Configure the backend + per-network RPC in <strong>Settings</strong>.
+        Paired agents prove over the wallet's loopback service: <code>companion_signAndProve</code>{" "}
+        signs a SNIP-36 virtual tx and proves it in one call, or <code>companion_prove</code> proves
+        an already-signed payload. The prover holds no keys — it only proves. Configure the backend +
+        per-network RPC in <strong>Settings</strong>.
       </p>
 
       <h3>Proofs</h3>

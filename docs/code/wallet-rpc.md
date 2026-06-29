@@ -79,6 +79,10 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `companion_estimateFee` | paired | no | suggested `resource_bounds` (canonical hex) + nonce from the node — opt-in fee help for sign-only callers |
 | `companion_requestGrant` | paired | **yes (always)** | agent asks for an auto-approval window (1–90 days); always prompts (escalation is never auto-approved) |
 | `companion_requestFunding` | paired (agent) | **yes** | sign a STRK transfer **manager → agent's own account** (sign-only) |
+| `companion_prove` | paired | no | on-device proof of an **already-signed** payload (`{payload, network?, label?}`) → `{job_id}`; the `prover` crate holds no keys. Returns `-32601` if no prover is wired |
+| `companion_proveStatus` | paired | no | poll a proving job by `job_id` → status + `result`/`error` |
+| `companion_proofActivity` | paired | no | recent proving activity feed (desktop Proving tab) |
+| `companion_signAndProve` | paired | **yes** | sign the SNIP-36 **virtual tx (Tx A)** + prove it on-device in one call → `{job_id, transaction_hash}`. Requires explicit `resource_bounds` (a virtual tx carries private calldata — never fee-estimate it online). Tx A is **not** proof-carrying; the on-chain verifier tx (Tx B) is broadcast separately via `wallet_addInvokeTransaction` (its calldata is app-specific). See [`prover.md`](./prover.md) |
 
 `wallet_addInvokeTransaction`: `entry_point_selector` may be a name or a `0x…`
 selector. **With a node configured** (see [Node](#node-broadcast--fee-estimation)),
