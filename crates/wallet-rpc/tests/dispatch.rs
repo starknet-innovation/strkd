@@ -1367,3 +1367,84 @@ async fn requests_are_logged() {
     // Full payloads on by default → result captured.
     assert!(chain.result_json.is_some());
 }
+
+// ── On-device proving (companion_prove*) ─────────────────────────────────────
+
+/// State with a mock prover attached (no remote configured → CompanionProver
+/// mock path, so no native binary or network is needed).
+fn state_with_prover(tag: &str) -> Arc<ServerState> {
+    let data_dir =
+        std::env::temp_dir().join(format!("strkd-rpc-prove-test-{}-{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let cfg = prover::ProverConfig { prover_backend: "remote".into(), mock_prove_ms: 5 };
+    let pstate = Arc::new(prover::build_prover_state(data_dir, &cfg));
+    Arc::new(
+        ServerState::new(
+            Arc::new(Mutex::new(make_session(false))),
+            Arc::new(AutoApprover(Decision::Approve)),
+        )
+        .with_prover(pstate),
+    )
+}
+
+#[tokio::test]
+async fn companion_prove_enqueues_and_status_reports_success() {
+    let state = state_with_prover("ok");
+    let token = pair(&state, "app").await;
+
+    // Proving requires a paired token like every other operational method.
+    let unauth = call(&state, None, "companion_prove", json!({ "payload": { "x": 1 } })).await;
+    assert_eq!(err_code(&unauth), 118); // NOT_REGISTERED
+
+    let resp = call(
+        &state,
+        Some(&token),
+        "companion_prove",
+        json!({ "payload": { "transaction": { "x": 1 } }, "network": "testnet", "label": "t" }),
+    )
+    .await;
+    let r = resp.result.expect("prove enqueued");
+    assert_eq!(r["status"], json!("queued"));
+    let job_id = r["job_id"].as_str().expect("job_id").to_string();
+
+    // Poll companion_proveStatus until terminal.
+    let mut job = json!({});
+    for _ in 0..200 {
+        let s = call(&state, Some(&token), "companion_proveStatus", json!({ "job_id": job_id }))
+            .await
+            .result
+            .expect("status ok");
+        if s["status"] == json!("succeeded") || s["status"] == json!("failed") {
+            job = s;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(job["status"], json!("succeeded"), "mock proof should succeed");
+    assert_eq!(job["result"]["mock"], json!(true));
+
+    // The activity feed lists the job.
+    let act = call(&state, Some(&token), "companion_proofActivity", json!({}))
+        .await
+        .result
+        .expect("activity ok");
+    assert!(act["activity"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+}
+
+#[tokio::test]
+async fn companion_prove_unknown_job_is_invalid_request() {
+    let state = state_with_prover("unknown");
+    let token = pair(&state, "app").await;
+    let resp =
+        call(&state, Some(&token), "companion_proveStatus", json!({ "job_id": "p999" })).await;
+    assert_eq!(err_code(&resp), 114); // INVALID_REQUEST
+}
+
+#[tokio::test]
+async fn companion_prove_without_prover_is_not_implemented() {
+    // No prover attached → clean -32601, not a panic.
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    let resp = call(&state, Some(&token), "companion_prove", json!({ "payload": {} })).await;
+    assert_eq!(err_code(&resp), -32601); // NOT_IMPLEMENTED
+}

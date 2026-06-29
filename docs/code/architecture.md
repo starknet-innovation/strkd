@@ -29,8 +29,9 @@ strkd/
 | Crate | Status | Responsibility | Reference |
 |---|---|---|---|
 | `wallet-core` | ✅ built | The only crate that touches seed/private-key material. Derivation, signing, address calc, encrypted vault, account registry. | [`wallet-core.md`](./wallet-core.md) |
-| `wallet-rpc` | ✅ built | Loopback JSON-RPC server, pairing/auth, approval broker, read + `signTypedData` + `addInvokeTransaction` + `companion_*` handlers, SQLite log, vault store, transport hardening. Calls into `wallet-core`. | [`wallet-rpc.md`](./wallet-rpc.md) |
-| `desktop` (Tauri) | ✅ built, not run-verified | Menu-bar tray app: onboarding, unlock, accounts, confirmation dialogs, log viewer. Hosts the service + approval bridge. Tauri 2 + React. | [`desktop.md`](./desktop.md) |
+| `wallet-rpc` | ✅ built | Loopback JSON-RPC server, pairing/auth, approval broker, read + `signTypedData` + `addInvokeTransaction` + `companion_*` handlers (incl. `companion_prove*`), SQLite log, vault store, transport hardening. Calls into `wallet-core` and `prover`. | [`wallet-rpc.md`](./wallet-rpc.md) |
+| `prover` | ✅ built | On-device proving companion (ported from `../dinner`). Generic prove seam + native SNIP-36 backend, per-network settings, job store, on-disk proof storage. **Holds no key material** — proves already-signed payloads. | [`prover.md`](./prover.md) |
+| `desktop` (Tauri) | ✅ built, not run-verified | Menu-bar tray app: onboarding, unlock, accounts, confirmation dialogs, log viewer, **Proving panel**. Hosts the service + approval bridge + the prover. Tauri 2 + React. | [`desktop.md`](./desktop.md) |
 
 Planned crates get their own `docs/code/<crate>.md` reference when they're built
 (see the [doc contribution rules](../../README.md#contributing-to-the-documentation)).
@@ -68,6 +69,28 @@ from a malicious web page.
 `wallet-core`. Everything above it sees only addresses, public keys, signatures,
 and signed payloads. Any change that risks crossing this line is a security-gated
 change (see [workflow §security gates](../project/workflow.md#security-gates-non-negotiable)).
+
+### Proving sits downstream of signing
+
+The `prover` crate is strictly downstream of the signing boundary: it receives an
+**already-signed** transaction and produces a proof. It holds no key material —
+the native SNIP-36 backend even passes a dummy `0x1` private key to satisfy the
+upstream CLI's config check, and `preflight` rejects unsigned transactions. The
+`companion_prove*` methods are folded onto the same authenticated loopback
+service (pairing + transport guard + request log) rather than a separate open
+port. The prover's per-network settings carry a remote-prover **API key**, so —
+like the wallet's own settings — they are reachable over the desktop's trusted
+IPC only, never the loopback service.
+
+```
+  wallet-core ──signs──► signed tx ──► prover (no keys) ──► proof ──► broadcast
+```
+
+This wallet/prover split mirrors the two repos it came from: strkd signs but
+never proved; `../dinner` proved but never signs. Merged, the same device can
+sign → prove → broadcast a SNIP-36 proof-carrying invoke without the secret ever
+leaving it. (Auto-wiring all three into a single call is deferred — for now the
+proof is generated and supplied explicitly to `wallet_addInvokeTransaction`.)
 
 ## Dependency notes
 

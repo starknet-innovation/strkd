@@ -358,3 +358,45 @@ button.ghost {
   justify-content: flex-end;
   margin-top: 4px;
 }
+
+/* ── Proving panel ───────────────────────────────────────────────────────── */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.feed-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.feed-row.clickable {
+  cursor: pointer;
+}
+.badge.proving {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.detail {
+  margin: 4px 0 6px 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.primary.danger {
+  background: transparent;
+  color: var(--err);
+  border: 1px solid var(--err);
+}

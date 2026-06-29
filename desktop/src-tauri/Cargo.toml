@@ -24,3 +24,6 @@ zeroize = "1"
 # root; the desktop app reuses them directly.
 wallet-core = { path = "../../crates/wallet-core" }
 wallet-rpc = { path = "../../crates/wallet-rpc" }
+# On-device proving companion (ported from ../dinner). Attached to the loopback
+# service (companion_prove*) and driven by the desktop's own Proving panel.
+prover = { path = "../../crates/prover" }

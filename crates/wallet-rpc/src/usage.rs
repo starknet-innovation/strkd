@@ -174,6 +174,18 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
               "returns": "{ transaction_hash, contract_address, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "Deploy one of YOUR accounts (DEPLOY_ACCOUNT v3). account defaults to your first. Must already hold funds for its deploy fee — fund it first. submit:true broadcasts; else broadcast the returned signed tx. Nonce is 0; fee auto-estimated with a node, else pass resource_bounds." },
 
+            { "method": "companion_prove", "auth": true, "prompts": false,
+              "params": "{ payload, network?: \"mainnet\"|\"testnet\", label? }",
+              "returns": "{ job_id, status: \"queued\", next }",
+              "note": "On-device proving companion. Hand it an opaque, ALREADY-SIGNED payload; it proves locally and returns the proof — it never signs and holds no key material. For SNIP-36 the payload is { transaction: <signed invoke-v3>, block_number? }; the proof comes back as { proof (base64 STWO), proof_facts, l2_to_l1_messages }, which you feed into wallet_addInvokeTransaction (proof_facts at sign time, proof on submit). Returns a job id immediately — poll companion_proveStatus. Needs a per-network RPC + the native prover (or a configured remote prover) set in the desktop Settings; otherwise returns a mock proof. Proving is local-only: no separate open port, and settings/keys are never exposed here." },
+            { "method": "companion_proveStatus", "auth": true, "prompts": false,
+              "params": "{ job_id }",
+              "returns": "{ job_id, status: queued|proving|succeeded|failed, started_at_ms, label?, result?, error? }",
+              "note": "Poll a proving job until status is succeeded (result holds the proof) or failed (error explains why). Unknown job_id → error 114." },
+            { "method": "companion_proofActivity", "auth": true, "prompts": false,
+              "params": "{}", "returns": "{ activity: Activity[] }",
+              "note": "Recent proving activity (most-recent first) — the same feed the desktop Proving tab shows." },
+
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",
               "note": "account_address must be one of yours." },

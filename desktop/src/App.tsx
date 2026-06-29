@@ -8,9 +8,10 @@ import { ActivityLog } from "./components/ActivityLog";
 import { Connect } from "./components/Connect";
 import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
+import { Proving } from "./components/Proving";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 
-type Tab = "accounts" | "activity" | "agents" | "connect" | "settings";
+type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "settings";
 
 /// Cmd/Ctrl +, -, 0 zoom the whole UI (persisted). Answers "can I make it
 /// bigger with ⌘+?" — yes.
@@ -114,6 +115,9 @@ export default function App() {
           <button className={tab === "agents" ? "tab active" : "tab"} onClick={() => setTab("agents")}>
             Agents
           </button>
+          <button className={tab === "proving" ? "tab active" : "tab"} onClick={() => setTab("proving")}>
+            Proving
+          </button>
           <button className={tab === "connect" ? "tab active" : "tab"} onClick={() => setTab("connect")}>
             Connect
           </button>
@@ -125,6 +129,7 @@ export default function App() {
           {tab === "accounts" && <Accounts status={status} onChange={refresh} />}
           {tab === "activity" && <ActivityLog />}
           {tab === "agents" && <Agents />}
+          {tab === "proving" && <Proving />}
           {tab === "connect" && <Connect status={status} />}
           {tab === "settings" && <Settings onChange={refresh} />}
         </main>

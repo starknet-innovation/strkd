@@ -44,6 +44,11 @@ pub struct ServerState {
     /// GitHub repo (`owner/name`) that `companion_reportIssue` points its
     /// prefilled "new issue" links at. Not a secret; no token is involved.
     issue_repo: String,
+    /// On-device proving companion, if wired. When set, the `companion_prove*`
+    /// methods generate proofs locally from an **already-signed** payload. The
+    /// prover holds no key material; its per-network settings (which carry a
+    /// remote-prover API key) are IPC-only and never reachable through here.
+    pub prover: Option<Arc<prover::ProverState>>,
     pub api_version: String,
     pub spec_versions: Vec<String>,
 }
@@ -73,6 +78,7 @@ impl ServerState {
             watched_assets: RwLock::new(Vec::new()),
             last_activity_ms: AtomicU64::new(now_unix_ms()),
             issue_repo: DEFAULT_ISSUE_REPO.to_string(),
+            prover: None,
             api_version: "0.1.0".to_string(),
             // The Starknet JSON-RPC spec the wallet's node client targets.
             // Verified against the Sepolia node (starknet_specVersion → 0.10.2,
@@ -113,6 +119,12 @@ impl ServerState {
     /// Attach a node client for `chain` at construction.
     pub fn with_node(self, chain: ChainId, node: Arc<dyn StarknetRpc>) -> Self {
         self.set_node(chain, Some(node));
+        self
+    }
+
+    /// Attach the on-device proving companion so `companion_prove*` is available.
+    pub fn with_prover(mut self, prover: Arc<prover::ProverState>) -> Self {
+        self.prover = Some(prover);
         self
     }
 
@@ -471,6 +483,9 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_requestGrant" => handle_request_grant(state, &client, &params).await,
         "companion_requestFunding" => handle_request_funding(state, &client, &params).await,
         "companion_deployAccount" => handle_deploy_account(state, &client, &params).await,
+        "companion_prove" => handle_prove(state, &params).await,
+        "companion_proveStatus" => handle_prove_status(state, &params).await,
+        "companion_proofActivity" => handle_proof_activity(state).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -1260,6 +1275,55 @@ review and edit before submitting, and remove anything sensitive._",
 issue draft; they review, edit, and submit it in their browser. strkd does not file it for you, \
 and stores no GitHub credential."
     }))
+}
+
+// ── On-device proving (companion_prove*) ─────────────────────────────────────
+//
+// Proving is folded onto this authenticated loopback service rather than a
+// separate open HTTP port: every call goes through pairing, the transport
+// guard, and the request log like any other method. The payload stays generic
+// (opaque) — the prover never signs and holds no key material; it proves an
+// **already-signed** transaction and returns the proof.
+
+/// The wired prover, or a clean "not available" error when none is attached
+/// (e.g. a headless service started without `with_prover`).
+fn prover_or_err(state: &ServerState) -> Result<&prover::ProverState, WalletRpcError> {
+    state.prover.as_deref().ok_or_else(|| {
+        WalletRpcError::NotImplemented("on-device proving is not available on this service".into())
+    })
+}
+
+/// `companion_prove` — enqueue an opaque, already-signed payload for on-device
+/// proving. Returns immediately with a job id; poll `companion_proveStatus`.
+async fn handle_prove(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+    let prover = prover_or_err(state)?;
+    let network = opt_param_str(params, "network").unwrap_or_else(|| "mainnet".into());
+    let label = opt_param_str(params, "label");
+    // `payload` is the opaque thing to prove; if absent, treat the whole params
+    // object as the payload (mirrors the prover crate's generic contract).
+    let payload = params.get("payload").cloned().unwrap_or_else(|| params.clone());
+    let job_id = prover::enqueue_prove(prover, payload, label, network).await;
+    Ok(json!({
+        "job_id": job_id,
+        "status": "queued",
+        "next": "poll companion_proveStatus { job_id } until status is \"succeeded\" or \"failed\"",
+    }))
+}
+
+/// `companion_proveStatus` — poll a proving job by id (status + result/error).
+async fn handle_prove_status(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+    let prover = prover_or_err(state)?;
+    let job_id = param_str(params, "job_id")?;
+    match prover.jobs.get(&job_id).await {
+        Some(job) => Ok(json!(job)),
+        None => Err(WalletRpcError::InvalidRequest(format!("unknown job '{job_id}'"))),
+    }
+}
+
+/// `companion_proofActivity` — recent proving activity feed (most-recent first).
+async fn handle_proof_activity(state: &ServerState) -> Result<Value, WalletRpcError> {
+    let prover = prover_or_err(state)?;
+    Ok(json!({ "activity": prover.jobs.recent_activity().await }))
 }
 
 /// Reveal the funding-source (manager) account address so an agent can look up

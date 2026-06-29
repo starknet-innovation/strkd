@@ -39,6 +39,15 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - **Specification** — technical spec ([`spec/wallet-companion-spec.md`](../../spec/wallet-companion-spec.md))
   and derivation portability test plan
   ([`spec/portability-test-plan.md`](../../spec/portability-test-plan.md)).
+- **On-device proving (`prover` crate)** — merged from `../dinner`. Generic prove
+  seam + native SNIP-36 backend (Docker backend dropped), per-network settings,
+  job store, on-disk proof storage. Folded onto the loopback service as
+  `companion_prove` / `companion_proveStatus` / `companion_proofActivity` (paired,
+  no prompt) and surfaced in a desktop **Proving** tab + Settings. Holds no key
+  material (proves already-signed payloads). Mock-backend unit tests + dispatch
+  tests green, clippy clean. **Not yet wired** into a single sign→prove→broadcast
+  call, and the native backend isn't run-verified (needs a staged prover bundle).
+  Reference: [`docs/code/prover.md`](../code/prover.md).
 - **Phase 0 — crypto core (`wallet-core` crate)** — built, 15 tests green,
   clippy clean. Covers: two-domain derivation, OZ address calc, Stark signing,
   Argon2id→AES-256-GCM vault, account registry + per-caller scoping. Reference:
