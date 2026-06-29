@@ -14,10 +14,7 @@ export function Connect({ status }: { status: Status | null }) {
     `transactions on your behalf; every sensitive action asks the human for on-screen ` +
     `approval, and private keys never leave the wallet.\n` +
     `Pair once (companion_requestPairing), then you can create an account, request STRK ` +
-    `funding (companion_requestFunding), and request signatures.\n` +
-    `It can also PROVE SNIP-36 virtual transactions on-device (companion_signAndProve): ` +
-    `your private inputs never leave this machine. See concepts.proving + snip36_proving ` +
-    `in GET ${url}/ for the flow.`;
+    `funding (companion_requestFunding), and request signatures.`;
 
   const copy = async () => {
     try {
