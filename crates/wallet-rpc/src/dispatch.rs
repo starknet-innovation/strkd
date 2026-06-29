@@ -486,6 +486,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_prove" => handle_prove(state, &params).await,
         "companion_proveStatus" => handle_prove_status(state, &params).await,
         "companion_proofActivity" => handle_proof_activity(state).await,
+        "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -501,7 +502,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_createAgentAccount"
         | "companion_requestFunding"
         | "companion_requestGrant"
-        | "companion_deployAccount" => decision_label(&result),
+        | "companion_deployAccount"
+        | "companion_signAndProve" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -1324,6 +1326,153 @@ async fn handle_prove_status(state: &ServerState, params: &Value) -> Result<Valu
 async fn handle_proof_activity(state: &ServerState) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
     Ok(json!({ "activity": prover.jobs.recent_activity().await }))
+}
+
+/// The prover's network name for a chain (`mainnet`/`testnet`) — selects which
+/// per-network prover settings (RPC + remote prover) the prove uses.
+fn prover_network(chain: ChainId) -> &'static str {
+    match chain {
+        ChainId::Mainnet => "mainnet",
+        ChainId::Sepolia => "testnet",
+    }
+}
+
+/// `companion_signAndProve` — sign a **virtual** invoke (SNIP-36 "Tx A") and prove
+/// it on-device in one step, so the wallet's signing is wired straight to the
+/// in-process prover (the secret never leaves the machine and the caller skips
+/// the manual sign-only → companion_prove round-trip).
+///
+/// This signs Tx A — a normal `INVOKE_TXN_V3` calling the contract's virtual
+/// function — and hands it to the prover. Tx A is **not** proof-carrying:
+/// `proof_facts` are an *output* of proving, not an input here, so the signed
+/// hash is a standard v3 hash. The proof comes back via `companion_proveStatus`
+/// as `{ proof, proof_facts, l2_to_l1_messages }`.
+///
+/// What it does NOT do: build or broadcast the on-chain verifier invoke ("Tx B",
+/// e.g. `verify_result(public_message)`). Tx B's calldata is decoded from the
+/// prover's L2→L1 output and is application-specific, so the caller assembles it
+/// and broadcasts via `wallet_addInvokeTransaction { proof_facts, proof,
+/// submit:true }`. (A generic wallet can't know the verifier's call shape.)
+async fn handle_sign_and_prove(
+    state: &ServerState,
+    client: &PairedClient,
+    params: &Value,
+) -> Result<Value, WalletRpcError> {
+    let prover = prover_or_err(state)?;
+    let account_address = param_str(params, "account_address")?;
+    let want = normalize_address(&account_address)?;
+    let calls = parse_calls(params)?;
+    let chain = resolve_chain(state, params).await?;
+
+    // Resolve the signing account within the caller's scope (same as add_invoke).
+    let account = {
+        let session = state.session.lock().await;
+        let reg = session.registry()?;
+        let found = reg
+            .scoped_for(scope_for(client).as_deref())
+            .find(|a| a.address == want)
+            .cloned()
+            .ok_or(WalletRpcError::Forbidden)?;
+        found
+    };
+    let sender = Felt::from_hex(&account.address)
+        .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
+
+    // Nonce: caller-supplied, else the account nonce from the node. The virtual
+    // tx nonce must equal the account nonce AT THE REFERENCE BLOCK — the prover's
+    // preflight validates that and errors clearly on mismatch.
+    let nonce = match opt_nonce(params)? {
+        Some(n) => n,
+        None => {
+            let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
+            node.get_nonce(&sender)
+                .await
+                .map_err(|e| WalletRpcError::Node(e.to_string()))?
+        }
+    };
+
+    // resource_bounds MUST be explicit. Estimating a virtual tx online would send
+    // its (private) calldata to the RPC node, defeating SNIP-36's privacy — so we
+    // refuse to auto-estimate here regardless of whether a node is configured.
+    let bounds = opt_fee_bounds(params)?.ok_or_else(|| {
+        WalletRpcError::InvalidRequest(
+            "companion_signAndProve requires explicit resource_bounds: the virtual tx carries \
+             private calldata, so it must NOT be fee-estimated online (that would send the \
+             private inputs to the RPC node). Set resource_bounds manually (~2× current gas \
+             prices)."
+                .into(),
+        )
+    })?;
+
+    // Signing a real tx on the user's account → gate it (proven locally, never
+    // broadcast by strkd).
+    let decision = gated_approval(
+        state,
+        client,
+        "companion_signAndProve",
+        format!(
+            "Sign + locally prove {} virtual call(s) from {} on {} (SNIP-36; the signed tx is \
+             proven on-device, never broadcast). {}. Max fee: {}",
+            calls.len(),
+            account.address,
+            chain_name(chain),
+            summarize_calls(&calls),
+            bounds_summary(&bounds),
+        ),
+    )
+    .await;
+    if decision == Decision::Reject {
+        return Err(WalletRpcError::UserRefused);
+    }
+
+    // Sign Tx A — standard signed INVOKE_TXN_V3 (proof_facts empty: not proof-carrying).
+    let signed = {
+        let session = state.session.lock().await;
+        session.sign_invoke_for(
+            &account,
+            &calls,
+            chain,
+            &InvokeV3Params {
+                nonce,
+                tip: 0,
+                l1_gas: bounds.l1_gas,
+                l2_gas: bounds.l2_gas,
+                l1_data_gas: bounds.l1_data_gas,
+                ..Default::default()
+            },
+        )?
+    };
+
+    // Serialize the complete INVOKE_TXN_V3 (no proof) — the input the prover proves.
+    let tx_json = crate::node::invoke_v3_tx_json(
+        &sender,
+        &signed.calldata,
+        &[signed.r, signed.s],
+        &nonce,
+        &bounds,
+        &[],
+        None,
+    );
+
+    // Hand the signed virtual tx to the in-process prover. block_number is the
+    // reference block (optional; the prover defaults to a recent block).
+    let mut payload = json!({ "transaction": tx_json });
+    if let Some(bn) = params.get("block_number").and_then(|v| v.as_u64()) {
+        payload["block_number"] = json!(bn);
+    }
+    let label = opt_param_str(params, "label");
+    let job_id =
+        prover::enqueue_prove(prover, payload, label, prover_network(chain).to_string()).await;
+
+    Ok(json!({
+        "job_id": job_id,
+        "status": "queued",
+        "transaction_hash": felt_hex(&signed.transaction_hash),
+        "next": "poll companion_proveStatus { job_id }; on success take result.proof / \
+                 result.proof_facts / result.l2_to_l1_messages, build the verifier invoke from \
+                 the message, and broadcast it via wallet_addInvokeTransaction \
+                 { proof_facts, proof, submit:true }",
+    }))
 }
 
 /// Reveal the funding-source (manager) account address so an agent can look up

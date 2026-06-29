@@ -185,6 +185,10 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
             { "method": "companion_proofActivity", "auth": true, "prompts": false,
               "params": "{}", "returns": "{ activity: Activity[] }",
               "note": "Recent proving activity (most-recent first) — the same feed the desktop Proving tab shows." },
+            { "method": "companion_signAndProve", "auth": true, "prompts": true,
+              "params": "{ account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }",
+              "returns": "{ job_id, status: \"queued\", transaction_hash, next }",
+              "note": "ONE-STEP sign + on-device prove for SNIP-36: signs the VIRTUAL tx (\"Tx A\" — a normal v3 invoke calling your contract's virtual function, e.g. create_proof(public, private)) and hands the signed tx straight to the local prover, so the secret never leaves the machine and you skip the manual addInvoke(sign-only)→companion_prove round-trip. Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving). resource_bounds is REQUIRED — the virtual tx holds private calldata, so strkd refuses to fee-estimate it online (that would leak the inputs to the RPC); set bounds manually (~2× gas). nonce must equal the account nonce at the reference block. Returns a job id — poll companion_proveStatus; on success take result.proof / proof_facts / l2_to_l1_messages, decode the message into the verifier call, and BROADCAST the verifier invoke (\"Tx B\", e.g. verify_result(public_message)) via wallet_addInvokeTransaction { proof_facts, proof, submit:true }. strkd does not build Tx B — its calldata is app-specific. Approval-gated (signs a real tx, though it's proven locally and never broadcast)." },
 
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",

@@ -15,8 +15,9 @@ API plus a small `companion_*` extension namespace, and delegates cryptography t
 It also bundles an **on-device proving companion** (the `prover` crate, merged
 from [`dinner`](https://github.com/starknet-innovation/dinner)): hand it an
 already-signed payload via `companion_prove` and it generates a SNIP-36 proof
-locally — the secret never leaves the machine. The prover holds no keys and sits
-strictly downstream of signing.
+locally — the secret never leaves the machine. `companion_signAndProve` goes one
+step further, signing the private virtual transaction and proving it in a single
+call. The prover holds no keys and sits strictly downstream of signing.
 
 > ⚠️ **Experimental. Not for real funds.** `krusty-kms` is flagged experimental
 > by its authors and the crypto path is unaudited. Use **throwaway test seeds

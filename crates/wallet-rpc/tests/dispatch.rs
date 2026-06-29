@@ -1448,3 +1448,76 @@ async fn companion_prove_without_prover_is_not_implemented() {
     let resp = call(&state, Some(&token), "companion_prove", json!({ "payload": {} })).await;
     assert_eq!(err_code(&resp), -32601); // NOT_IMPLEMENTED
 }
+
+#[tokio::test]
+async fn sign_and_prove_signs_the_virtual_tx_and_enqueues_it() {
+    // The wallet signs Tx A (a normal v3 invoke, NOT proof-carrying) and hands it
+    // to the in-process prover in one call. Mock backend succeeds regardless of
+    // tx content, so this exercises sign → enqueue → prove without a native binary.
+    let state = state_with_prover("signprove");
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    let resp = call(&state, Some(&token), "companion_signAndProve", invoke_params(&address)).await;
+    let r = resp.result.expect("sign-and-prove enqueued");
+    assert_eq!(r["status"], json!("queued"));
+    assert!(r["transaction_hash"].as_str().unwrap().starts_with("0x"));
+    let job_id = r["job_id"].as_str().expect("job_id").to_string();
+
+    let mut job = json!({});
+    for _ in 0..200 {
+        let s = call(&state, Some(&token), "companion_proveStatus", json!({ "job_id": job_id }))
+            .await
+            .result
+            .expect("status ok");
+        if s["status"] == json!("succeeded") || s["status"] == json!("failed") {
+            job = s;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(job["status"], json!("succeeded"));
+    assert_eq!(job["result"]["mock"], json!(true));
+}
+
+#[tokio::test]
+async fn sign_and_prove_requires_explicit_resource_bounds() {
+    // The virtual tx carries private calldata, so strkd must NOT fee-estimate it
+    // online — missing resource_bounds is rejected up front (114), not estimated.
+    let state = state_with_prover("signprove-bounds");
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+
+    let mut p = invoke_params(&address);
+    p.as_object_mut().unwrap().remove("resource_bounds");
+    let resp = call(&state, Some(&token), "companion_signAndProve", p).await;
+    assert_eq!(err_code(&resp), 114); // INVALID_REQUEST
+}
+
+#[tokio::test]
+async fn sign_and_prove_rejected_maps_to_113() {
+    // Signing a real tx on the user's account is approval-gated even though it's
+    // never broadcast. Reject only signAndProve (pairing must still go through).
+    let (approver, mut rx) = ChannelApprover::new(16);
+    tokio::spawn(async move {
+        while let Some(pending) = rx.recv().await {
+            let decision = if pending.request.method == "companion_signAndProve" {
+                Decision::Reject
+            } else {
+                Decision::Approve
+            };
+            let _ = pending.respond.send(decision);
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("strkd-rpc-prove-rej-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cfg = prover::ProverConfig { prover_backend: "remote".into(), mock_prove_ms: 5 };
+    let state = Arc::new(
+        ServerState::new(Arc::new(Mutex::new(make_session(false))), Arc::new(approver))
+            .with_prover(Arc::new(prover::build_prover_state(dir, &cfg))),
+    );
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let resp = call(&state, Some(&token), "companion_signAndProve", invoke_params(&address)).await;
+    assert_eq!(err_code(&resp), 113); // USER_REFUSED
+}

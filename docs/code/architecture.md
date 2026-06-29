@@ -89,8 +89,15 @@ IPC only, never the loopback service.
 This wallet/prover split mirrors the two repos it came from: strkd signs but
 never proved; `../dinner` proved but never signs. Merged, the same device can
 sign → prove → broadcast a SNIP-36 proof-carrying invoke without the secret ever
-leaving it. (Auto-wiring all three into a single call is deferred — for now the
-proof is generated and supplied explicitly to `wallet_addInvokeTransaction`.)
+leaving it.
+
+`companion_signAndProve` wires the key-holding half into one call: it signs the
+private virtual transaction ("Tx A") and hands it straight to the in-process
+prover. SNIP-36 is inherently two transactions, though — the on-chain verifier
+invoke ("Tx B", e.g. `verify_result(public_message)`) is broadcast separately via
+`wallet_addInvokeTransaction { proof_facts, proof, submit:true }`. strkd doesn't
+assemble Tx B: its calldata is decoded from the prover's L2→L1 message and is
+application-specific, so a generic wallet can't build it.
 
 ## Dependency notes
 

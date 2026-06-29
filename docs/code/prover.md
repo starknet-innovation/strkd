@@ -63,16 +63,41 @@ a prover bundle is staged into `resources/prover/` (see
 
 ## JSON-RPC surface (in `wallet-rpc`)
 
-Paired callers only; no approval prompt (proving changes no wallet state):
+Paired callers only. The first three change no wallet state, so they don't prompt:
 
-- `companion_prove { payload, network?, label? }` → `{ job_id, status }`
+- `companion_prove { payload, network?, label? }` → `{ job_id, status }` — prove an
+  already-signed payload the caller supplies.
 - `companion_proveStatus { job_id }` → job (status + `result`/`error`)
 - `companion_proofActivity` → recent activity feed
+- `companion_signAndProve { account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }`
+  → `{ job_id, status, transaction_hash, next }` — **approval-gated**; signs the
+  virtual tx itself, then proves it (below).
 
-For SNIP-36 the `payload` is `{ transaction: <signed invoke-v3>, block_number? }`
-and the proof comes back as `{ proof (base64 STWO), proof_facts, l2_to_l1_messages }`,
-which feeds `wallet_addInvokeTransaction` (`proof_facts` at sign time, `proof` on
-submit). See `usage.rs` and `wallet-rpc.md`.
+For SNIP-36 the `companion_prove` `payload` is `{ transaction: <signed invoke-v3>,
+block_number? }` and the proof comes back as `{ proof (base64 STWO), proof_facts,
+l2_to_l1_messages }`, which feeds `wallet_addInvokeTransaction` (`proof_facts` at
+sign time, `proof` on submit). See `usage.rs` and `wallet-rpc.md`.
+
+### `companion_signAndProve` — sign + prove in one call
+
+SNIP-36 is a **two-transaction** flow: a private virtual **Tx A** (calls e.g.
+`create_proof(public, private)`) is signed and proven off-chain, then a separate
+verifier **Tx B** (e.g. `verify_result(public_message)`) is broadcast carrying
+`proof_facts` + `proof`. `companion_signAndProve` owns the key-holding half: it
+signs Tx A (a standard v3 invoke — **not** proof-carrying; `proof_facts` are an
+*output* of proving) and hands the signed tx straight to the in-process prover, so
+the caller skips the manual `wallet_addInvokeTransaction(sign-only)` →
+`companion_prove` round-trip and the secret never leaves the device.
+
+`resource_bounds` is **required** — the virtual tx carries private calldata, so
+strkd refuses to fee-estimate it online (that would leak the inputs to the RPC
+node; matches the SNIP-36 "fee estimation on virtual tx" pitfall). It's
+approval-gated (a real signature, though proven locally and never broadcast).
+
+It deliberately does **not** build or broadcast Tx B: that invoke's calldata is
+decoded from the prover's L2→L1 message and is application-specific, so a generic
+wallet can't assemble it. The caller takes `result.{proof,proof_facts,l2_to_l1_messages}`
+and broadcasts Tx B via `wallet_addInvokeTransaction { proof_facts, proof, submit:true }`.
 
 ## Native prover bundling
 
