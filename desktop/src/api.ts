@@ -144,7 +144,6 @@ export const api = {
   // the loopback service). Settings carry an API key, so they never leave IPC.
   proverStatus: () => invoke<ProverStatus>("prover_status"),
   proofActivity: () => invoke<Activity[]>("proof_activity"),
-  testProve: () => invoke<string>("test_prove"),
   getProverSettings: () => invoke<ProverSettings>("get_prover_settings"),
   setProverSettings: (settings: ProverSettings) =>
     invoke<void>("set_prover_settings", { settings }),

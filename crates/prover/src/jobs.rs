@@ -1,6 +1,6 @@
 //! In-memory job + activity store, generic over payload. Backs the async prove
-//! flow and the UI's live activity feed. Mock and real backends feed the same
-//! store, so the UI is identical before and after a real backend is plugged in.
+//! flow and the UI's live activity feed. Every backend feeds the same store, so
+//! the UI is uniform across the native and remote provers.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

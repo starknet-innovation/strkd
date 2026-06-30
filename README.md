@@ -36,10 +36,12 @@ human launch). Broadcasting + fee estimation work against a node configured in
 the Settings tab; Sepolia reads/estimates are live-verified, while the broadcast
 hop still needs a funded-account submit.
 
-The `prover` crate is built and unit-tested against its mock backend, with
-`companion_prove*` covered end-to-end in the `wallet-rpc` dispatch tests; the
-native SNIP-36 backend + its bundled-binary path remain run-verify-pending (needs
-a staged prover + a display). Next up: **Phase 3** (Tongo / STRK20).
+The `prover` crate is built and tested (the success path via a test-only stub
+`Prover`, since there is **no mock backend** — both real backends fail honestly
+when unconfigured), with `companion_prove*` covered end-to-end in the `wallet-rpc`
+dispatch tests; the native SNIP-36 backend + its bundled-binary path remain
+run-verify-pending (needs a staged prover + a display). Next up: **Phase 3**
+(Tongo / STRK20).
 
 For the authoritative, always-current state, see
 **[`docs/project/status.md`](./docs/project/status.md)**.

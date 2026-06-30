@@ -10,8 +10,8 @@ use crate::storage::Storage;
 
 #[derive(Clone)]
 pub struct ProverState {
-    /// The proving seam — network-aware (remote when configured, else mock) or
-    /// the native on-device backend.
+    /// The proving seam — the native on-device backend, or a configured remote
+    /// prover. No mock backend.
     pub prover: Arc<dyn Prover>,
     /// Async proving jobs + the UI activity feed.
     pub jobs: Arc<Jobs>,

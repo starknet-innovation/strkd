@@ -28,21 +28,25 @@ desktop's IPC. Concretely:
 
 | Module | Responsibility |
 |---|---|
-| `config` | `ProverConfig` from env (`STRKD_PROVER`, `STRKD_MOCK_PROVE_MS`). |
+| `config` | `ProverConfig` from env (`STRKD_PROVER`). |
 | `settings` | `SettingsStore` — per-network `rpc_url` / `prover_url` / `prover_api_key` + `prover_backend`, persisted to `settings.json`, hot-reloaded on external edits. **Carries secrets — IPC-only.** |
 | `storage` | `Storage` — one `ProofRecord` JSON per job under `storage/`; `ProofSummary`/`StorageStats` for the UI; `max_seq` seeds the job counter across restarts. |
 | `jobs` | `Jobs` — in-memory job lifecycle (`queued`→`proving`→`succeeded`/`failed`) + a capped activity feed. |
-| `prover` | The `Prover` seam (`prove`/`kind`/`ready`) + `CompanionProver` (remote-when-configured, else a deterministic mock). |
+| `prover` | The `Prover` seam (`prove`/`kind`/`ready`) + `RemoteProver` (forwards to a configured remote prover; **no mock** — errors if no URL is set). |
 | `snip36` | Shared SNIP-36 helpers: nonce/block preflight, the CLI env (incl. the dummy `0x1` key), output parsing, and `run_and_parse`. |
-| `native_prover` | `NativeProver` — runs the local/bundled `snip36 prove virtual-os` CLI. The preferred (and only real) backend. |
+| `native_prover` | `NativeProver` — runs the local/bundled `snip36 prove virtual-os` CLI. The default, preferred backend. |
 | `state` | `ProverState { prover, jobs, settings, storage }` — cheap to clone (all `Arc`). |
 | `lib` | `build_prover_state`, `enqueue_prove`. |
 
 ## Backends (`STRKD_PROVER` / Settings `prover_backend`)
 
-- `native` — runs the bundled `snip36` CLI on-device (real proofs).
-- `remote` (default; legacy `companion`) — forwards to a per-network configured
-  remote prover if set, else returns a mock proof so the app is always exercisable.
+Both backends produce **real** proofs — there is no mock. An unconfigured backend
+fails the prove with a clear, actionable error rather than returning a fake proof.
+
+- `native` (**default**) — runs the bundled `snip36` CLI on-device. Fails with
+  "snip36 binary not found" if no prover bundle is staged.
+- `remote` (legacy alias `companion`) — forwards to the per-network remote prover
+  configured in Settings. Fails with "no remote prover configured" if no URL is set.
 
 The persisted Settings toggle wins over the env/default, chosen once at startup
 (so a change applies on restart).
@@ -51,8 +55,7 @@ The persisted Settings toggle wins over the env/default, chosen once at startup
 
 | Var | Meaning | Default |
 |---|---|---|
-| `STRKD_PROVER` | backend: `native` \| `remote` | `remote` |
-| `STRKD_MOCK_PROVE_MS` | mock-proof delay (ms) | `3000` |
+| `STRKD_PROVER` | backend: `native` \| `remote` | `native` |
 | `STRKD_SNIP36_BIN` | path to the `snip36` binary | bundled `resources/prover/snip36`, else `~/Workshop/snip-36-prover-backend/target/release/snip36` |
 | `STRKD_SNIP36_WORK_DIR` | dir to run the CLI from (must contain `deps/`) | alongside the binary |
 | `STRKD_PROVE_TIMEOUT_SECS` | prove timeout before the process group is killed | `900` |
@@ -116,7 +119,13 @@ The native backend needs the SNIP-36 / stwo prover stack on disk (286–403 MB).
 
 ## Tests
 
-`crates/prover/tests/enqueue.rs` exercises the full orchestration against the
-**mock** backend (no binary/network needed): enqueue → succeed → a `ProofRecord`
-is persisted, and the job counter seeds past existing records. `wallet-rpc`'s
-`tests/dispatch.rs` covers `companion_prove*` end-to-end through the service.
+Since there is no mock backend, the success path is exercised with a **test-only
+stub `Prover`** (in the test code, never shipped):
+
+- `crates/prover/tests/enqueue.rs` drives the orchestration through the real
+  failure path — an unconfigured `remote` backend fails fast with a clear error
+  and still persists a `failed` `ProofRecord` — and checks the job counter seeds
+  past existing records.
+- `wallet-rpc`'s `tests/dispatch.rs` attaches a stub `Prover` (returns a canned
+  proof) to cover `companion_prove` / `companion_signAndProve` success end-to-end
+  through the service, plus the unconfigured (`-32601`) and rejected (`113`) paths.

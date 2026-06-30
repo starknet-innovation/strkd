@@ -1370,14 +1370,38 @@ async fn requests_are_logged() {
 
 // ── On-device proving (companion_prove*) ─────────────────────────────────────
 
-/// State with a mock prover attached (no remote configured → CompanionProver
-/// mock path, so no native binary or network is needed).
+/// A test-only `Prover` that returns a canned proof. The shipped crate has no
+/// mock backend (the real backends fail honestly when unconfigured), so the
+/// success path is exercised here with a stub instead of a fake in production.
+struct StubProver;
+
+#[async_trait]
+impl prover::Prover for StubProver {
+    async fn prove(&self, _req: prover::ProveRequest) -> Result<prover::ProveResult, String> {
+        Ok(prover::ProveResult {
+            proof: json!({ "proof": "0xstub", "proof_facts": [], "l2_to_l1_messages": [] }),
+        })
+    }
+    fn kind(&self) -> &'static str {
+        "stub"
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// `ProverState` backed by the stub, attached to a fresh server (no native
+/// binary or network needed).
 fn state_with_prover(tag: &str) -> Arc<ServerState> {
     let data_dir =
         std::env::temp_dir().join(format!("strkd-rpc-prove-test-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
-    let cfg = prover::ProverConfig { prover_backend: "remote".into(), mock_prove_ms: 5 };
-    let pstate = Arc::new(prover::build_prover_state(data_dir, &cfg));
+    let pstate = Arc::new(prover::ProverState {
+        prover: Arc::new(StubProver),
+        jobs: Arc::new(prover::Jobs::new(0)),
+        settings: Arc::new(prover::SettingsStore::load(data_dir.join("settings.json"))),
+        storage: Arc::new(prover::Storage::new(data_dir.join("storage"))),
+    });
     Arc::new(
         ServerState::new(
             Arc::new(Mutex::new(make_session(false))),
@@ -1420,8 +1444,8 @@ async fn companion_prove_enqueues_and_status_reports_success() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(job["status"], json!("succeeded"), "mock proof should succeed");
-    assert_eq!(job["result"]["mock"], json!(true));
+    assert_eq!(job["status"], json!("succeeded"));
+    assert_eq!(job["result"]["proof"], json!("0xstub"));
 
     // The activity feed lists the job.
     let act = call(&state, Some(&token), "companion_proofActivity", json!({}))
@@ -1452,7 +1476,7 @@ async fn companion_prove_without_prover_is_not_implemented() {
 #[tokio::test]
 async fn sign_and_prove_signs_the_virtual_tx_and_enqueues_it() {
     // The wallet signs Tx A (a normal v3 invoke, NOT proof-carrying) and hands it
-    // to the in-process prover in one call. Mock backend succeeds regardless of
+    // to the in-process prover in one call. The stub prover succeeds regardless of
     // tx content, so this exercises sign → enqueue → prove without a native binary.
     let state = state_with_prover("signprove");
     let (_, address) = user_registry();
@@ -1477,7 +1501,7 @@ async fn sign_and_prove_signs_the_virtual_tx_and_enqueues_it() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(job["status"], json!("succeeded"));
-    assert_eq!(job["result"]["mock"], json!(true));
+    assert_eq!(job["result"]["proof"], json!("0xstub"));
 }
 
 #[tokio::test]
@@ -1511,10 +1535,15 @@ async fn sign_and_prove_rejected_maps_to_113() {
     });
     let dir = std::env::temp_dir().join(format!("strkd-rpc-prove-rej-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let cfg = prover::ProverConfig { prover_backend: "remote".into(), mock_prove_ms: 5 };
+    let pstate = Arc::new(prover::ProverState {
+        prover: Arc::new(StubProver),
+        jobs: Arc::new(prover::Jobs::new(0)),
+        settings: Arc::new(prover::SettingsStore::load(dir.join("settings.json"))),
+        storage: Arc::new(prover::Storage::new(dir.join("storage"))),
+    });
     let state = Arc::new(
         ServerState::new(Arc::new(Mutex::new(make_session(false))), Arc::new(approver))
-            .with_prover(Arc::new(prover::build_prover_state(dir, &cfg))),
+            .with_prover(pstate),
     );
     let (_, address) = user_registry();
     let token = pair(&state, "app").await;

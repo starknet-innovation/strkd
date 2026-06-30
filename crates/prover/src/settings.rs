@@ -86,6 +86,12 @@ impl SettingsStore {
         self.inner.try_read().map(|s| s.prover_backend.clone()).unwrap_or_default()
     }
 
+    /// Best-effort synchronous snapshot of the settings (uncontended). `None` if
+    /// the lock is momentarily held — used by readiness checks that can't await.
+    pub fn try_snapshot(&self) -> Option<Settings> {
+        self.inner.try_read().ok().map(|s| s.clone())
+    }
+
     /// Config for a network name (`mainnet`/`testnet`; `sepolia` aliases testnet).
     pub async fn for_network(&self, net: &str) -> NetworkConfig {
         self.reload_if_changed().await;

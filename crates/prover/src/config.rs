@@ -6,12 +6,11 @@
 //! exposed over strkd's loopback JSON-RPC service), so there is no bind address.
 
 pub struct ProverConfig {
-    /// Which prover backend to use (`STRKD_PROVER`): `remote` (default; a
-    /// configured remote prover, else mock — internally `CompanionProver`) or
-    /// `native` (local SNIP-36 CLI). Legacy value `companion` → `remote`.
+    /// Which prover backend to use (`STRKD_PROVER`): `native` (default — proves
+    /// on-device via the bundled SNIP-36 CLI) or `remote` (forward to a remote
+    /// prover the user configured per-network). Legacy value `companion` →
+    /// `remote`. There is no mock backend.
     pub prover_backend: String,
-    /// Simulated proving delay for the mock fallback, ms (`STRKD_MOCK_PROVE_MS`).
-    pub mock_prove_ms: u64,
 }
 
 impl ProverConfig {
@@ -19,10 +18,7 @@ impl ProverConfig {
         fn var(k: &str, d: &str) -> String {
             std::env::var(k).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| d.to_string())
         }
-        ProverConfig {
-            prover_backend: var("STRKD_PROVER", "remote"),
-            mock_prove_ms: var("STRKD_MOCK_PROVE_MS", "3000").parse().unwrap_or(3000),
-        }
+        ProverConfig { prover_backend: var("STRKD_PROVER", "native") }
     }
 }
 

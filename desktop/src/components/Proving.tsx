@@ -65,10 +65,6 @@ export function Proving() {
         <span className="v">{status ? (status.ready ? "yes" : "no") : "…"}</span>
       </div>
 
-      <button className="primary" onClick={() => void api.testProve()}>
-        Run a test proof
-      </button>
-
       <p className="muted small">
         Paired agents prove over the wallet's loopback service: <code>companion_signAndProve</code>{" "}
         signs a SNIP-36 virtual tx and proves it in one call, or <code>companion_prove</code> proves
@@ -78,7 +74,7 @@ export function Proving() {
 
       <h3>Proofs</h3>
       {proofs.length === 0 && inProgress.length === 0 ? (
-        <p className="muted small">No proofs yet. Try “Run a test proof”.</p>
+        <p className="muted small">No proofs yet. Proofs appear here when an agent calls the prover.</p>
       ) : (
         <ul className="feed">
           {inProgress.map((a) => (

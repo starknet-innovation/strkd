@@ -132,14 +132,14 @@ export function Settings({ onChange }: { onChange: () => void }) {
         <span className="muted small">Prover backend (applies after restart)</span>
         <select
           className="input"
-          value={prover.prover_backend || "remote"}
+          value={prover.prover_backend || "native"}
           onChange={(e) => {
             setProver({ ...prover, prover_backend: e.target.value });
             setProverSaved(false);
           }}
         >
           <option value="native">native — bundled on-device prover (recommended)</option>
-          <option value="remote">remote — a configured remote prover, else a mock proof</option>
+          <option value="remote">remote — forward to a configured remote prover</option>
         </select>
       </label>
 

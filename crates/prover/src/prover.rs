@@ -1,15 +1,13 @@
 //! The proving seam — generic and network-aware.
 //!
-//! [`CompanionProver`] proves a payload for a given network. If that network has
-//! a remote prover configured (in [`crate::settings`]), it forwards there with
-//! the stored API key; otherwise it falls back to a mock proof so the app is
-//! always exercisable. The real on-device backend ([`crate::native_prover`])
-//! slots in as another arm of this seam — routes/UI/storage are unaffected.
+//! Two real backends implement it: [`crate::native_prover::NativeProver`] (the
+//! default — proves on-device) and [`RemoteProver`] (forwards to a remote prover
+//! the user configured for the network, with the stored API key). There is no
+//! mock backend: if a backend can't produce a real proof (no remote URL set, or
+//! no native binary), the prove fails with a clear error rather than returning a
+//! fake proof.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -39,73 +37,63 @@ pub trait Prover: Send + Sync {
     fn ready(&self) -> bool;
 }
 
-/// Proves remotely when configured per-network, else returns a mock proof.
-pub struct CompanionProver {
+/// Forwards a payload to the remote prover the user configured for the network
+/// (with the stored API key). No mock fallback: if no prover URL is set for the
+/// network, the prove fails with a clear error instead of returning a fake proof.
+pub struct RemoteProver {
     settings: Arc<SettingsStore>,
     http: reqwest::Client,
-    mock_delay_ms: u64,
 }
 
-impl CompanionProver {
-    pub fn new(settings: Arc<SettingsStore>, mock_delay_ms: u64) -> Self {
-        CompanionProver { settings, http: crate::snip36::http_client(), mock_delay_ms }
+impl RemoteProver {
+    pub fn new(settings: Arc<SettingsStore>) -> Self {
+        RemoteProver { settings, http: crate::snip36::http_client() }
     }
 }
 
-fn fake_hex(prefix: &str, input: &str) -> String {
-    let mut h = DefaultHasher::new();
-    prefix.hash(&mut h);
-    input.hash(&mut h);
-    let a = h.finish();
-    let mut h2 = DefaultHasher::new();
-    a.hash(&mut h2);
-    input.hash(&mut h2);
-    format!("0x{a:016x}{:016x}", h2.finish())
-}
-
 #[async_trait]
-impl Prover for CompanionProver {
+impl Prover for RemoteProver {
     async fn prove(&self, req: ProveRequest) -> Result<ProveResult, String> {
         let net = self.settings.for_network(&req.network).await;
 
-        // Remote proving when a prover URL is configured for this network.
-        if !net.prover_url.is_empty() {
-            let url = format!("{}/v1/prove", net.prover_url.trim_end_matches('/'));
-            let resp = self
-                .http
-                .post(&url)
-                .header("x-api-key", &net.prover_api_key)
-                .json(&json!({ "payload": req.payload }))
-                .send()
-                .await
-                .map_err(|e| format!("remote prover request failed: {e}"))?;
-            let status = resp.status();
-            let body: Value = resp
-                .json()
-                .await
-                .map_err(|e| format!("remote prover bad response: {e}"))?;
-            if !status.is_success() {
-                return Err(format!("remote prover {status}: {body}"));
-            }
-            return Ok(ProveResult { proof: body });
+        if net.prover_url.is_empty() {
+            return Err(format!(
+                "no remote prover configured for {} — set a prover URL in Settings, or switch \
+                 the prover backend to `native` to prove on-device",
+                req.network
+            ));
         }
 
-        // Mock fallback (no remote configured for this network).
-        tokio::time::sleep(Duration::from_millis(self.mock_delay_ms)).await;
-        Ok(ProveResult {
-            proof: json!({
-                "mock": true,
-                "network": req.network,
-                "proof": fake_hex("proof", &req.payload.to_string()),
-            }),
-        })
+        let url = format!("{}/v1/prove", net.prover_url.trim_end_matches('/'));
+        let resp = self
+            .http
+            .post(&url)
+            .header("x-api-key", &net.prover_api_key)
+            .json(&json!({ "payload": req.payload }))
+            .send()
+            .await
+            .map_err(|e| format!("remote prover request failed: {e}"))?;
+        let status = resp.status();
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("remote prover bad response: {e}"))?;
+        if !status.is_success() {
+            return Err(format!("remote prover {status}: {body}"));
+        }
+        Ok(ProveResult { proof: body })
     }
 
     fn kind(&self) -> &'static str {
         "remote"
     }
 
+    /// Whether a remote prover is configured for *either* network (sync, no
+    /// network call). False ⇒ a `remote` prove will error until a URL is set.
     fn ready(&self) -> bool {
-        true
+        self.settings
+            .try_snapshot()
+            .map(|s| !s.mainnet.prover_url.is_empty() || !s.testnet.prover_url.is_empty())
+            .unwrap_or(false)
     }
 }

@@ -29,15 +29,16 @@ use serde_json::Value;
 
 pub use config::ProverConfig;
 pub use jobs::{Activity, Job, JobStatus, Jobs};
-pub use prover::{CompanionProver, Prover, ProveRequest, ProveResult};
+pub use prover::{Prover, ProveRequest, ProveResult, RemoteProver};
 pub use settings::{NetworkConfig, Settings, SettingsStore};
 pub use state::ProverState;
 pub use storage::{ProofRecord, ProofSummary, Storage, StorageStats};
 
 /// Build shared prover state: load settings + open storage under `data_dir`, and
-/// wire the configured backend. `cfg` supplies the backend choice + mock delay
-/// (the persisted Settings toggle wins over the env/default, chosen once at
-/// startup so a settings change applies on restart).
+/// wire the configured backend. `cfg` supplies the backend choice (the persisted
+/// Settings toggle wins over the env/default, chosen once at startup so a
+/// settings change applies on restart). Both backends are real — there is no
+/// mock; an unconfigured backend fails a prove with a clear error.
 pub fn build_prover_state(data_dir: PathBuf, cfg: &ProverConfig) -> ProverState {
     let settings = Arc::new(SettingsStore::load(data_dir.join("settings.json")));
     let storage = Arc::new(Storage::new(data_dir.join("storage")));
@@ -49,9 +50,10 @@ pub fn build_prover_state(data_dir: PathBuf, cfg: &ProverConfig) -> ProverState 
         if s.is_empty() { cfg.prover_backend.clone() } else { s }
     };
     let prover: Arc<dyn Prover> = match backend.as_str() {
-        "native" => Arc::new(native_prover::NativeProver::new(settings.clone())),
-        // "remote" / "companion" / anything else → network-aware remote-or-mock.
-        _ => Arc::new(CompanionProver::new(settings.clone(), cfg.mock_prove_ms)),
+        // "remote" / "companion" → forward to the user's configured remote prover.
+        "remote" | "companion" => Arc::new(RemoteProver::new(settings.clone())),
+        // Default (incl. "native"): prove on-device.
+        _ => Arc::new(native_prover::NativeProver::new(settings.clone())),
     };
     ProverState { prover, jobs: Arc::new(Jobs::new(next_seq)), settings, storage }
 }

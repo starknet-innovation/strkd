@@ -555,18 +555,6 @@ async fn proof_activity(state: State<'_, DesktopState>) -> Result<Vec<Activity>,
     Ok(state.prover.jobs.recent_activity().await)
 }
 
-/// Enqueue a throwaway proof so the user can watch the pipeline run end-to-end.
-#[tauri::command]
-async fn test_prove(state: State<'_, DesktopState>) -> Result<String, String> {
-    Ok(prover::enqueue_prove(
-        &state.prover,
-        serde_json::json!({ "demo": true }),
-        Some("ui:test".into()),
-        "testnet".into(),
-    )
-    .await)
-}
-
 /// Current per-network prover settings (RPC + remote prover + API keys). Trusted
 /// IPC only — these carry secrets and are never exposed over the loopback service.
 #[tauri::command]
@@ -856,7 +844,6 @@ pub fn run() {
             respond_approval,
             prover_status,
             proof_activity,
-            test_prove,
             get_prover_settings,
             set_prover_settings,
             storage_stats,

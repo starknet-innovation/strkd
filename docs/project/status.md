@@ -48,10 +48,11 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
   (approval-gated) wires signing → proving in one call: it signs the private
   virtual tx and hands it to the in-process prover. SNIP-36 is inherently two
   transactions, so the on-chain verifier invoke is still broadcast separately via
-  `wallet_addInvokeTransaction` (its calldata is app-specific). Mock-backend unit
-  tests + dispatch tests green (incl. signAndProve), clippy clean. Native backend
-  isn't run-verified (needs a staged prover bundle). Reference:
-  [`docs/code/prover.md`](../code/prover.md).
+  `wallet_addInvokeTransaction` (its calldata is app-specific). **No mock backend
+  or test-proof button** — both backends are real; an unconfigured one fails with
+  a clear error. Unit + dispatch tests green (incl. signAndProve; the success path
+  uses a test-only stub `Prover`), clippy clean. Native backend isn't run-verified
+  (needs a staged prover bundle). Reference: [`docs/code/prover.md`](../code/prover.md).
 - **Phase 0 — crypto core (`wallet-core` crate)** — built, 15 tests green,
   clippy clean. Covers: two-domain derivation, OZ address calc, Stark signing,
   Argon2id→AES-256-GCM vault, account registry + per-caller scoping. Reference:

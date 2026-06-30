@@ -114,8 +114,9 @@ wallet_addInvokeTransaction {proof_facts, proof, submit:true}. See the snip36_pr
 CRITICAL: a virtual tx carries PRIVATE calldata, so you MUST pass explicit resource_bounds — strkd \
 refuses to fee-estimate it (estimating online would send your private inputs to the RPC node). \
 Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving, not in Tx A's hash). Proving \
-needs a per-network RPC + the native prover (or a configured remote prover) set in the app's \
-Settings; otherwise it returns a mock proof so the flow is exercisable end-to-end."
+needs the native prover (bundled on-device) or a configured remote prover, plus a per-network RPC, \
+set in the app's Settings. There is NO mock/fake proof: an unconfigured backend FAILS the prove \
+with a clear error rather than returning a fake."
         },
 
         "approval_model": "prompts:true means the call blocks until the user clicks Approve/Reject \
@@ -206,7 +207,7 @@ concepts.proving.",
             { "method": "companion_prove", "auth": true, "prompts": false,
               "params": "{ payload, network?: \"mainnet\"|\"testnet\", label? }",
               "returns": "{ job_id, status: \"queued\", next }",
-              "note": "On-device proving companion. Hand it an opaque, ALREADY-SIGNED payload; it proves locally and returns the proof — it never signs and holds no key material. For SNIP-36 the payload is { transaction: <signed invoke-v3>, block_number? }; the proof comes back as { proof (base64 STWO), proof_facts, l2_to_l1_messages }, which you feed into wallet_addInvokeTransaction (proof_facts at sign time, proof on submit). Returns a job id immediately — poll companion_proveStatus. Needs a per-network RPC + the native prover (or a configured remote prover) set in the desktop Settings; otherwise returns a mock proof. Proving is local-only: no separate open port, and settings/keys are never exposed here." },
+              "note": "On-device proving companion. Hand it an opaque, ALREADY-SIGNED payload; it proves locally and returns the proof — it never signs and holds no key material. For SNIP-36 the payload is { transaction: <signed invoke-v3>, block_number? }; the proof comes back as { proof (base64 STWO), proof_facts, l2_to_l1_messages }, which you feed into wallet_addInvokeTransaction (proof_facts at sign time, proof on submit). Returns a job id immediately — poll companion_proveStatus. Needs the native prover (bundled) or a configured remote prover + a per-network RPC, set in the desktop Settings; an unconfigured backend fails with a clear error (no mock/fake proof). Proving is local-only: no separate open port, and settings/keys are never exposed here." },
             { "method": "companion_proveStatus", "auth": true, "prompts": false,
               "params": "{ job_id }",
               "returns": "{ job_id, status: queued|proving|succeeded|failed, started_at_ms, label?, result?, error? }",
