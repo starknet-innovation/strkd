@@ -107,8 +107,9 @@ and broadcasts Tx B via `wallet_addInvokeTransaction { proof_facts, proof, submi
 The native backend needs the SNIP-36 / stwo prover stack on disk (286–403 MB).
 `desktop/scripts/` stages it into `desktop/src-tauri/resources/prover/` (gitignored):
 
-- `prover-pin.env` — the pinned release (`v1.1.3`, RC.6, **PROOF0** — verifies
-  on-chain; do not bump without re-verifying against the live Sepolia verifier).
+- `prover-pin.env` — the pinned release (`v1.2.2`, deps-v7 — **live-verified on
+  Sepolia 0.14.3, 2026-07-02**: proof generated on-device and verified on-chain).
+  Do not bump without re-verifying against the live Sepolia verifier.
 - `stage-prover.sh` — from a locally-built checkout (~286 MB).
 - `stage-prover-source.sh` — build from source + apply the relocatability patch
   (~403 MB, ~30–40 min); used by CI.

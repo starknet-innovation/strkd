@@ -51,8 +51,11 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
   `wallet_addInvokeTransaction` (its calldata is app-specific). **No mock backend
   or test-proof button** — both backends are real; an unconfigured one fails with
   a clear error. Unit + dispatch tests green (incl. signAndProve; the success path
-  uses a test-only stub `Prover`), clippy clean. Native backend isn't run-verified
-  (needs a staged prover bundle). Reference: [`docs/code/prover.md`](../code/prover.md).
+  uses a test-only stub `Prover`), clippy clean. **Live-verified end-to-end on
+  Sepolia (2026-07-02):** the native backend (prover pin `v1.2.2` / deps-v7)
+  generated a proof-carrying invoke on-device that **verified on-chain** — the
+  full sign → prove → broadcast loop works on the current 0.14.3 network.
+  Reference: [`docs/code/prover.md`](../code/prover.md).
 - **Phase 0 — crypto core (`wallet-core` crate)** — built, 15 tests green,
   clippy clean. Covers: two-domain derivation, OZ address calc, Stark signing,
   Argon2id→AES-256-GCM vault, account registry + per-caller scoping. Reference:

@@ -39,9 +39,9 @@ hop still needs a funded-account submit.
 The `prover` crate is built and tested (the success path via a test-only stub
 `Prover`, since there is **no mock backend** — both real backends fail honestly
 when unconfigured), with `companion_prove*` covered end-to-end in the `wallet-rpc`
-dispatch tests; the native SNIP-36 backend + its bundled-binary path remain
-run-verify-pending (needs a staged prover + a display). Next up: **Phase 3**
-(Tongo / STRK20).
+dispatch tests. The native SNIP-36 backend is **live-verified on Sepolia
+(2026-07-02, prover pin `v1.2.2`)**: it generated a proof-carrying invoke
+on-device that **verified on-chain**. Next up: **Phase 3** (Tongo / STRK20).
 
 For the authoritative, always-current state, see
 **[`docs/project/status.md`](./docs/project/status.md)**.
