@@ -85,6 +85,15 @@ pub fn classify_prover_error(stderr: &str) -> String {
         )
     } else if low.contains("port") && low.contains("already in use") {
         format!("prover port in use (stale runner) — retry; strkd picks a fresh port per prove. raw: {}", snippet(stderr))
+    } else if low.contains("invalid starknet version") || low.contains("convert block header") {
+        format!(
+            "the bundled prover does not support this network's Starknet protocol version — it \
+             rejected the reference block header, so the pinned prover stack predates the network's \
+             current protocol. Fix: update the prover pin (desktop/scripts/prover-pin.env) to a \
+             release that supports it and re-stage, or set the prover backend to `remote` (Settings) \
+             and point at a compatible prover. raw: {}",
+            snippet(stderr)
+        )
     } else {
         format!("prover failed: {}", snippet(stderr))
     }
@@ -264,4 +273,26 @@ pub(crate) async fn run_and_parse(
         return Err(classify_prover_error(&String::from_utf8_lossy(&output.stderr)));
     }
     parse_outputs(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_prover_error;
+
+    #[test]
+    fn unsupported_protocol_version_is_actionable() {
+        // The exact shape reported from Sepolia 0.14.3 against the v1.1.3 prover.
+        let stderr = r#"starknet_proveTransaction failed: {"code":-32603,"data":"Transaction execution failed: Failed to convert block header to block info: Invalid Starknet version: [0, 14, 3]","message":"Internal error"}"#;
+        let msg = classify_prover_error(stderr);
+        assert!(msg.contains("does not support this network's Starknet protocol"));
+        assert!(msg.contains("prover-pin.env") && msg.contains("remote"));
+        // Still carries the raw error for debugging.
+        assert!(msg.contains("Invalid Starknet version"));
+    }
+
+    #[test]
+    fn unknown_error_falls_back() {
+        let msg = classify_prover_error("some other failure");
+        assert!(msg.starts_with("prover failed:"));
+    }
 }
