@@ -77,9 +77,9 @@ export function Settings({ onChange }: { onChange: () => void }) {
     <div className="panel">
       <h3>Starknet RPC endpoints</h3>
       <p className="muted small">
-        Required for fee estimation and broadcasting (<code>submit:true</code>). Leave a field
-        empty to keep that network sign-only. The endpoint stays on this device and is never
-        exposed over the wallet's service.
+        One node per network, shared by the wallet (fee estimation + broadcasting) and the
+        on-device prover (proof preflight). Leave a field empty to keep that network sign-only.
+        The endpoint stays on this device and is never exposed over the wallet's service.
       </p>
 
       <label className="field">
@@ -143,33 +143,35 @@ export function Settings({ onChange }: { onChange: () => void }) {
         </select>
       </label>
 
-      {(["testnet", "mainnet"] as const).map((net) => (
-        <div key={net} className="field">
-          <span className="muted small">
-            {net === "testnet" ? "Sepolia (testnet)" : "Mainnet"} — prover config
-          </span>
-          <input
-            className="input"
-            placeholder="RPC URL (used for nonce/block preflight)"
-            value={prover[net].rpc_url}
-            onChange={(e) => proverField(net, "rpc_url", e.target.value)}
-          />
-          <input
-            className="input"
-            placeholder="Remote prover URL (optional)"
-            value={prover[net].prover_url}
-            onChange={(e) => proverField(net, "prover_url", e.target.value)}
-          />
-          <input
-            className="input"
-            type="password"
-            placeholder="Remote prover API key (optional)"
-            autoComplete="off"
-            value={prover[net].prover_api_key}
-            onChange={(e) => proverField(net, "prover_api_key", e.target.value)}
-          />
-        </div>
-      ))}
+      {prover.prover_backend === "remote" && (
+        <>
+          <p className="muted small">
+            Remote prover endpoints (used only by the <code>remote</code> backend). The RPC node is
+            shared with the wallet above.
+          </p>
+          {(["testnet", "mainnet"] as const).map((net) => (
+            <div key={net} className="field">
+              <span className="muted small">
+                {net === "testnet" ? "Sepolia (testnet)" : "Mainnet"} — remote prover
+              </span>
+              <input
+                className="input"
+                placeholder="Remote prover URL"
+                value={prover[net].prover_url}
+                onChange={(e) => proverField(net, "prover_url", e.target.value)}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="Remote prover API key"
+                autoComplete="off"
+                value={prover[net].prover_api_key}
+                onChange={(e) => proverField(net, "prover_api_key", e.target.value)}
+              />
+            </div>
+          ))}
+        </>
+      )}
 
       <button className="primary" onClick={saveProver}>
         {proverSaved ? "Saved ✓" : "Save prover settings"}

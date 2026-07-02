@@ -236,6 +236,17 @@ async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String
     Ok(settings::load(&state.config_path))
 }
 
+/// The wallet's per-network RPC URLs are the single source of truth; the prover
+/// reuses them for its proof preflight. Mirror them into the prover's settings
+/// (Sepolia → testnet) so both sides always hit the same node. Preserves the
+/// prover's own fields (backend, remote-prover URL/key).
+async fn sync_prover_rpc(prover: &ProverState, wallet: &Settings) {
+    let mut ps = prover.settings.get().await;
+    ps.testnet.rpc_url = wallet.sepolia_rpc.clone();
+    ps.mainnet.rpc_url = wallet.mainnet_rpc.clone();
+    let _ = prover.settings.update(ps).await;
+}
+
 /// Persist settings and rebuild the node client for the active network at
 /// runtime (no restart needed).
 #[tauri::command]
@@ -249,6 +260,8 @@ async fn set_settings(state: State<'_, DesktopState>, settings: Settings) -> Res
     state
         .server
         .set_node(ChainId::Mainnet, settings.node_for(ChainId::Mainnet));
+    // Proving shares these RPC nodes — mirror them into the prover's settings.
+    sync_prover_rpc(&state.prover, &settings).await;
     Ok(())
 }
 
@@ -555,19 +568,27 @@ async fn proof_activity(state: State<'_, DesktopState>) -> Result<Vec<Activity>,
     Ok(state.prover.jobs.recent_activity().await)
 }
 
-/// Current per-network prover settings (RPC + remote prover + API keys). Trusted
-/// IPC only — these carry secrets and are never exposed over the loopback service.
+/// Current per-network prover settings (backend + remote-prover URL/keys). The
+/// `rpc_url` fields are mirrored from the wallet's RPC settings (shared nodes),
+/// not edited here. Trusted IPC only — these carry secrets and are never exposed
+/// over the loopback service.
 #[tauri::command]
 async fn get_prover_settings(state: State<'_, DesktopState>) -> Result<ProverSettings, String> {
     Ok(state.prover.settings.get().await)
 }
 
-/// Replace + persist prover settings.
+/// Replace + persist prover settings (backend + remote-prover config). RPC URLs
+/// are NOT taken from the caller — proving shares the wallet's RPC nodes, so we
+/// force them from the wallet config regardless of what the UI sends.
 #[tauri::command]
 async fn set_prover_settings(
     state: State<'_, DesktopState>,
     settings: ProverSettings,
 ) -> Result<(), String> {
+    let mut settings = settings;
+    let wallet = crate::settings::load(&state.config_path);
+    settings.testnet.rpc_url = wallet.sepolia_rpc;
+    settings.mainnet.rpc_url = wallet.mainnet_rpc;
     state.prover.settings.update(settings).await.map_err(|e| e.to_string())
 }
 
@@ -742,6 +763,9 @@ pub fn run() {
             // (Settings tab → config.json), one per network. Changeable at runtime
             // via set_settings — no restart. Sign-only until an RPC URL is set.
             let saved = settings::load(&config_path);
+            // Proving shares the wallet's RPC nodes — seed the prover's settings
+            // from the wallet config at startup (kept in sync on every save).
+            tauri::async_runtime::block_on(sync_prover_rpc(&prover_state, &saved));
             if let Some(node) = saved.node_for(ChainId::Sepolia) {
                 state = state.with_node(ChainId::Sepolia, node);
             }
