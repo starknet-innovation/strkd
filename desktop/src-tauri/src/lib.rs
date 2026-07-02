@@ -99,6 +99,7 @@ use prover::{
     build_prover_state, Activity, ProofRecord, ProofSummary, ProverConfig, ProverState,
     Settings as ProverSettings, StorageStats,
 };
+use tauri_plugin_notification::NotificationExt;
 
 /// Tauri-managed app state. The wallet session, clients, log and approver all
 /// live inside the shared `ServerState` (which the loopback service also uses);
@@ -131,6 +132,25 @@ fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+/// Banner title for an incoming approval request (pairing and funding are the
+/// ones a user most wants to catch).
+fn notif_title(method: &str) -> &'static str {
+    match method {
+        "companion_requestPairing" => "strkd — pairing request",
+        "companion_requestFunding" => "strkd — funding (top-up) request",
+        _ => "strkd — approval needed",
+    }
+}
+
+/// A macOS system sound name (guaranteed audible); a generic name elsewhere.
+fn notif_sound() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Ping"
+    } else {
+        "default"
     }
 }
 
@@ -641,9 +661,7 @@ fn spawn_approval_bridge(
                 g.len()
             };
 
-            // Notify the UI: it shows the in-app dialog and posts a menu-bar
-            // notification (with Approve/Deny buttons) from the frontend. A red
-            // dot on the tray icon signals pending work. We do NOT steal focus.
+            // Tell the UI to show the in-app approval dialog.
             let _ = app.emit(
                 "approval-request",
                 serde_json::json!({
@@ -653,6 +671,23 @@ fn spawn_approval_bridge(
                     "summary": request.summary,
                 }),
             );
+
+            // Alert the user even when the window is hidden in the tray. This is
+            // posted from Rust (this async bridge is always alive) — NOT the
+            // webview, whose JS is suspended while hidden, which is why a
+            // signing request used to produce zero notification. Banner + sound
+            // + a Dock-icon bounce (attention, not focus-stealing) + the tray
+            // red dot / Dock badge (refresh_tray) make it impossible to miss.
+            let _ = app
+                .notification()
+                .builder()
+                .title(notif_title(&request.method))
+                .body(&request.summary)
+                .sound(notif_sound())
+                .show();
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.request_user_attention(Some(tauri::UserAttentionType::Critical));
+            }
             refresh_tray(&app, count);
 
             // Auto-reject if the user doesn't respond within the window.
@@ -701,6 +736,19 @@ pub fn run() {
             // window only hides it.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+            // Request OS-notification permission up front, from Rust (so it does
+            // not depend on the webview being awake). The approval bridge posts a
+            // banner for every signing request; without permission macOS silently
+            // drops them. First launch shows the system prompt; if the user misses
+            // it, they can enable "strkd" under System Settings → Notifications.
+            {
+                use tauri_plugin_notification::PermissionState;
+                let n = app.notification();
+                if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
+                    let _ = n.request_permission();
+                }
+            }
 
             // Data dir + file paths (spec §10).
             let data_dir = app
