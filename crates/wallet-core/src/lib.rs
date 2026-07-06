@@ -20,7 +20,10 @@ pub mod vault;
 pub use accounts::{AccountRef, Registry};
 pub use domain::{Domain, AGENT_ACCOUNT_INDEX, STARKNET_COIN_TYPE, USER_ACCOUNT_INDEX};
 pub use error::{CoreError, Result};
-pub use keys::{deployment_data, oz_address, public_key, sign_hash, sign_typed_data, DeploymentData};
+pub use keys::{
+    deployment_data, oz_address, public_key, sign_hash, sign_typed_data, typed_data_message_hash,
+    DeploymentData,
+};
 pub use tx::{
     encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector, sign_declare_v3,
     sign_deploy_account_v3, sign_invoke_v3, starknet_keccak, Call, InvokeV3Params, SignedDeclare,

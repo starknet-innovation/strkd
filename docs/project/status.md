@@ -5,7 +5,7 @@ progresses — it must always reflect the present. History lives in
 [`progress-log.md`](./progress-log.md). Process lives in
 [`workflow.md`](./workflow.md).
 
-_Last updated: 2026-06-11_
+_Last updated: 2026-07-06_
 
 ---
 
@@ -56,6 +56,17 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
   generated a proof-carrying invoke on-device that **verified on-chain** — the
   full sign → prove → broadcast loop works on the current 0.14.3 network.
   Reference: [`docs/code/prover.md`](../code/prover.md).
+- **SNIP-12 typed-data hashing fixed** (agent feedback #7) — `wallet_signTypedData`
+  now signs the exact SNIP-12 rev-1 digest `starknet.js typedData.getMessageHash`
+  produces, so an account's on-chain `is_valid_signature` accepts it (the standard
+  committee/multisig approval pattern). Two bugs were in `krusty-kms`
+  ([PR #36](https://github.com/starknet-innovation/krusty-kms/pull/36), **merged**):
+  the message prefix was `keccak("StarkNet Message")` instead of the short-string
+  felt, and `shortstring` values were always ASCII-encoded instead of via
+  `parse_felt` (so a domain `version`/`revision` of `"1"` hashed as `0x31`, not `1`).
+  Pin bumped to krusty `main` (`b50afd6`); new `companion_typedDataHash` returns the
+  digest for cross-checking; a dispatch test verifies `[r, s]` under the account key
+  against a starknet.py-checked golden vector.
 - **Phase 0 — crypto core (`wallet-core` crate)** — built, 15 tests green,
   clippy clean. Covers: two-domain derivation, OZ address calc, Stark signing,
   Argon2id→AES-256-GCM vault, account registry + per-caller scoping. Reference:

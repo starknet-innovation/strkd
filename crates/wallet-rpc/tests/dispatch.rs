@@ -7,7 +7,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
-use wallet_core::{address_hex, oz_address, AccountRef, ChainId, Domain, Felt, Registry, ResourceBounds};
+use wallet_core::{
+    address_hex, oz_address, public_key, AccountRef, ChainId, Domain, Felt, Registry,
+    ResourceBounds,
+};
 use wallet_rpc::{
     dispatch, AutoApprover, ChannelApprover, Decision, FeeBounds, NodeError, Request, Response,
     ServerState, StarknetRpc, WalletSession,
@@ -359,6 +362,81 @@ async fn sign_typed_data_returns_signature_when_approved() {
     let arr = sig.as_array().unwrap();
     assert_eq!(arr.len(), 2); // [r, s]
     assert!(arr[0].as_str().unwrap().starts_with("0x"));
+}
+
+/// strkd #7 regression: `companion_typedDataHash` reports the exact SNIP-12
+/// rev-1 digest that `wallet_signTypedData` signs, and the account's own public
+/// key validates the `[r, s]` over that digest — i.e. the account's on-chain
+/// `is_valid_signature(hash, [r, s])` would accept it. Before the krusty-kms
+/// prefix fix (short-string 'StarkNet Message', not its keccak) the signed
+/// digest matched no SNIP-12 verifier, so this whole flow was impossible.
+#[tokio::test]
+async fn typed_data_hash_is_the_signed_digest_and_verifies_under_account_key() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let td = sample_typed_data();
+
+    // The hash strkd would sign (no prompt, no key).
+    let hash_resp = call(
+        &state,
+        Some(&token),
+        "companion_typedDataHash",
+        json!({"account_address": address, "typed_data": td.clone()}),
+    )
+    .await;
+    let hres = hash_resp.result.expect("expected hash");
+    assert_eq!(hres["revision"], "1");
+    let hash = Felt::from_hex(hres["hash"].as_str().unwrap()).unwrap();
+
+    // The signature over the same typed data.
+    let sig_resp = call(
+        &state,
+        Some(&token),
+        "wallet_signTypedData",
+        json!({"account_address": address, "typed_data": td}),
+    )
+    .await;
+    let arr = sig_resp.result.expect("expected signature");
+    let arr = arr.as_array().unwrap();
+    let r = Felt::from_hex(arr[0].as_str().unwrap()).unwrap();
+    let s = Felt::from_hex(arr[1].as_str().unwrap()).unwrap();
+
+    // The account's own key must validate [r, s] over the reported hash — the
+    // on-chain is_valid_signature check, done locally with a test seed.
+    let pk = public_key(TEST_MNEMONIC, Domain::User, 0, None).unwrap();
+    assert!(
+        starknet_crypto::verify(&pk, &hash, &r, &s).unwrap(),
+        "signature must verify against the reported SNIP-12 digest under the account key",
+    );
+
+    // Guard the pin against SNIP-12 regressions: this exact digest was
+    // cross-checked against starknet.py TypedData.message_hash (== starknet.js
+    // and on-chain is_valid_signature). If the krusty pin regressed (keccak
+    // prefix, or shortstring not going through parse_felt), this would change.
+    assert_eq!(
+        hres["hash"].as_str().unwrap(),
+        "0x68b4250d022dce3e45e64683935b0e0f8bf95e3dbf17eb9839e255578ddc061",
+        "SNIP-12 rev-1 digest changed — check the krusty-kms pin",
+    );
+}
+
+#[tokio::test]
+async fn typed_data_hash_needs_no_unlock() {
+    // Pure hash: available while locked (it never touches the vault). The
+    // approver only gates pairing here; typedDataHash itself prompts nothing.
+    let state = state_with(Decision::Approve, true);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "companion_typedDataHash",
+        json!({"account_address": address, "typed_data": sample_typed_data()}),
+    )
+    .await;
+    let res = resp.result.expect("hash works while locked");
+    assert!(res["hash"].as_str().unwrap().starts_with("0x"));
 }
 
 #[tokio::test]

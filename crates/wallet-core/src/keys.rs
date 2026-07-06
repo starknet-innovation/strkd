@@ -107,9 +107,20 @@ pub fn sign_typed_data(
     typed_data_json: &str,
     account_address: &Felt,
 ) -> Result<StarkSignature> {
-    let hash = compute_typed_data_message_hash(typed_data_json, account_address)
-        .map_err(|_| CoreError::Signing)?;
+    let hash = typed_data_message_hash(typed_data_json, account_address)?;
     sign_hash(mnemonic, domain, index, passphrase, &hash)
+}
+
+/// Compute the SNIP-12 (revision 1) message hash that [`sign_typed_data`] signs.
+///
+/// This is the felt digest a signature over the typed data covers — the same
+/// value starknet.js `typedData.getMessageHash(typed_data, account)` produces
+/// and that a Cairo account's `is_valid_signature` checks against. It needs no
+/// key material (it depends only on the document and the account address), so
+/// callers can use it to verify strkd's hashing matches their expectation both
+/// before and after signing. Delegated to `krusty-kms`.
+pub fn typed_data_message_hash(typed_data_json: &str, account_address: &Felt) -> Result<Felt> {
+    compute_typed_data_message_hash(typed_data_json, account_address).map_err(|_| CoreError::Signing)
 }
 
 /// Sign an already-computed message hash with the key for `(domain, index)`.
