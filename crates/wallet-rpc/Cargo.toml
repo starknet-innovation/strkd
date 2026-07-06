@@ -25,3 +25,5 @@ reqwest = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
 prover = { path = "../prover" }
+# Verify a signed SNIP-12 digest under the account's own key (strkd #7 regression).
+starknet-crypto = "0.8"

@@ -67,7 +67,8 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `wallet_requestAccounts` | paired | no | scoped addresses |
 | `companion_listAccounts` | paired | no | scoped accounts (detailed) |
 | `wallet_deploymentData` | paired | no | OZ counterfactual deploy data for first in-scope account |
-| `wallet_signTypedData` | paired | **yes** | SNIP-12 sign → `[r, s]` |
+| `wallet_signTypedData` | paired | **yes** | SNIP-12 (rev 1) sign → `[r, s]`. The signed digest is exactly `starknet.js typedData.getMessageHash`, so the account's on-chain `is_valid_signature` accepts it (the standard committee/multisig approval pattern) |
+| `companion_typedDataHash` | paired | no | pure, key-free: the SNIP-12 rev-1 digest `wallet_signTypedData` would sign (`{hash, revision}`), for cross-checking against `starknet.js`. Works while locked; no prompt |
 | `wallet_addInvokeTransaction` | paired | **yes** | encode multicall, V3 hash, sign; `submit:true` broadcasts (needs node). With a node, nonce + fee auto-filled; else caller supplies them. Call = `{contract_address, entry_point_selector, calldata}` — selector accepts a **name or 0x**; aliases `contractAddress`/`to`, `entrypoint`/`entry_point`/`selector`. Optional per-request `chainId`. **SNIP-36:** optional `proof_facts` (extends the signed hash via `Poseidon(proof_facts)`) + `proof` (standard base64, required on broadcast); proof-carrying invokes **require explicit `resource_bounds`** (auto-estimation simulates without `proof_facts`, so a contract reading them reverts) |
 | `companion_deployAccount` | paired | **yes** | deploy one of the caller's own accounts (DEPLOY_ACCOUNT v3); sign-only or `submit:true`; account must be funded |
 | `wallet_addDeclareTransaction` | paired | **yes** | declare a class; sign needs `class_hash` + `compiled_class_hash`; estimate/`submit:true` need the full `contract_class` |

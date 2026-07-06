@@ -222,7 +222,10 @@ concepts.proving.",
 
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",
-              "note": "account_address must be one of yours." },
+              "note": "account_address must be one of yours. SNIP-12 REVISION 1 (Poseidon; StarkNet-Message prefix = short-string 'StarkNet Message'). The digest signed is exactly starknet.js typedData.getMessageHash(typed_data, account_address), so the account's on-chain is_valid_signature accepts [r, s] — that's the standard SNIP-12 committee/multisig approval pattern. To confirm the hash before/after signing, call companion_typedDataHash (no signing, no prompt)." },
+            { "method": "companion_typedDataHash", "auth": true, "prompts": false,
+              "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "{ hash, revision: \"1\" }",
+              "note": "Pure, key-free: returns the SNIP-12 rev-1 message hash wallet_signTypedData would sign (== starknet.js typedData.getMessageHash). Use it to verify strkd's hashing matches yours and to know exactly which felt a returned [r, s] covers for is_valid_signature. Works while locked; no approval." },
             { "method": "wallet_addInvokeTransaction", "auth": true, "prompts": true,
               "params": "{ account_address, calls, submit?, nonce?, resource_bounds?, proof_facts?, proof?, chainId? }",
               "call_shape": "calls = [{ contract_address, entry_point_selector, calldata: [felt…] }]. \

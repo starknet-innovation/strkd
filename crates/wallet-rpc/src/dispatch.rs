@@ -479,6 +479,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "wallet_watchAsset" => handle_watch_asset(state, &client, &params).await,
         "companion_fundingSource" => handle_funding_source(state).await,
         "companion_reportIssue" => handle_report_issue(state, &client, &params),
+        "companion_typedDataHash" => handle_typed_data_hash(&params),
         "companion_estimateFee" => handle_estimate_fee(state, &client, &params).await,
         "companion_requestGrant" => handle_request_grant(state, &client, &params).await,
         "companion_requestFunding" => handle_request_funding(state, &client, &params).await,
@@ -704,6 +705,32 @@ async fn handle_sign_typed_data(
     let session = state.session.lock().await;
     let sig = session.sign_typed_data_for(&account, &typed_data_json)?;
     Ok(json!([felt_hex(&sig.r), felt_hex(&sig.s)]))
+}
+
+/// `companion_typedDataHash` — compute the SNIP-12 (revision 1) message hash
+/// that `wallet_signTypedData` would sign for `{ account_address, typed_data }`.
+///
+/// Pure and key-free: `wallet_signTypedData` returns only the spec `[r, s]`
+/// signature, so this lets a caller confirm strkd hashes a typed message the
+/// same way starknet.js `typedData.getMessageHash` does — and thus that a Cairo
+/// account's `is_valid_signature` will accept the resulting signature — without
+/// signing anything. Needs no unlock and prompts no approval.
+fn handle_typed_data_hash(params: &Value) -> Result<Value, WalletRpcError> {
+    let account_address = param_str(params, "account_address")?;
+    let account = Felt::from_hex(&account_address)
+        .map_err(|_| WalletRpcError::InvalidRequest("invalid 'account_address'".into()))?;
+
+    let td_value = params
+        .get("typed_data")
+        .ok_or_else(|| WalletRpcError::InvalidRequest("missing 'typed_data'".into()))?;
+    let typed_data_json = match td_value {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string(other)
+            .map_err(|_| WalletRpcError::InvalidRequest("typed_data not serializable".into()))?,
+    };
+
+    let hash = wallet_core::typed_data_message_hash(&typed_data_json, &account)?;
+    Ok(json!({ "hash": felt_hex(&hash), "revision": "1" }))
 }
 
 fn felt_from(value: &Value, what: &str) -> Result<Felt, WalletRpcError> {
