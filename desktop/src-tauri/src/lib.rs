@@ -95,6 +95,11 @@ use wallet_rpc::{
     bind_loopback, ChannelApprover, Decision, LogEntry, PendingApproval, RequestLog, ServerState,
     VaultStore, WalletSession,
 };
+use prover::{
+    build_prover_state, Activity, ProofRecord, ProofSummary, ProverConfig, ProverState,
+    Settings as ProverSettings, StorageStats,
+};
+use tauri_plugin_notification::NotificationExt;
 
 /// Tauri-managed app state. The wallet session, clients, log and approver all
 /// live inside the shared `ServerState` (which the loopback service also uses);
@@ -109,6 +114,10 @@ struct DesktopState {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Decision>>>>,
     /// Mnemonic staged during onboarding (between generate/import and finalize).
     onboarding: Mutex<Option<Zeroizing<String>>>,
+    /// On-device proving companion (the same `Arc` is attached to `server` so
+    /// the loopback `companion_prove*` methods and the Proving panel share one
+    /// job/storage/settings store). Holds no key material.
+    prover: Arc<ProverState>,
 }
 
 fn chain_name(c: ChainId) -> &'static str {
@@ -123,6 +132,25 @@ fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+/// Banner title for an incoming approval request (pairing and funding are the
+/// ones a user most wants to catch).
+fn notif_title(method: &str) -> &'static str {
+    match method {
+        "companion_requestPairing" => "strkd — pairing request",
+        "companion_requestFunding" => "strkd — funding (top-up) request",
+        _ => "strkd — approval needed",
+    }
+}
+
+/// A macOS system sound name (guaranteed audible); a generic name elsewhere.
+fn notif_sound() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Ping"
+    } else {
+        "default"
     }
 }
 
@@ -228,6 +256,17 @@ async fn get_settings(state: State<'_, DesktopState>) -> Result<Settings, String
     Ok(settings::load(&state.config_path))
 }
 
+/// The wallet's per-network RPC URLs are the single source of truth; the prover
+/// reuses them for its proof preflight. Mirror them into the prover's settings
+/// (Sepolia → testnet) so both sides always hit the same node. Preserves the
+/// prover's own fields (backend, remote-prover URL/key).
+async fn sync_prover_rpc(prover: &ProverState, wallet: &Settings) {
+    let mut ps = prover.settings.get().await;
+    ps.testnet.rpc_url = wallet.sepolia_rpc.clone();
+    ps.mainnet.rpc_url = wallet.mainnet_rpc.clone();
+    let _ = prover.settings.update(ps).await;
+}
+
 /// Persist settings and rebuild the node client for the active network at
 /// runtime (no restart needed).
 #[tauri::command]
@@ -241,6 +280,8 @@ async fn set_settings(state: State<'_, DesktopState>, settings: Settings) -> Res
     state
         .server
         .set_node(ChainId::Mainnet, settings.node_for(ChainId::Mainnet));
+    // Proving shares these RPC nodes — mirror them into the prover's settings.
+    sync_prover_rpc(&state.prover, &settings).await;
     Ok(())
 }
 
@@ -520,6 +561,85 @@ fn respond_approval(
 }
 
 // ---------------------------------------------------------------------------
+// IPC commands — on-device proving (Proving panel)
+//
+// The prover holds no key material; it proves an already-signed payload. Its
+// per-network settings carry a remote-prover API key, so — like the wallet's
+// settings — they are reachable over trusted IPC only, never the loopback
+// service. Agents prove via `companion_prove` on the loopback service instead.
+// ---------------------------------------------------------------------------
+
+/// Prover backend kind + readiness, for the Proving panel header.
+#[tauri::command]
+async fn prover_status(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "prover": state.prover.prover.kind(),
+        "ready": state.prover.prover.ready(),
+        "version": env!("CARGO_PKG_VERSION"),
+        // Proving is reachable to paired agents via companion_prove on the
+        // loopback service (no separate open port).
+        "service_url": state.service_url,
+    }))
+}
+
+/// Recent proof activity (live jobs + recent terminal states), newest first.
+#[tauri::command]
+async fn proof_activity(state: State<'_, DesktopState>) -> Result<Vec<Activity>, String> {
+    Ok(state.prover.jobs.recent_activity().await)
+}
+
+/// Current per-network prover settings (backend + remote-prover URL/keys). The
+/// `rpc_url` fields are mirrored from the wallet's RPC settings (shared nodes),
+/// not edited here. Trusted IPC only — these carry secrets and are never exposed
+/// over the loopback service.
+#[tauri::command]
+async fn get_prover_settings(state: State<'_, DesktopState>) -> Result<ProverSettings, String> {
+    Ok(state.prover.settings.get().await)
+}
+
+/// Replace + persist prover settings (backend + remote-prover config). RPC URLs
+/// are NOT taken from the caller — proving shares the wallet's RPC nodes, so we
+/// force them from the wallet config regardless of what the UI sends.
+#[tauri::command]
+async fn set_prover_settings(
+    state: State<'_, DesktopState>,
+    settings: ProverSettings,
+) -> Result<(), String> {
+    let mut settings = settings;
+    let wallet = crate::settings::load(&state.config_path);
+    settings.testnet.rpc_url = wallet.sepolia_rpc;
+    settings.mainnet.rpc_url = wallet.mainnet_rpc;
+    state.prover.settings.update(settings).await.map_err(|e| e.to_string())
+}
+
+/// Aggregate proof-storage usage (records + bytes).
+#[tauri::command]
+async fn storage_stats(state: State<'_, DesktopState>) -> Result<StorageStats, String> {
+    Ok(state.prover.storage.stats())
+}
+
+/// Metadata for every generated proof, newest first (Activity list).
+#[tauri::command]
+async fn list_proofs(state: State<'_, DesktopState>) -> Result<Vec<ProofSummary>, String> {
+    Ok(state.prover.storage.list())
+}
+
+/// Full record (payload + proof + metadata) for one proof — Activity detail view.
+#[tauri::command]
+async fn proof_detail(
+    state: State<'_, DesktopState>,
+    job_id: String,
+) -> Result<Option<ProofRecord>, String> {
+    Ok(state.prover.storage.get_record(&job_id))
+}
+
+/// Delete all stored payloads/proofs; returns how many records were removed.
+#[tauri::command]
+async fn clear_storage(state: State<'_, DesktopState>) -> Result<u64, String> {
+    Ok(state.prover.storage.clear())
+}
+
+// ---------------------------------------------------------------------------
 // Approval bridge: service prompts → menu-bar dialogs
 // ---------------------------------------------------------------------------
 
@@ -541,9 +661,7 @@ fn spawn_approval_bridge(
                 g.len()
             };
 
-            // Notify the UI: it shows the in-app dialog and posts a menu-bar
-            // notification (with Approve/Deny buttons) from the frontend. A red
-            // dot on the tray icon signals pending work. We do NOT steal focus.
+            // Tell the UI to show the in-app approval dialog.
             let _ = app.emit(
                 "approval-request",
                 serde_json::json!({
@@ -553,6 +671,23 @@ fn spawn_approval_bridge(
                     "summary": request.summary,
                 }),
             );
+
+            // Alert the user even when the window is hidden in the tray. This is
+            // posted from Rust (this async bridge is always alive) — NOT the
+            // webview, whose JS is suspended while hidden, which is why a
+            // signing request used to produce zero notification. Banner + sound
+            // + a Dock-icon bounce (attention, not focus-stealing) + the tray
+            // red dot / Dock badge (refresh_tray) make it impossible to miss.
+            let _ = app
+                .notification()
+                .builder()
+                .title(notif_title(&request.method))
+                .body(&request.summary)
+                .sound(notif_sound())
+                .show();
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.request_user_attention(Some(tauri::UserAttentionType::Critical));
+            }
             refresh_tray(&app, count);
 
             // Auto-reject if the user doesn't respond within the window.
@@ -602,6 +737,19 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
+            // Request OS-notification permission up front, from Rust (so it does
+            // not depend on the webview being awake). The approval bridge posts a
+            // banner for every signing request; without permission macOS silently
+            // drops them. First launch shows the system prompt; if the user misses
+            // it, they can enable "strkd" under System Settings → Notifications.
+            {
+                use tauri_plugin_notification::PermissionState;
+                let n = app.notification();
+                if !matches!(n.permission_state(), Ok(PermissionState::Granted)) {
+                    let _ = n.request_permission();
+                }
+            }
+
             // Data dir + file paths (spec §10).
             let data_dir = app
                 .path()
@@ -625,6 +773,35 @@ pub fn run() {
             // File-backed request log (full payloads on by default — spec §9).
             let log = RequestLog::open(&log_path, true).map_err(|e| format!("open log: {e}"))?;
 
+            // If a prover bundle shipped with the app (staged by
+            // scripts/stage-prover.sh into resources/prover), point the native
+            // backend at it — so a packaged app proves with no external checkout.
+            // Skipped if STRKD_SNIP36_BIN is already set; in dev (no bundle) this
+            // is a no-op and NativeProver falls back to its sibling-checkout
+            // default (only consulted when the backend is "native").
+            if std::env::var("STRKD_SNIP36_BIN").is_err() {
+                if let Ok(res) = app.path().resource_dir() {
+                    // Tauri's exact resource layout varies by version/config, so
+                    // try both the mapped dest and the glob-preserved path.
+                    for prover_dir in [res.join("prover"), res.join("resources/prover")] {
+                        let bin = prover_dir.join("snip36");
+                        if bin.exists() {
+                            std::env::set_var("STRKD_SNIP36_BIN", &bin);
+                            std::env::set_var("STRKD_SNIP36_WORK_DIR", &prover_dir);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // On-device proving companion. Its own data subdir (settings.json +
+            // storage/), kept separate from the wallet vault/log. Holds no key
+            // material — it proves already-signed payloads. The same Arc is both
+            // attached to the loopback service (companion_prove*) and handed to
+            // the desktop's Proving panel.
+            let prover_state =
+                Arc::new(build_prover_state(data_dir.join("prover"), &ProverConfig::from_env()));
+
             // Session starts locked; onboarding/unlock populates it.
             let session_arc = Arc::new(tokio::sync::Mutex::new(WalletSession::new_locked(chain)));
             let mut state = ServerState::with_log(session_arc, Arc::new(approver), log)
@@ -634,12 +811,17 @@ pub fn run() {
             // (Settings tab → config.json), one per network. Changeable at runtime
             // via set_settings — no restart. Sign-only until an RPC URL is set.
             let saved = settings::load(&config_path);
+            // Proving shares the wallet's RPC nodes — seed the prover's settings
+            // from the wallet config at startup (kept in sync on every save).
+            tauri::async_runtime::block_on(sync_prover_rpc(&prover_state, &saved));
             if let Some(node) = saved.node_for(ChainId::Sepolia) {
                 state = state.with_node(ChainId::Sepolia, node);
             }
             if let Some(node) = saved.node_for(ChainId::Mainnet) {
                 state = state.with_node(ChainId::Mainnet, node);
             }
+            // Expose proving over the loopback service (companion_prove*).
+            state = state.with_prover(prover_state.clone());
             let server = Arc::new(state);
 
             // Start the loopback service (binds 127.0.0.1, writes port.lock).
@@ -687,6 +869,7 @@ pub fn run() {
                 service_url,
                 pending,
                 onboarding: Mutex::new(None),
+                prover: prover_state,
             });
 
             // Menu-bar tray.
@@ -730,7 +913,15 @@ pub fn run() {
             grant_permission,
             revoke_permission,
             recent_log,
-            respond_approval
+            respond_approval,
+            prover_status,
+            proof_activity,
+            get_prover_settings,
+            set_prover_settings,
+            storage_stats,
+            list_proofs,
+            proof_detail,
+            clear_storage
         ])
         .build(tauri::generate_context!())
         .expect("error while building strkd desktop")

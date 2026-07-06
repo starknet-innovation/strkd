@@ -24,7 +24,8 @@ pub fn usage_doc(api_version: &str, spec_versions: &[String]) -> Value {
 By default every sensitive action (signing, funding, account creation) pops a confirmation on \
 the user's screen and only proceeds if the human approves. Private keys never leave the wallet \
 — you get signatures, signed transactions, and (when a node is configured) on-chain broadcasts, \
-never keys.",
+never keys. It also PROVES SNIP-36 transactions on-device (sign + prove a private virtual tx in \
+one call, then broadcast the verifier tx) — see concepts.proving + snip36_proving.",
 
         "alpha_notice": {
             "status": "strkd is ALPHA software under active development. Expect missing methods, \
@@ -101,7 +102,21 @@ approval (it spends their funds) — see permissions.",
 grant your client a time-bounded auto-approval window (up to 3 months, revocable) — then your \
 own-account operations (sign/invoke/declare/deploy/create) run WITHOUT a prompt. \
 companion_requestFunding ALWAYS prompts, grant or not. Check companion_getStatus.grant to see if a \
-grant is active; request one yourself with companion_requestGrant (always prompts)."
+grant is active; request one yourself with companion_requestGrant (always prompts).",
+            "proving": "strkd bundles an ON-DEVICE prover for SNIP-36 (prove a private Starknet \
+computation off-chain, verify only the result on-chain). The prover holds NO keys — it proves an \
+ALREADY-SIGNED transaction. SNIP-36 is TWO transactions: (Tx A) a PRIVATE virtual invoke (e.g. \
+your contract's create_proof(public, private)) that is signed + proven off-chain and NEVER \
+broadcast; (Tx B) a verifier invoke (e.g. verify_result(public_message)) broadcast on-chain \
+carrying proof_facts + proof. Fastest path: companion_signAndProve signs Tx A and proves it in one \
+call (your private inputs never leave this machine), then you broadcast Tx B yourself with \
+wallet_addInvokeTransaction {proof_facts, proof, submit:true}. See the snip36_proving flow below. \
+CRITICAL: a virtual tx carries PRIVATE calldata, so you MUST pass explicit resource_bounds — strkd \
+refuses to fee-estimate it (estimating online would send your private inputs to the RPC node). \
+Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving, not in Tx A's hash). Proving \
+needs the native prover (bundled on-device) or a configured remote prover, plus a per-network RPC, \
+set in the app's Settings. There is NO mock/fake proof: an unconfigured backend FAILS the prove \
+with a clear error rather than returning a fake."
         },
 
         "approval_model": "prompts:true means the call blocks until the user clicks Approve/Reject \
@@ -123,6 +138,21 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
             "6. Transact: wallet_addInvokeTransaction {account_address, calls} (+submit:true). Each call = {contract_address, entry_point_selector (name or 0x), calldata}.",
             "Check state anytime with companion_getStatus (locked? which network?)."
         ],
+
+        "snip36_proving": {
+            "what": "Prove a PRIVATE Starknet computation off-chain (SNIP-36) and verify only the \
+result on-chain — your private inputs never leave this machine. It is a TWO-transaction flow; \
+strkd automates the key-holding half (sign + prove), you broadcast the verifier tx. See \
+concepts.proving.",
+            "steps": [
+                "1. Build the VIRTUAL call (Tx A) — your contract's virtual function, e.g. create_proof(public_input, private_input). Choose resource_bounds MANUALLY (~2× current gas prices); do NOT estimate (that would leak your private calldata to the RPC node).",
+                "2. Sign + prove in one step: companion_signAndProve {account_address, calls, resource_bounds, nonce, block_number?, chainId?} → {job_id}. strkd signs Tx A and proves it on-device; the signed tx is never broadcast. (nonce must equal the account nonce at the reference block.)",
+                "3. Poll companion_proveStatus {job_id} until status is \"succeeded\" → result = {proof, proof_facts, l2_to_l1_messages} (or \"failed\" with an error).",
+                "4. Decode l2_to_l1_messages[0].payload into your verifier's public_message and build Tx B — the ON-CHAIN verifier call, e.g. verify_result(public_message).",
+                "5. Broadcast Tx B: wallet_addInvokeTransaction {account_address, calls:[<verifier call>], proof_facts, proof, resource_bounds, submit:true}. proof_facts extend the signed hash; proof rides along on broadcast (both required on submit). strkd cannot build Tx B for you — its calldata is app-specific.",
+                "Already hold a signed virtual tx (signed elsewhere)? Skip step 2 and call companion_prove {payload:{transaction:<signed invoke-v3>, block_number?}, network?} instead — same proof result."
+            ]
+        },
 
         "methods": [
             { "method": "companion_getStatus", "auth": false, "prompts": false,
@@ -173,6 +203,22 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
               "params": "{ account?, submit?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, contract_address, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "Deploy one of YOUR accounts (DEPLOY_ACCOUNT v3). account defaults to your first. Must already hold funds for its deploy fee — fund it first. submit:true broadcasts; else broadcast the returned signed tx. Nonce is 0; fee auto-estimated with a node, else pass resource_bounds." },
+
+            { "method": "companion_prove", "auth": true, "prompts": false,
+              "params": "{ payload, network?: \"mainnet\"|\"testnet\", label? }",
+              "returns": "{ job_id, status: \"queued\", next }",
+              "note": "On-device proving companion. Hand it an opaque, ALREADY-SIGNED payload; it proves locally and returns the proof — it never signs and holds no key material. For SNIP-36 the payload is { transaction: <signed invoke-v3>, block_number? }; the proof comes back as { proof (base64 STWO), proof_facts, l2_to_l1_messages }, which you feed into wallet_addInvokeTransaction (proof_facts at sign time, proof on submit). Returns a job id immediately — poll companion_proveStatus. Needs the native prover (bundled) or a configured remote prover + a per-network RPC, set in the desktop Settings; an unconfigured backend fails with a clear error (no mock/fake proof). Proving is local-only: no separate open port, and settings/keys are never exposed here." },
+            { "method": "companion_proveStatus", "auth": true, "prompts": false,
+              "params": "{ job_id }",
+              "returns": "{ job_id, status: queued|proving|succeeded|failed, started_at_ms, label?, result?, error? }",
+              "note": "Poll a proving job until status is succeeded (result holds the proof) or failed (error explains why). Unknown job_id → error 114." },
+            { "method": "companion_proofActivity", "auth": true, "prompts": false,
+              "params": "{}", "returns": "{ activity: Activity[] }",
+              "note": "Recent proving activity (most-recent first) — the same feed the desktop Proving tab shows." },
+            { "method": "companion_signAndProve", "auth": true, "prompts": true,
+              "params": "{ account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }",
+              "returns": "{ job_id, status: \"queued\", transaction_hash, next }",
+              "note": "ONE-STEP sign + on-device prove for SNIP-36: signs the VIRTUAL tx (\"Tx A\" — a normal v3 invoke calling your contract's virtual function, e.g. create_proof(public, private)) and hands the signed tx straight to the local prover, so the secret never leaves the machine and you skip the manual addInvoke(sign-only)→companion_prove round-trip. Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving). resource_bounds is REQUIRED — the virtual tx holds private calldata, so strkd refuses to fee-estimate it online (that would leak the inputs to the RPC); set bounds manually (~2× gas). nonce must equal the account nonce at the reference block. Returns a job id — poll companion_proveStatus; on success take result.proof / proof_facts / l2_to_l1_messages, decode the message into the verifier call, and BROADCAST the verifier invoke (\"Tx B\", e.g. verify_result(public_message)) via wallet_addInvokeTransaction { proof_facts, proof, submit:true }. strkd does not build Tx B — its calldata is app-specific. Approval-gated (signs a real tx, though it's proven locally and never broadcast)." },
 
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",

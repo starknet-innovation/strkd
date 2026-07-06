@@ -12,6 +12,13 @@ It speaks the standard Starknet
 API plus a small `companion_*` extension namespace, and delegates cryptography to
 [`krusty-kms`](https://github.com/starknet-innovation/krusty-kms).
 
+It also bundles an **on-device proving companion** (the `prover` crate, merged
+from [`dinner`](https://github.com/starknet-innovation/dinner)): hand it an
+already-signed payload via `companion_prove` and it generates a SNIP-36 proof
+locally — the secret never leaves the machine. `companion_signAndProve` goes one
+step further, signing the private virtual transaction and proving it in a single
+call. The prover holds no keys and sits strictly downstream of signing.
+
 > ⚠️ **Experimental. Not for real funds.** `krusty-kms` is flagged experimental
 > by its authors and the crypto path is unaudited. Use **throwaway test seeds
 > only** — never a real mnemonic or a seed controlling funds. See the security
@@ -27,7 +34,14 @@ menu-bar app (`desktop/`) compiles and its frontend builds, but the **GUI is not
 yet run-verified** (tray, dialogs, notifications, auto-lock, Dock icon need a
 human launch). Broadcasting + fee estimation work against a node configured in
 the Settings tab; Sepolia reads/estimates are live-verified, while the broadcast
-hop still needs a funded-account submit. Next up: **Phase 3** (Tongo / STRK20).
+hop still needs a funded-account submit.
+
+The `prover` crate is built and tested (the success path via a test-only stub
+`Prover`, since there is **no mock backend** — both real backends fail honestly
+when unconfigured), with `companion_prove*` covered end-to-end in the `wallet-rpc`
+dispatch tests. The native SNIP-36 backend is **live-verified on Sepolia
+(2026-07-02, prover pin `v1.2.2`)**: it generated a proof-carrying invoke
+on-device that **verified on-chain**. Next up: **Phase 3** (Tongo / STRK20).
 
 For the authoritative, always-current state, see
 **[`docs/project/status.md`](./docs/project/status.md)**.

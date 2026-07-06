@@ -1,0 +1,19 @@
+[package]
+name = "prover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-device proving companion for strkd: hand it an already-signed payload, it proves locally (SNIP-36 / stwo) and returns the proof. Holds no key material."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+
+# Unix-only: kill the prover CLI's process group (reap the runner it spawns) on
+# timeout/failure so it can't leak its port. Mirrors ../dinner's approach.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

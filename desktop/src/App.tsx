@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api, onApprovalRequest, type Status, type ApprovalRequest } from "./api";
-import { initNotifications, notifyApproval } from "./notify";
 import { Onboarding } from "./components/Onboarding";
 import { Unlock } from "./components/Unlock";
 import { Accounts } from "./components/Accounts";
@@ -8,9 +7,10 @@ import { ActivityLog } from "./components/ActivityLog";
 import { Connect } from "./components/Connect";
 import { Settings } from "./components/Settings";
 import { Agents } from "./components/Agents";
+import { Proving } from "./components/Proving";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 
-type Tab = "accounts" | "activity" | "agents" | "connect" | "settings";
+type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "settings";
 
 /// Cmd/Ctrl +, -, 0 zoom the whole UI (persisted). Answers "can I make it
 /// bigger with ⌘+?" — yes.
@@ -51,10 +51,6 @@ export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [tab, setTab] = useState<Tab>("accounts");
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  // Mirror of the queue for the notification-action callback (which is set up
-  // once and can't see fresh React state).
-  const approvalsRef = useRef<ApprovalRequest[]>([]);
-  approvalsRef.current = approvals;
 
   const refresh = useCallback(() => {
     api.status().then(setStatus).catch(() => {});
@@ -75,22 +71,18 @@ export default function App() {
     setApprovals((cur) => cur.filter((a) => a.id !== id));
   }, []);
 
-  // Queue incoming approval prompts (shown one at a time) + post a menu-bar
-  // notification with Approve/Deny buttons.
+  // Queue incoming approval prompts (shown one at a time) in the in-app dialog.
+  // The OS banner + sound + Dock-icon bounce are posted from the Rust side (the
+  // approval bridge in src-tauri/src/lib.rs), which stays alive even when this
+  // window is hidden in the tray — a webview-posted banner never fired then.
   useEffect(() => {
-    // A notification button acts on the current front-of-queue request.
-    initNotifications((approved) => {
-      const front = approvalsRef.current[0];
-      if (front) void resolveApproval(front.id, approved);
-    });
     const un = onApprovalRequest((req) => {
       setApprovals((cur) => [...cur, req]);
-      notifyApproval(req);
     });
     return () => {
       un.then((f) => f());
     };
-  }, [resolveApproval]);
+  }, []);
 
   const current = approvals[0];
 
@@ -114,6 +106,9 @@ export default function App() {
           <button className={tab === "agents" ? "tab active" : "tab"} onClick={() => setTab("agents")}>
             Agents
           </button>
+          <button className={tab === "proving" ? "tab active" : "tab"} onClick={() => setTab("proving")}>
+            Proving
+          </button>
           <button className={tab === "connect" ? "tab active" : "tab"} onClick={() => setTab("connect")}>
             Connect
           </button>
@@ -125,6 +120,7 @@ export default function App() {
           {tab === "accounts" && <Accounts status={status} onChange={refresh} />}
           {tab === "activity" && <ActivityLog />}
           {tab === "agents" && <Agents />}
+          {tab === "proving" && <Proving />}
           {tab === "connect" && <Connect status={status} />}
           {tab === "settings" && <Settings onChange={refresh} />}
         </main>

@@ -2,3 +2,9 @@ node_modules
 dist
 src-tauri/target
 src-tauri/gen
+# Staged native prover bundle (286–403 MB; produced by scripts/stage-prover*.sh).
+# Keep the dir + its README tracked so the tauri.conf.json `resources/prover/**/*`
+# glob always matches (dev/CI build without a 400 MB checkout); ignore the
+# staged binaries themselves.
+src-tauri/resources/prover/*
+!src-tauri/resources/prover/README.md

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wallet-core", "crates/wallet-rpc", "crates/wallet-cli"]
+members = ["crates/wallet-core", "crates/wallet-rpc", "crates/wallet-cli", "crates/prover"]
 # The desktop (Tauri) app is its own crate under desktop/src-tauri; keep it out
 # of this workspace so `cargo build` of the core stays lean and toolchain-free
 # (mirrors ../dinner).
@@ -29,8 +29,8 @@ argon2 = "0.5"
 aes-gcm = "0.10"
 getrandom = "0.2"
 sha3 = "0.10"
-# wallet-rpc
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time"] }
+# wallet-rpc + prover (prover spawns the SNIP-36 CLI → needs "process")
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "net", "time", "process"] }
 async-trait = "0.1"
 axum = "0.7"
 sha2 = "0.10"
@@ -39,6 +39,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # wallet-cli
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
+# prover (cfg(unix) only) — reap the SNIP-36 CLI's process group on timeout/failure
+# so a leaked runner can't outlive the job and hold its port.
+libc = "0.2"
 
 # ---------------------------------------------------------------------------
 # Distribution — cargo-dist (https://opensource.axo.dev/cargo-dist/).
