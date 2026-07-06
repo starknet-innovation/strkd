@@ -14,14 +14,13 @@ repository = "https://github.com/starknet-innovation/strkd"
 
 # krusty-kms is experimental and not published to crates.io. Pin to an exact
 # commit; bumps must go through review (see spec/wallet-companion-spec.md §14).
-# Pinned to the SNIP-12 message-prefix fix (krusty-kms PR #36): earlier revs
-# hashed the "StarkNet Message" prefix with starknet_keccak instead of the
-# short-string encoding, so wallet_signTypedData signed a digest no SNIP-12
-# verifier / is_valid_signature accepts (strkd #7). Re-pin to the squashed
-# commit on main once #36 merges.
+# Pinned to the SNIP-12 hashing fix on krusty main (merge of PR #36): earlier
+# revs hashed the "StarkNet Message" prefix with starknet_keccak and ASCII-encoded
+# shortstring values instead of via parse_felt, so wallet_signTypedData signed a
+# digest no SNIP-12 verifier / is_valid_signature accepts (strkd #7).
 [workspace.dependencies]
-krusty-kms = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b673e812e0611d579d1e98019d66e61b6ef70cd1" }
-krusty-kms-common = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b673e812e0611d579d1e98019d66e61b6ef70cd1" }
+krusty-kms = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
+krusty-kms-common = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
 # Must match krusty-kms's Felt type to avoid version-skew mismatches.
 starknet-types-core = { version = "0.2.0", features = ["hash"] }
 serde = { version = "1", features = ["derive"] }
