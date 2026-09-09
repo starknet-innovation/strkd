@@ -29,7 +29,9 @@ pub use dispatch::{dispatch, ServerState};
 pub use error::WalletRpcError;
 pub use jsonrpc::{Request, Response, RpcErrorObject};
 pub use log::{now_unix_ms, LogEntry, RequestLog};
-pub use node::{invoke_v3_tx_json, FeeBounds, HttpStarknetRpc, NodeError, StarknetRpc};
+pub use node::{
+    declare_v3_tx_json, invoke_v3_tx_json, FeeBounds, HttpStarknetRpc, NodeError, StarknetRpc,
+};
 pub use server::{bind_loopback, router, transport_guard, write_port_lock};
 pub use session::{VaultContents, WalletSession};
 pub use store::VaultStore;

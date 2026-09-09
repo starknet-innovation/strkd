@@ -35,6 +35,9 @@ pub enum CoreError {
 
     #[error("crypto subsystem error")]
     Crypto,
+
+    #[error("invalid contract class: {0}")]
+    InvalidContractClass(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;

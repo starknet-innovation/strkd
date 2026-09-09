@@ -2,8 +2,8 @@
 //! Public test vector only; no real key material.
 
 use wallet_core::{
-    encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector, sign_invoke_v3,
-    Call, ChainId, Domain, Felt, InvokeV3Params, ResourceBounds,
+    declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector,
+    sign_invoke_v3, Call, ChainId, Domain, Felt, InvokeV3Params, ResourceBounds,
 };
 
 const TEST_MNEMONIC: &str =
@@ -172,4 +172,33 @@ fn sign_invoke_v3_binds_signature_to_hash_and_account() {
     )
     .unwrap();
     assert_ne!(signed.s, other.s);
+}
+
+/// DECLARE v3 hash against a **real Sepolia transaction** (block 14790955,
+/// fetched 2026-09-09 via `starknet_getTransactionByHash`): the expected value
+/// is the on-chain `transaction_hash`. Pins the SNIP-8 layout (prefix, fee hash
+/// with L1_DATA, DA modes, empty paymaster/deployment data, class_hash then
+/// compiled_class_hash) against ground truth rather than another implementation.
+#[test]
+fn declare_v3_hash_matches_live_sepolia_transaction() {
+    let f = |h: &str| Felt::from_hex(h).unwrap();
+    let params = InvokeV3Params {
+        nonce: f("0x8"),
+        tip: 0,
+        l1_gas: ResourceBounds { max_amount: 0x0, max_price_per_unit: 0xe316fc8256b1 },
+        l2_gas: ResourceBounds { max_amount: 0x1329dd40, max_price_per_unit: 0x9ca6e0222 },
+        l1_data_gas: ResourceBounds { max_amount: 0x120, max_price_per_unit: 0xeaaacb6cb9 },
+        ..Default::default()
+    };
+    let hash = declare_v3_hash(
+        &f("0x482e1f64c050e49fe6e61a9444e9a8ad62ab73ccc60caa6fd1f8f3af3106c4b"),
+        &f("0x69d70a4855b77d155491700188d0cc86214dc1791eba05bbab1e17426fa22b8"),
+        &f("0x4f22873edaa4e8edd8fe456b0c0e12dc42c6ca77108931957774de42e5d6520"),
+        ChainId::Sepolia,
+        &params,
+    );
+    assert_eq!(
+        hash,
+        f("0x65d0f5b622d114af56c1281b12df07658763e8697acdef9791fb5aa4ecf1a41")
+    );
 }

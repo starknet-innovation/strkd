@@ -312,43 +312,6 @@ impl HttpStarknetRpc {
         })
     }
 
-    /// DECLARE v3 tx JSON. `contract_class` is the caller-supplied Sierra class
-    /// object (the node derives the class hash from it).
-    fn declare_tx_json(
-        sender: &Felt,
-        compiled_class_hash: &Felt,
-        contract_class: &Value,
-        signature: &[Felt],
-        nonce: &Felt,
-        bounds: &FeeBounds,
-    ) -> Value {
-        let rb = |b: &ResourceBounds| {
-            json!({
-                "max_amount": u128_to_hex(b.max_amount as u128),
-                "max_price_per_unit": u128_to_hex(b.max_price_per_unit),
-            })
-        };
-        json!({
-            "type": "DECLARE",
-            "version": "0x3",
-            "sender_address": fh(sender),
-            "compiled_class_hash": fh(compiled_class_hash),
-            "contract_class": contract_class,
-            "signature": signature.iter().map(fh).collect::<Vec<_>>(),
-            "nonce": fh(nonce),
-            "resource_bounds": {
-                "l1_gas": rb(&bounds.l1_gas),
-                "l2_gas": rb(&bounds.l2_gas),
-                "l1_data_gas": rb(&bounds.l1_data_gas),
-            },
-            "tip": "0x0",
-            "paymaster_data": [],
-            "account_deployment_data": [],
-            "nonce_data_availability_mode": "L1",
-            "fee_data_availability_mode": "L1",
-        })
-    }
-
     fn bounds_from_estimate(&self, est: &Value) -> Result<FeeBounds, NodeError> {
         let bound = |amount_key: &str, price_key: &str| -> Result<ResourceBounds, NodeError> {
             Ok(ResourceBounds {
@@ -515,7 +478,8 @@ impl StarknetRpc for HttpStarknetRpc {
         contract_class: &Value,
         nonce: &Felt,
     ) -> Result<FeeBounds, NodeError> {
-        let tx = Self::declare_tx_json(sender, compiled_class_hash, contract_class, &[], nonce, &ZERO_BOUNDS);
+        let tx =
+            declare_v3_tx_json(sender, compiled_class_hash, Some(contract_class), &[], nonce, &ZERO_BOUNDS);
         let r = self
             .call(
                 "starknet_estimateFee",
@@ -537,10 +501,61 @@ impl StarknetRpc for HttpStarknetRpc {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError> {
-        let tx = Self::declare_tx_json(sender, compiled_class_hash, contract_class, signature, nonce, bounds);
+        let tx = declare_v3_tx_json(
+            sender,
+            compiled_class_hash,
+            Some(contract_class),
+            signature,
+            nonce,
+            bounds,
+        );
         let r = self
             .call("starknet_addDeclareTransaction", json!({ "declare_transaction": tx }))
             .await?;
         Self::parse_felt(&r["transaction_hash"], "transaction_hash")
     }
+}
+
+/// A complete, canonical-hex RPC `BROADCASTED_DECLARE_TXN_V3` object. Shared by
+/// estimate, broadcast and the sign-only response so callers get a
+/// **ready-to-broadcast** transaction. `contract_class` is the canonical RPC
+/// `CONTRACT_CLASS` (see `wallet_core::SierraClass::to_rpc_json`) — the node
+/// derives the class hash from it — and is omitted from the object when `None`
+/// (sign-only without the class; the caller splices theirs in).
+pub fn declare_v3_tx_json(
+    sender: &Felt,
+    compiled_class_hash: &Felt,
+    contract_class: Option<&Value>,
+    signature: &[Felt],
+    nonce: &Felt,
+    bounds: &FeeBounds,
+) -> Value {
+    let rb = |b: &ResourceBounds| {
+        json!({
+            "max_amount": u128_to_hex(b.max_amount as u128),
+            "max_price_per_unit": u128_to_hex(b.max_price_per_unit),
+        })
+    };
+    let mut tx = json!({
+        "type": "DECLARE",
+        "version": "0x3",
+        "sender_address": fh(sender),
+        "compiled_class_hash": fh(compiled_class_hash),
+        "signature": signature.iter().map(fh).collect::<Vec<_>>(),
+        "nonce": fh(nonce),
+        "resource_bounds": {
+            "l1_gas": rb(&bounds.l1_gas),
+            "l2_gas": rb(&bounds.l2_gas),
+            "l1_data_gas": rb(&bounds.l1_data_gas),
+        },
+        "tip": "0x0",
+        "paymaster_data": [],
+        "account_deployment_data": [],
+        "nonce_data_availability_mode": "L1",
+        "fee_data_availability_mode": "L1",
+    });
+    if let Some(cc) = contract_class {
+        tx["contract_class"] = cc.clone();
+    }
+    tx
 }
