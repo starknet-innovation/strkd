@@ -143,6 +143,17 @@ impl WalletSession {
             .map_err(WalletRpcError::from)
     }
 
+    /// Derive the Tongo (STRK20 privacy pool) keypair for `account`. Needs the
+    /// unlocked seed; the private half zeroizes on drop (krusty `SecretFelt`).
+    pub fn tongo_keypair_for(
+        &self,
+        account: &AccountRef,
+    ) -> Result<wallet_core::TongoKeyPair, WalletRpcError> {
+        let u = self.require_unlocked()?;
+        wallet_core::tongo_keypair(&u.mnemonic, account.domain, account.index, None)
+            .map_err(WalletRpcError::from)
+    }
+
     /// Sign SNIP-12 typed data with the given account's key.
     pub fn sign_typed_data_for(
         &self,

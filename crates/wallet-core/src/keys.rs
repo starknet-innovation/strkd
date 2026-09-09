@@ -6,8 +6,9 @@
 
 use krusty_kms::account_class::{OpenZeppelinAccount, SaltPolicy};
 use krusty_kms::{
-    compute_typed_data_message_hash, derive_private_key_with_coin_type, sign_stark_hash,
-    stark_public_key, StarkSignature,
+    compute_typed_data_message_hash, derive_keypair_with_coin_type,
+    derive_private_key_with_coin_type, sign_stark_hash, stark_public_key, StarkSignature,
+    TongoKeyPair, TONGO_COIN_TYPE,
 };
 use krusty_kms_common::ChainId;
 use starknet_types_core::felt::Felt;
@@ -121,6 +122,29 @@ pub fn sign_typed_data(
 /// before and after signing. Delegated to `krusty-kms`.
 pub fn typed_data_message_hash(typed_data_json: &str, account_address: &Felt) -> Result<Felt> {
     compute_typed_data_message_hash(typed_data_json, account_address).map_err(|_| CoreError::Signing)
+}
+
+/// Derive the Tongo (STRK20 privacy pool) keypair for `(domain, index)`.
+///
+/// Same seed as the Stark signing key but a separate SLIP-44 branch
+/// (coin type 5454 vs 9004), so the confidential-balance key is deterministic
+/// from the vault mnemonic yet never equal to — or derivable from — the
+/// account's signing key. The private half lives in krusty's `SecretFelt`
+/// (zeroizes on drop).
+pub fn tongo_keypair(
+    mnemonic: &str,
+    domain: Domain,
+    index: u32,
+    passphrase: Option<&str>,
+) -> Result<TongoKeyPair> {
+    derive_keypair_with_coin_type(
+        mnemonic,
+        index,
+        domain.account_index(),
+        TONGO_COIN_TYPE,
+        passphrase,
+    )
+    .map_err(|_| CoreError::Derivation)
 }
 
 /// Sign an already-computed message hash with the key for `(domain, index)`.

@@ -41,7 +41,15 @@ The `prover` crate is built and tested (the success path via a test-only stub
 when unconfigured), with `companion_prove*` covered end-to-end in the `wallet-rpc`
 dispatch tests. The native SNIP-36 backend is **live-verified on Sepolia
 (2026-07-02, prover pin `v1.2.2`)**: it generated a proof-carrying invoke
-on-device that **verified on-chain**. Next up: **Phase 3** (Tongo / STRK20).
+on-device that **verified on-chain**.
+
+**Phase 3 (Tongo / STRK20) core is in**: `wallet_strk20Balances` /
+`wallet_strk20PrepareInvoke` / `wallet_strk20InvokeTransaction` run over Tongo
+confidential balances (deposit / confidential transfer / withdraw / rollover),
+built against the community wallet-api spec at **0.10.4-rc.0** — the delta the
+Tongo backend can't express (open notes, sub-accounts) is documented in
+[spec §7.6](./spec/wallet-companion-spec.md#76-strk20-tongo-upstream-spec-delta-phase-3-implemented).
+Remaining: a Settings UI for the token→pool registry + a live Sepolia run.
 
 For the authoritative, always-current state, see
 **[`docs/project/status.md`](./docs/project/status.md)**.

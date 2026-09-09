@@ -37,6 +37,11 @@ pub struct ServerState {
     /// Tokens the user has chosen to watch (`wallet_watchAsset`). In-memory,
     /// display-only this phase.
     watched_assets: RwLock<Vec<Value>>,
+    /// STRK20 (Tongo) pool registry per network: ERC-20 token → pool contract.
+    /// A Tongo contract wraps exactly one token, so this is the wallet's whole
+    /// notion of "which shielded tokens exist". Configured by the human (or
+    /// the embedding app); an unknown token errors with NOT_REGISTERED (118).
+    strk20_pools: RwLock<HashMap<(ChainId, Felt), Felt>>,
     /// Unix-ms of the last meaningful activity (an RPC request, or an unlock).
     /// The app's auto-lock task locks the wallet after this goes stale. Desktop
     /// status-polling (IPC, not RPC) deliberately does NOT touch it.
@@ -76,6 +81,7 @@ impl ServerState {
             vault_store: None,
             nodes: RwLock::new(HashMap::new()),
             watched_assets: RwLock::new(Vec::new()),
+            strk20_pools: RwLock::new(HashMap::new()),
             last_activity_ms: AtomicU64::new(now_unix_ms()),
             issue_repo: DEFAULT_ISSUE_REPO.to_string(),
             prover: None,
@@ -149,6 +155,46 @@ impl ServerState {
     /// A cloned handle to `chain`'s node, if any (never held across an await).
     pub fn node_for(&self, chain: ChainId) -> Option<Arc<dyn StarknetRpc>> {
         self.nodes.read().unwrap().get(&chain).cloned()
+    }
+
+    /// Register (or with `None`, remove) the STRK20 privacy pool wrapping
+    /// `token` on `chain`. Builder-style twin: [`ServerState::with_strk20_pool`].
+    pub fn set_strk20_pool(&self, chain: ChainId, token: Felt, pool: Option<Felt>) {
+        let mut pools = self.strk20_pools.write().unwrap();
+        match pool {
+            Some(p) => {
+                pools.insert((chain, token), p);
+            }
+            None => {
+                pools.remove(&(chain, token));
+            }
+        }
+    }
+
+    /// Register a STRK20 pool at construction.
+    pub fn with_strk20_pool(self, chain: ChainId, token: Felt, pool: Felt) -> Self {
+        self.set_strk20_pool(chain, token, Some(pool));
+        self
+    }
+
+    /// The pool wrapping `token` on `chain`, if registered.
+    pub fn strk20_pool_for(&self, chain: ChainId, token: &Felt) -> Option<Felt> {
+        self.strk20_pools.read().unwrap().get(&(chain, *token)).copied()
+    }
+
+    /// All tokens with a registered pool on `chain` (the wallet's "all
+    /// shielded tokens" set for `wallet_strk20Balances` with `tokens: []`).
+    pub fn strk20_tokens(&self, chain: ChainId) -> Vec<Felt> {
+        let mut v: Vec<Felt> = self
+            .strk20_pools
+            .read()
+            .unwrap()
+            .keys()
+            .filter(|(c, _)| *c == chain)
+            .map(|(_, t)| *t)
+            .collect();
+        v.sort();
+        v
     }
 
     /// Mark "now" as the last activity (resets the auto-lock idle timer).
@@ -237,11 +283,11 @@ fn push_field(body: &mut String, label: &str, val: &str) {
     }
 }
 
-fn felt_hex(f: &Felt) -> String {
+pub(crate) fn felt_hex(f: &Felt) -> String {
     format!("0x{:x}", f)
 }
 
-fn parse_u128_str(s: &str) -> Result<u128, WalletRpcError> {
+pub(crate) fn parse_u128_str(s: &str) -> Result<u128, WalletRpcError> {
     let s = s.trim();
     let parsed = if let Some(h) = s.strip_prefix("0x") {
         u128::from_str_radix(h, 16)
@@ -262,7 +308,7 @@ fn parse_u128_field(params: &Value, key: &str) -> Result<u128, WalletRpcError> {
     }
 }
 
-fn chain_name(c: ChainId) -> &'static str {
+pub(crate) fn chain_name(c: ChainId) -> &'static str {
     match c {
         ChainId::Mainnet => "SN_MAIN",
         ChainId::Sepolia => "SN_SEPOLIA",
@@ -277,12 +323,12 @@ fn param_str(params: &Value, key: &str) -> Result<String, WalletRpcError> {
         .ok_or_else(|| WalletRpcError::InvalidRequest(format!("missing string param '{key}'")))
 }
 
-fn opt_param_str(params: &Value, key: &str) -> Option<String> {
+pub(crate) fn opt_param_str(params: &Value, key: &str) -> Option<String> {
     params.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
 /// Which accounts this client may see/use.
-fn scope_for(client: &PairedClient) -> Option<String> {
+pub(crate) fn scope_for(client: &PairedClient) -> Option<String> {
     match client.kind {
         ClientKind::Agent => Some(client.id.clone()),
         ClientKind::App => None,
@@ -305,15 +351,13 @@ struct Handled {
     client: Option<String>,
 }
 
-/// Standard methods that exist in the spec but are not implemented in this
-/// phase (broadcast/declare/chain-management/privacy).
+/// Standard methods that exist in the spec but are not implemented.
+/// `wallet_strk20SubaccountCommitment` (spec 0.10.4) needs a note-based pool
+/// with sub-account identity keys — not expressible in the Tongo backend.
 fn is_deferred(method: &str) -> bool {
     matches!(
         method,
-        "wallet_addStarknetChain"
-            | "wallet_strk20InvokeTransaction"
-            | "wallet_strk20PrepareInvoke"
-            | "wallet_strk20Balances"
+        "wallet_addStarknetChain" | "wallet_strk20SubaccountCommitment"
     )
 }
 
@@ -488,6 +532,13 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_proveStatus" => handle_prove_status(state, &params).await,
         "companion_proofActivity" => handle_proof_activity(state).await,
         "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
+        "wallet_strk20Balances" => crate::strk20::handle_balances(state, &client, &params).await,
+        "wallet_strk20PrepareInvoke" => {
+            crate::strk20::handle_prepare_invoke(state, &client, &params).await
+        }
+        "wallet_strk20InvokeTransaction" => {
+            crate::strk20::handle_invoke_transaction(state, &client, &params).await
+        }
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -504,7 +555,9 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_requestFunding"
         | "companion_requestGrant"
         | "companion_deployAccount"
-        | "companion_signAndProve" => decision_label(&result),
+        | "companion_signAndProve"
+        | "wallet_strk20PrepareInvoke"
+        | "wallet_strk20InvokeTransaction" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -521,7 +574,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 /// prompt (funding spends the user's manager account; the rest change shared
 /// state). The agent is independently scoped to its own accounts, so a grant's
 /// blast radius is limited to accounts the agent controls.
-async fn gated_approval(
+pub(crate) async fn gated_approval(
     state: &ServerState,
     client: &PairedClient,
     method: &str,
@@ -851,7 +904,7 @@ fn opt_fee_bounds(params: &Value) -> Result<Option<FeeBounds>, WalletRpcError> {
 /// explicit and avoids the cross-agent race of a single shared mutable active
 /// chain (one client switching the network out from under another). An
 /// unsupported chain → 117; a malformed value → 114.
-async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, WalletRpcError> {
+pub(crate) async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, WalletRpcError> {
     match params.get("chainId") {
         None | Some(Value::Null) => Ok(state.session.lock().await.chain()),
         Some(Value::String(s)) => {
@@ -879,7 +932,7 @@ async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, W
 /// `proof_facts.at(8)`) reverts during estimation — and even if it didn't, the
 /// estimate would be for the wrong execution. Such invokes therefore require
 /// explicit `resource_bounds` rather than auto-estimation.
-async fn resolve_exec(
+pub(crate) async fn resolve_exec(
     state: &ServerState,
     chain: ChainId,
     sender: &Felt,
@@ -917,7 +970,7 @@ async fn resolve_exec(
     Ok((nonce, bounds))
 }
 
-fn bounds_summary(b: &FeeBounds) -> String {
+pub(crate) fn bounds_summary(b: &FeeBounds) -> String {
     format!(
         "l1 {}×{} / l2 {}×{} / l1_data {}×{}",
         b.l1_gas.max_amount,
@@ -932,7 +985,7 @@ fn bounds_summary(b: &FeeBounds) -> String {
 /// Sign the invoke and, if `submit`, broadcast it via the node. Returns the
 /// JSON-RPC result. Caller must have already obtained approval.
 #[allow(clippy::too_many_arguments)]
-async fn sign_and_submit(
+pub(crate) async fn sign_and_submit(
     state: &ServerState,
     chain: ChainId,
     account: &AccountRef,
@@ -2042,7 +2095,7 @@ async fn handle_create_agent_account(
     Ok(account_to_json(&account))
 }
 
-fn normalize_address(s: &str) -> Result<String, WalletRpcError> {
+pub(crate) fn normalize_address(s: &str) -> Result<String, WalletRpcError> {
     let f = Felt::from_hex(s)
         .map_err(|_| WalletRpcError::InvalidRequest("invalid account_address".into()))?;
     Ok(address_hex(&f))

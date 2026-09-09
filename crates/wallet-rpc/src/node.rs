@@ -123,6 +123,20 @@ pub trait StarknetRpc: Send + Sync {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError>;
+
+    /// Read-only `starknet_call` against the latest block: raw felts in, raw
+    /// felts out. Used by the STRK20 (Tongo) handlers to read pool state. Has
+    /// a default error impl so bespoke test mocks that predate it keep
+    /// compiling; the HTTP client implements it for real.
+    async fn call_contract(
+        &self,
+        to: &Felt,
+        selector: &Felt,
+        calldata: &[Felt],
+    ) -> Result<Vec<Felt>, NodeError> {
+        let _ = (to, selector, calldata);
+        Err(NodeError::Rpc("starknet_call not supported by this node client".into()))
+    }
 }
 
 fn fh(f: &Felt) -> String {
@@ -351,6 +365,25 @@ impl StarknetRpc for HttpStarknetRpc {
         Self::parse_felt(&r, "nonce")
     }
 
+    async fn call_contract(
+        &self,
+        to: &Felt,
+        selector: &Felt,
+        calldata: &[Felt],
+    ) -> Result<Vec<Felt>, NodeError> {
+        let req = json!({
+            "contract_address": fh(to),
+            "entry_point_selector": fh(selector),
+            "calldata": calldata.iter().map(fh).collect::<Vec<_>>(),
+        });
+        let r = self.call("starknet_call", json!([req, BLOCK_TAG])).await?;
+        r.as_array()
+            .ok_or_else(|| NodeError::Decode("starknet_call: expected array".into()))?
+            .iter()
+            .map(|v| Self::parse_felt(v, "starknet_call element"))
+            .collect()
+    }
+
     async fn estimate_invoke(
         &self,
         sender: &Felt,
@@ -478,8 +511,7 @@ impl StarknetRpc for HttpStarknetRpc {
         contract_class: &Value,
         nonce: &Felt,
     ) -> Result<FeeBounds, NodeError> {
-        let tx =
-            declare_v3_tx_json(sender, compiled_class_hash, Some(contract_class), &[], nonce, &ZERO_BOUNDS);
+        let tx = declare_v3_tx_json(sender, compiled_class_hash, Some(contract_class), &[], nonce, &ZERO_BOUNDS);
         let r = self
             .call(
                 "starknet_estimateFee",
@@ -501,14 +533,7 @@ impl StarknetRpc for HttpStarknetRpc {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError> {
-        let tx = declare_v3_tx_json(
-            sender,
-            compiled_class_hash,
-            Some(contract_class),
-            signature,
-            nonce,
-            bounds,
-        );
+        let tx = declare_v3_tx_json(sender, compiled_class_hash, Some(contract_class), signature, nonce, bounds);
         let r = self
             .call("starknet_addDeclareTransaction", json!({ "declare_transaction": tx }))
             .await?;

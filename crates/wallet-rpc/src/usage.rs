@@ -252,13 +252,39 @@ normal invoke." },
               "note": "DEPRECATED for agents. Switches the wallet's shared DEFAULT network for ALL clients (one agent can switch it out from under another). Prefer a per-request chainId on the operational methods. Kept for EIP-1193 compatibility + as the omitted-chainId fallback (the human sets the default in Settings). Unknown chain → error 117." },
             { "method": "wallet_watchAsset", "auth": true, "prompts": true,
               "params": "{ asset: { address, symbol?, decimals?, name? } }", "returns": "true",
-              "note": "Adds a token to the wallet's watch list (display only)." }
+              "note": "Adds a token to the wallet's watch list (display only)." },
+
+            { "method": "wallet_strk20Balances", "auth": true, "prompts": false,
+              "params": "{ tokens: [address…] ([] = all shielded tokens), account_address?, chainId? }",
+              "returns": "[{ token, balance, pending }] (hex, token smallest units)",
+              "note": "Decrypted PRIVATE balances inside the STRK20 (Tongo) privacy pool. `pending` (strkd extension) is money you have RECEIVED but cannot spend yet — send a {\"type\":\"rollover\"} action to activate it. A token without a registered pool → 118 (the human registers token→pool in Settings). Needs the wallet unlocked + a node." },
+            { "method": "wallet_strk20PrepareInvoke", "auth": true, "prompts": true,
+              "params": "{ actions: [STRK20_ACTION], simulate?, account_address?, chainId? }",
+              "returns": "{ call, calls, proof (always the empty STRK20_PROOF shape) }",
+              "note": "Builds the Tongo call(s) for ONE action without submitting; you broadcast via wallet_addInvokeTransaction. `calls` (strkd extension) is the full ordered list — a deposit is TWO calls (ERC-20 approve + pool fund); submit them together in one multicall. Tongo proofs live inside the calldata, so `proof` is always empty and `simulate` changes nothing (proving is milliseconds, and the returned call is submittable either way). NOTE: the prepared call binds the pool-side nonce — broadcast it before any other STRK20 action from the same account, or it goes stale." },
+            { "method": "wallet_strk20InvokeTransaction", "auth": true, "prompts": true,
+              "params": "{ actions: [STRK20_ACTION], account_address?, nonce?, resource_bounds?, chainId? }",
+              "returns": "{ transaction_hash, submitted: true }",
+              "note": "Prove + approve + sign + broadcast one STRK20 action through YOUR account. Gas is paid publicly by your Starknet account (no relayer), so the wrapping tx's sender is visible — amounts and balances stay encrypted; no fee action is added. Action shapes: see the `strk20` section." }
         ],
+
+        "strk20": {
+            "backend": "Tongo confidential balances (audited ElGamal + sigma proofs) — per-token pools; amounts/balances encrypted on-chain, the wrapping tx's sender visible",
+            "shape": "exactly ONE action per request (each Tongo op consumes the pool-side nonce; send sequences as separate transactions)",
+            "actions": {
+                "deposit": "{ type: \"deposit\", token, amount } — public ERC-20 → your encrypted pool balance (always to self)",
+                "withdraw": "{ type: \"withdraw\", token, amount, recipient } — encrypted balance → public ERC-20 at a Starknet address (amount becomes public)",
+                "transfer": "{ type: \"transfer\", token, amount, recipient } — confidential in-pool transfer. recipient is the recipient's TONGO PUBLIC KEY (base58 Tongo address, or { x, y } felts) — NOT a Starknet address; ask them for it (it is public, safe to share). It lands in their PENDING balance until they roll over.",
+                "rollover": "{ type: \"rollover\", token } — strkd extension: moves your pending (received) balance into the spendable one. Do this after someone transfers to you."
+            },
+            "amounts": "strings, in the token's smallest unit; must be a multiple of the pool's rate (1 pool unit = rate smallest units; e.g. rate 1e18 → whole STRK only)",
+            "receive_flow": "to RECEIVE shielded funds: share your Tongo address out of band → sender transfers → wallet_strk20Balances shows it under `pending` → send {\"type\":\"rollover\"} → spendable",
+            "unsupported": "amount \"OPEN\", `invoke`, `subaccount_invoke`, wallet_strk20SubaccountCommitment → -32601: the Tongo backend has no open-note/sub-account model (they need the note-based pool from wallet-api spec 0.10.4 that Tongo predates)"
+        },
 
         "deferred": {
             "note": "These exist in the Starknet wallet spec but return -32601 here for now.",
-            "methods": ["wallet_addStarknetChain", "wallet_strk20PrepareInvoke",
-                        "wallet_strk20InvokeTransaction", "wallet_strk20Balances"]
+            "methods": ["wallet_addStarknetChain", "wallet_strk20SubaccountCommitment"]
         },
 
         "errors": {
@@ -266,7 +292,9 @@ normal invoke." },
             "114": "INVALID_REQUEST_PAYLOAD — malformed params / missing field",
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",
             "117": "CHAIN_ID_NOT_SUPPORTED — only SN_SEPOLIA / SN_MAIN are supported",
-            "118": "NOT_REGISTERED — pair first, or your token is unknown/invalid",
+            "118": "NOT_REGISTERED — pair first, or your token is unknown/invalid; on wallet_strk20* methods: no privacy pool is registered for the requested token",
+            "119": "INSUFFICIENT_PRIVATE_BALANCE — your spendable pool balance can't cover it (pending funds need a rollover action first; the message says so)",
+            "120": "PRIVACY_LEAK — reserved (strkd does not run leak heuristics yet)",
             "163": "INTERNAL_ERROR — an unexpected internal failure (key material is never leaked in the message); safe to retry, and report it if it persists",
             "-32001": "LOCKED — the wallet is locked; ask the user to unlock it",
             "-32002": "FORBIDDEN — you tried to act outside your own accounts (or wrong client kind)",

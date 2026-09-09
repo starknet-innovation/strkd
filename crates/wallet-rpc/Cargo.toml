@@ -8,6 +8,14 @@ description = "Loopback JSON-RPC service for the Starknet wallet companion: auth
 [dependencies]
 wallet-core = { path = "../wallet-core" }
 prover = { path = "../prover" }
+krusty-kms-sdk = { workspace = true }
+krusty-kms-client = { workspace = true }
+krusty-kms-common = { workspace = true }
+# Same Felt/curve types krusty uses (recipient keys, pool state points).
+starknet-types-core = { workspace = true }
+# Only for the `Call` type krusty-kms-client's builders return; version must
+# stay in lockstep with krusty-kms-client's own starknet-rust dependency.
+starknet-rust = "0.18.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -23,6 +31,8 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+# Build ElGamal-encrypted Tongo pool state fixtures for the strk20 tests.
+krusty-kms-crypto = { workspace = true }
 async-trait = { workspace = true }
 prover = { path = "../prover" }
 # Verify a signed SNIP-12 digest under the account's own key (strkd #7 regression).

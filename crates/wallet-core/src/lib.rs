@@ -23,12 +23,11 @@ pub use class_hash::{SierraClass, SierraEntryPoint, SierraEntryPoints, CONTRACT_
 pub use domain::{Domain, AGENT_ACCOUNT_INDEX, STARKNET_COIN_TYPE, USER_ACCOUNT_INDEX};
 pub use error::{CoreError, Result};
 pub use keys::{
-    deployment_data, oz_address, public_key, sign_hash, sign_typed_data, typed_data_message_hash,
-    DeploymentData,
+    deployment_data, oz_address, public_key, sign_hash, sign_typed_data, tongo_keypair,
+    typed_data_message_hash, DeploymentData,
 };
 pub use tx::{
-    declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector,
-    sign_declare_v3,
+    declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector, sign_declare_v3,
     sign_deploy_account_v3, sign_invoke_v3, starknet_keccak, Call, InvokeV3Params, SignedDeclare,
     SignedDeployAccount, SignedInvoke,
 };
@@ -40,7 +39,7 @@ pub use krusty_kms::tx_hash::{DaMode, ResourceBounds};
 
 // Re-export the foreign types that appear in this crate's public API so callers
 // don't need to depend on krusty/starknet-types-core directly.
-pub use krusty_kms::StarkSignature;
+pub use krusty_kms::{StarkSignature, TongoKeyPair, TONGO_COIN_TYPE};
 pub use krusty_kms_common::ChainId;
 pub use starknet_types_core::felt::Felt;
 
