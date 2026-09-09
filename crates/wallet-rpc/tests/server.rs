@@ -166,6 +166,9 @@ async fn usage_endpoint_is_open_and_self_describing() {
         "wallet_switchStarknetChain",
         "wallet_watchAsset",
         "companion_getStatus",
+        "wallet_strk20Balances",
+        "wallet_strk20PrepareInvoke",
+        "wallet_strk20InvokeTransaction",
     ] {
         assert!(methods.iter().any(|m| m == expected), "usage doc missing method {expected}");
     }

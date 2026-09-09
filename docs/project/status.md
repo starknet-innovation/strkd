@@ -23,7 +23,7 @@ automated tests (see the Node caveat in
 **Phase 2 is effectively complete** for the in-scope methods (broadcast, fees,
 switchChain, watchAsset, declare; `addStarknetChain` intentionally skipped). The
 open item is the **funded-account live submit** to confirm the broadcast/declare
-wire format end-to-end. After that: **Phase 3** (Tongo / STRK20 privacy methods).
+wire format end-to-end.
 
 **Declare fixed 2026-09-09 (#9).** Declares failed on-chain with `Account:
 invalid signature` because the wallet signed the caller's `class_hash`, while
@@ -37,6 +37,10 @@ class hash matches the node's for a live class, the node returns a real estimate
 for our declare object, and with validation on plus a bogus signature it fails
 at `__validate_declare__` alone. See spec §7.4.1.
 
+**Phase 3 (Tongo / STRK20) core landed 2026-07-31** — see the Done entry below.
+Its open items: desktop Settings UI for the token→pool registry, and a live
+Sepolia run against a deployed Tongo pool.
+
 Start from [`desktop.md`](../code/desktop.md) (for 1) or spec
 [§7.4 Broadcast modes](../../spec/wallet-companion-spec.md#74-broadcast-modes-sign-only-default-submit-opt-in) (for 2).
 
@@ -48,6 +52,28 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 
 ### ✅ Done
 
+- **Phase 3 (core) — STRK20 / Tongo privacy methods (2026-07-31).** Reviewed the
+  upstream wallet-api spec first: it moved to **0.10.4-rc.0** (sub-accounts,
+  `collect_policy`, open-note enforcement, fee-action split — 7 commits since our
+  June-23 snapshot). Implemented `wallet_strk20Balances` /
+  `wallet_strk20PrepareInvoke` / `wallet_strk20InvokeTransaction` over the Tongo
+  backend: `krusty-kms-sdk` proofs + `krusty-kms-client` calldata builders (both
+  pure), chain reads via a new `StarknetRpc::call_contract` seam (dispatch stays
+  mockable), Tongo keypair derived from the vault seed on its own SLIP-44 branch
+  (coin 5454, `wallet_core::tongo_keypair`), per-network **token→pool registry**
+  on `ServerState` (`with_strk20_pool`; unknown token → 118). Extensions where
+  Tongo diverges from the note-based upstream model (documented in spec §7.6 and
+  the GET / doc): `rollover` action + `pending` balance field, `calls` array
+  (deposit = approve+fund), Tongo-pubkey recipients, one action per request.
+  `"OPEN"` amounts / `invoke` / `subaccount_invoke` / `SubaccountCommitment`
+  are rejected/deferred with targeted errors; new error codes 119/120 wired.
+  **7 new dispatch tests** (offline, real ElGamal fixtures — decryption, proof
+  gen, and calldata assembly all run for real) + a derivation test; whole
+  workspace green, clippy clean. NOT yet: desktop Settings UI for the pool
+  registry, live Sepolia verification, hint-format cross-check against the
+  reference TS SDK (we encrypt XChaCha20 hints via krusty's `derive_shared_secret`;
+  the contract treats hints as opaque, so worst case a reference-SDK recipient
+  falls back to brute-force decryption).
 - **Specification** — technical spec ([`spec/wallet-companion-spec.md`](../../spec/wallet-companion-spec.md))
   and derivation portability test plan
   ([`spec/portability-test-plan.md`](../../spec/portability-test-plan.md)).

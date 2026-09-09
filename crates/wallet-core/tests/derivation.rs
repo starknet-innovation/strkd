@@ -12,8 +12,8 @@
 use std::collections::HashSet;
 
 use wallet_core::{
-    address_hex, generate_mnemonic, oz_address, public_key, sign_hash, validate_mnemonic, ChainId,
-    Domain, Felt, AGENT_ACCOUNT_INDEX, USER_ACCOUNT_INDEX,
+    address_hex, generate_mnemonic, oz_address, public_key, sign_hash, tongo_keypair,
+    validate_mnemonic, ChainId, Domain, Felt, AGENT_ACCOUNT_INDEX, USER_ACCOUNT_INDEX,
 };
 
 /// Public, well-known BIP-39 test vector (entropy = all zeros). Test-only.
@@ -122,4 +122,26 @@ fn signing_is_deterministic_and_bound_to_account() {
     // A different account signing the same hash yields a different signature.
     let other = sign_hash(TEST_MNEMONIC, Domain::Agent, 0, None, &hash).unwrap();
     assert_ne!(s1.s, other.s);
+}
+
+#[test]
+fn tongo_keypair_is_deterministic_and_isolated_from_stark_branch() {
+    // Deterministic: same (mnemonic, domain, index) → same Tongo public key.
+    let a = tongo_keypair(TEST_MNEMONIC, Domain::User, 0, None).unwrap();
+    let b = tongo_keypair(TEST_MNEMONIC, Domain::User, 0, None).unwrap();
+    let ax = a.public_key.to_affine().unwrap();
+    let bx = b.public_key.to_affine().unwrap();
+    assert_eq!(ax.x(), bx.x());
+    assert_ne!(ax.x(), Felt::ZERO);
+
+    // Distinct per index and per domain (agent branch is isolated).
+    let idx1 = tongo_keypair(TEST_MNEMONIC, Domain::User, 1, None).unwrap();
+    let agent = tongo_keypair(TEST_MNEMONIC, Domain::Agent, 0, None).unwrap();
+    assert_ne!(ax.x(), idx1.public_key.to_affine().unwrap().x());
+    assert_ne!(ax.x(), agent.public_key.to_affine().unwrap().x());
+
+    // The Tongo branch (coin type 5454) must not collide with the Stark
+    // signing key's public key (coin type 9004) for the same account.
+    let stark_pk = public_key(TEST_MNEMONIC, Domain::User, 0, None).unwrap();
+    assert_ne!(ax.x(), stark_pk);
 }

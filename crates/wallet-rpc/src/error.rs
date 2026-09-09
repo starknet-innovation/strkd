@@ -20,6 +20,15 @@ pub enum WalletRpcError {
     ChainIdNotSupported,
     /// 118 — caller is not a registered/paired client.
     NotRegistered,
+    /// 118 — (STRK20) no privacy pool is registered/configured for the
+    /// requested token. Same wire code as the spec's `NOT_REGISTERED` (which
+    /// covers pool registration), but with an actionable message.
+    PoolNotRegistered(String),
+    /// 119 — (STRK20) private balance can't cover the withdraw/transfer.
+    InsufficientPrivateBalance(String),
+    /// 120 — (STRK20) completing the operation could compromise the user's
+    /// privacy. Reserved: strkd does not yet run leak heuristics.
+    PrivacyLeak(String),
     /// 162 — requested API version is not supported.
     ApiVersionNotSupported,
     /// 163 — catch-all internal error.
@@ -52,6 +61,9 @@ impl WalletRpcError {
             WalletRpcError::DeploymentDataNotAvailable => 116,
             WalletRpcError::ChainIdNotSupported => 117,
             WalletRpcError::NotRegistered => 118,
+            WalletRpcError::PoolNotRegistered(_) => 118,
+            WalletRpcError::InsufficientPrivateBalance(_) => 119,
+            WalletRpcError::PrivacyLeak(_) => 120,
             WalletRpcError::ApiVersionNotSupported => 162,
             WalletRpcError::Unknown(_) => 163,
             WalletRpcError::Locked => -32001,
@@ -72,6 +84,9 @@ impl WalletRpcError {
             WalletRpcError::DeploymentDataNotAvailable => "deployment data not available".into(),
             WalletRpcError::ChainIdNotSupported => "chain id not supported".into(),
             WalletRpcError::NotRegistered => "caller is not a registered client".into(),
+            WalletRpcError::PoolNotRegistered(m) => format!("not registered: {m}"),
+            WalletRpcError::InsufficientPrivateBalance(m) => m.clone(),
+            WalletRpcError::PrivacyLeak(m) => format!("privacy leak: {m}"),
             WalletRpcError::ApiVersionNotSupported => "api version not supported".into(),
             WalletRpcError::Unknown(m) => format!("unknown error: {m}"),
             WalletRpcError::Locked => "wallet is locked".into(),
@@ -112,11 +127,9 @@ impl From<wallet_core::CoreError> for WalletRpcError {
             BadPassphraseOrCorrupt => {
                 WalletRpcError::InvalidRequest("incorrect passphrase or corrupt vault".into())
             }
-            // A malformed caller-supplied contract class is the caller's error
-            // (114), and the detail carries no key material.
-            InvalidContractClass(m) => {
-                WalletRpcError::InvalidRequest(format!("contract_class: {m}"))
-            }
+            // A malformed caller-supplied contract class is the caller's error (114),
+            // and the detail carries no key material.
+            InvalidContractClass(m) => WalletRpcError::InvalidRequest(format!("contract_class: {m}")),
             // Everything else is an internal crypto/serialization failure that
             // must not surface key detail.
             _ => WalletRpcError::Unknown("core operation failed".into()),

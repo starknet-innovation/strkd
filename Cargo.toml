@@ -21,6 +21,12 @@ repository = "https://github.com/starknet-innovation/strkd"
 [workspace.dependencies]
 krusty-kms = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
 krusty-kms-common = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
+# Phase 3 (Tongo / STRK20): sdk = ZK proof generation, client = Tongo contract
+# calldata builders + on-chain state read/decrypt. Same pin as krusty-kms.
+krusty-kms-sdk = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
+krusty-kms-client = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
+# Tests only: build ElGamal-encrypted pool state fixtures.
+krusty-kms-crypto = { git = "https://github.com/starknet-innovation/krusty-kms", rev = "b50afd674d25a9f9fe085118803baf483614450a" }
 # Must match krusty-kms's Felt type to avoid version-skew mismatches.
 starknet-types-core = { version = "0.2.0", features = ["hash"] }
 serde = { version = "1", features = ["derive"] }

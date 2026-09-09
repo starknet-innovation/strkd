@@ -284,9 +284,11 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 | `wallet_strk20PrepareInvoke` | 3 | **yes**² | Build STRK20 (Tongo) call + proof, no submit |
 | `wallet_strk20InvokeTransaction` | 3 | **yes** | STRK20 privacy action |
 | `wallet_strk20Balances` | 3 | no | Query private balances |
+| `wallet_strk20SubaccountCommitment` | — | n/a | Spec 0.10.4 sub-accounts — **deferred** (`-32601`): needs a note-based pool; not expressible in Tongo³ |
 
 ¹ First connection requires pairing approval; thereafter auto-served to the paired caller (within scope).
-² Proof generation may be heavy; prompt + progress indication.
+² Proof generation may be heavy; prompt + progress indication. (In practice Tongo's sigma proofs are millisecond-scale; the prompt gates the *state read + spend authority*, not the proving time.)
+³ See §7.6 for the full delta between the upstream wallet-api spec (0.10.4-rc.0) and what the Tongo backend can express.
 
 ### 7.3 Companion extension methods (`companion_*`)
 Non-standard, namespaced to avoid clashing with `wallet_*`.
@@ -406,11 +408,38 @@ Use the spec's codes verbatim:
 `111` NOT_ERC20 · `112` UNLISTED_NETWORK · `113` USER_REFUSED_OP · `114` INVALID_REQUEST_PAYLOAD · `115` ACCOUNT_ALREADY_DEPLOYED · `116` DEPLOYMENT_DATA_NOT_AVAILABLE · `117` CHAIN_ID_NOT_SUPPORTED · `118` NOT_REGISTERED · `119` INSUFFICIENT_PRIVATE_BALANCE · `120` PRIVACY_LEAK · `162` API_VERSION_NOT_SUPPORTED · `163` UNKNOWN_ERROR.
 
 - User rejects / prompt times out → **`113` USER_REFUSED_OP**.
-- Unpaired/invalid token → **`118` NOT_REGISTERED**.
+- Unpaired/invalid token → **`118` NOT_REGISTERED**. On `wallet_strk20*` methods `118` also carries the spec's pool meaning: no privacy pool is registered for the requested token.
+- `119` INSUFFICIENT_PRIVATE_BALANCE names the shortfall and, when pending funds would cover it, points at the `rollover` action.
+- `120` PRIVACY_LEAK is reserved (strkd runs no leak heuristics yet).
 - Locked + `silent_mode` → error; locked + interactive → unlock UI then proceed.
 - Node unreachable during estimate/submit → `163` with a clear message (don't sign over guessed bounds).
 
-### 7.6 Example exchange
+### 7.6 STRK20 (Tongo): upstream-spec delta (Phase 3, implemented)
+
+Upstream `wallet_rpc.json` reviewed at **v0.10.4-rc.0 (2026-07-16)**. Since this
+spec was written (June 23 snapshot) the wallet-api gained: open-note semantics +
+enforcement (#395), a full **sub-account** feature — `wallet_strk20SubaccountCommitment`,
+`subaccount_invoke` actions with a required `collect_policy` (#400–#402) — a
+fee-action responsibility split between Invoke and Prepare (#401), and full-semver
+`API_VERSION` (#396/#397). The upstream model is a **note-based pool with an
+external proving service**; strkd's backend is **Tongo** (audited ElGamal
+confidential balances, sigma proofs embedded in calldata) via `krusty-kms-sdk`
+(proofs) + `krusty-kms-client` (calldata builders), with chain reads through the
+wallet's own node seam. The intersection is implemented; the delta is explicit:
+
+| Upstream (0.10.4-rc.0) | strkd (Tongo backend) |
+|---|---|
+| `deposit` / `withdraw` / `transfer` actions | **Supported** (one action per request — each Tongo op consumes the pool-side nonce) |
+| — | **`rollover` action (strkd extension)**: received funds land in a *pending* balance and must be rolled over to spend; balances responses carry a `pending` field |
+| `transfer.recipient` is a Starknet `ADDRESS` | Recipient is the recipient's **Tongo public key** (base58 or `{x,y}`) — Tongo has no on-chain address→key registry |
+| `"OPEN"` amounts, `invoke`, `subaccount_invoke`, `wallet_strk20SubaccountCommitment` | **Rejected/deferred (`-32601`)** — no note/sub-account model in Tongo |
+| `STRK20_PROOF { data, output, proof_facts }` | Always returned **empty**: Tongo proofs ride inside calldata; `simulate` has nothing to skip and returns a submittable call |
+| Result is one `call` | `call` (primary) **plus `calls`** (strkd extension): a deposit is ERC-20 `approve` + pool `fund` |
+| Wallet adds a fee-withdraw action on Invoke (paymaster model) | No fee action: strkd submits via the user's own account, gas paid publicly (amounts/balances stay encrypted; the wrapping tx's sender is public — inherent to Tongo) |
+| Registration handled transparently | Pool **registry** instead: per-network `token → Tongo pool` map, configured by the human; unknown token → `118` |
+| Wallet is single-account | Optional `account_address` param (strkd extension) on all three methods; required when several accounts are in scope |
+
+### 7.7 Example exchange
 
 Request (paired agent, sign-only default):
 ```json
@@ -525,7 +554,7 @@ Full spec is the target; deliver in phases.
 - **Phase 0 — Skeleton:** Tauri menu-bar app, vault (gen/import + passphrase + lock/unlock), single user account, `krusty-kms` wired in (`generate_mnemonic`, `derive_keypair_with_coin_type`, OZ address). No service.
 - **Phase 1 — Core service (minimal usable wallet):** loopback JSON-RPC + pairing + per-request approval + log; methods `supportedWalletApi/Specs`, `getPermissions`, `requestAccounts`, `requestChainId`, `deploymentData`, `signTypedData`, `addInvokeTransaction` **sign-only** with node-backed **fee estimation**. Multi-account (user domain) + agent domain + `companion_createAgentAccount` + scoping.
 - **Phase 2 — Broadcast & remaining standard methods:** `submit: true` broadcasting via configured node; `switchStarknetChain` (Sepolia ⇄ Mainnet); `addDeclareTransaction`, `watchAsset`, `addStarknetChain`. Log viewer polish.
-- **Phase 3 — Privacy (Tongo / STRK20):** `strk20PrepareInvoke`, `strk20InvokeTransaction`, `strk20Balances` via `krusty-kms-sdk`.
+- **Phase 3 — Privacy (Tongo / STRK20)** ✅ **(core, 2026-07-31)**: `strk20Balances`, `strk20PrepareInvoke`, `strk20InvokeTransaction` via `krusty-kms-sdk` + `krusty-kms-client`, with a `rollover` extension action and a per-network token→pool registry. Upstream-spec delta (sub-accounts, open notes, `wallet_strk20SubaccountCommitment` → deferred) documented in [§7.6](#76-strk20-tongo-upstream-spec-delta-phase-3-implemented). Remaining: desktop Settings UI for the pool registry + live Sepolia verification against a deployed Tongo pool.
 - **Hardening (parallel/after):** portability round-trip tests; UDS + peer-cred transport option; security audit; validate experimental crypto before Mainnet.
 
 ---

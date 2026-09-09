@@ -8,6 +8,7 @@ description = "Core key management, derivation, signing and vault for the Starkn
 [dependencies]
 krusty-kms = { workspace = true }
 krusty-kms-common = { workspace = true }
+krusty-kms-sdk = { workspace = true }
 starknet-types-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
