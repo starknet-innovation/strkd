@@ -5,14 +5,14 @@ name: Desktop Release
 # instead of build. Ported from ../dinner's release workflow.
 #
 # This is SEPARATE from the CLI release: the `strkd` CLI (wallet-cli) ships via
-# cargo-dist (see the root Cargo.toml [workspace.metadata.dist] block, which
-# generates its own .github/workflows/release.yml on `dist init`). To keep the
-# two from colliding, this desktop workflow triggers on a `desktop-v*` tag
-# rather than `v*`.
+# cargo-dist out of `release.yml`, which triggers on a plain `v*` tag. This
+# desktop workflow triggers on `desktop-v*`, so the two never collide (`v*` does
+# not match `desktop-v0.1.0`, and vice versa).
 #
-# Scope (v0.1.0): the prover backend publishes prebuilt binaries only for
-# darwin-arm64, linux-x86_64, linux-arm64 — so we ship macOS (Apple Silicon) and
-# Linux x86_64. No Windows / Intel-mac build (no prebuilt prover there).
+# Platforms: the prover backend publishes prebuilt binaries for darwin-arm64,
+# linux-x86_64 and linux-arm64 only — so we ship macOS (Apple Silicon) and Linux
+# x86_64. No Windows or Intel-mac build (no prebuilt prover there). Adding
+# linux-arm64 is a one-line matrix add.
 #
 # Trigger: push a `desktop-v*` tag, or run manually (workflow_dispatch). The
 # release is created as a DRAFT — a human reviews and publishes it.
@@ -39,25 +39,34 @@ jobs:
         include:
           - os: macos-14       # Apple Silicon runner -> darwin-arm64
             target: darwin-arm64
-          - os: ubuntu-24.04   # -> linux-x86_64; 24.04 matches the prebuilt prover's glibc (2.39) + has webkit2gtk 4.1
+          - os: ubuntu-24.04   # -> linux-x86_64; 24.04 matches the prover's glibc (2.39) + has webkit2gtk 4.1
             target: linux-x86_64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120   # from-source RC.6 prover build (~30-40 min) + app bundle
+    # Prebuilt prover staging (download + `snip36 setup --prebuilt` + doctor) plus
+    # the Tauri release build. No 30-40 min from-source prover build any more.
+    timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned to commit SHAs: this workflow holds
+      # `contents: write` and publishes the installers users run, so a moved tag
+      # must not be able to change what ships. Bump deliberately.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
 
       - name: Set up Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
-      # The from-source prover build uses Python 3.12 (cairo-compile venv).
+      # `snip36 setup --prebuilt` builds the Python cairo-compile venv before we
+      # drop it (there is no --skip-venv flag), so Python is still required even
+      # on the prebuilt path.
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -73,27 +82,29 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # Build the verifier-compatible RC.6 prover (v1.1.3 / PROOF0) from source and
-      # stage a relocatable bundle into desktop/src-tauri/resources/prover.
-      # Heavy: ~30-40 min full sequencer build.
-      - name: Build + stage prover from source
+      # Stage the pinned prover (version lives in desktop/scripts/prover-pin.env,
+      # the single source of truth) from the backend's PREBUILT release artifacts.
+      # v1.2.x prebuilt binaries are relocatable, so this is the supported CI path;
+      # the script verifies SHA256SUMS, gates on `snip36 doctor`, then trims to the
+      # lean shippable bundle. The from-source script is the slow fallback and
+      # carries a stale RC.6/PROOF0 rationale — do not use it here.
+      - name: Stage prebuilt prover
         working-directory: desktop
-        env:
-          SNIP36_SRC: ${{ runner.temp }}/snip36-src
-        run: bash scripts/stage-prover-source.sh
+        run: bash scripts/stage-prover-prebuilt.sh
 
-      # Fail before a 20-min app build if the staged prover can't even launch on
-      # this platform (catches arch/linker breakage in the bundled binaries).
+      # Fail before a 20-min app build if the staged prover can't launch on this
+      # platform (catches arch/linker breakage in the bundled binaries).
       - name: Smoke-test staged prover
         working-directory: desktop
         run: |
           set -euo pipefail
           ./src-tauri/resources/prover/snip36 --help >/dev/null
           test -x ./src-tauri/resources/prover/deps/sequencer/target/release/starknet_transaction_prover
+          test -x ./src-tauri/resources/prover/deps/bin/stwo-run-and-prove
           echo "prover binaries launch on ${{ matrix.target }}"
 
       - name: Build app + attach to draft release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Unsigned build: do NOT set APPLE_* env here. tauri-action ad-hoc signs
