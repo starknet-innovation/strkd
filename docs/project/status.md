@@ -25,6 +25,18 @@ switchChain, watchAsset, declare; `addStarknetChain` intentionally skipped). The
 open item is the **funded-account live submit** to confirm the broadcast/declare
 wire format end-to-end. After that: **Phase 3** (Tongo / STRK20 privacy methods).
 
+**Declare fixed 2026-09-09 (#9).** Declares failed on-chain with `Account:
+invalid signature` because the wallet signed the caller's `class_hash`, while
+the node derives that hash from the broadcast `contract_class` and validates
+against the tx hash built from *its* value. The wallet now derives the class
+hash itself (`wallet_core::class_hash`), cross-checks a supplied one (mismatch →
+`114`, both hashes named), and returns a complete `BROADCASTED_DECLARE_TXN_V3`
+sign-only instead of five fields. Verified against live Sepolia with
+`cargo run -p wallet-rpc --example live_declare_check` (read-only): the derived
+class hash matches the node's for a live class, the node returns a real estimate
+for our declare object, and with validation on plus a bogus signature it fails
+at `__validate_declare__` alone. See spec §7.4.1.
+
 Start from [`desktop.md`](../code/desktop.md) (for 1) or spec
 [§7.4 Broadcast modes](../../spec/wallet-companion-spec.md#74-broadcast-modes-sign-only-default-submit-opt-in) (for 2).
 

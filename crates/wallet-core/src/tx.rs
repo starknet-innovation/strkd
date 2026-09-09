@@ -200,6 +200,36 @@ pub struct SignedDeclare {
     pub s: Felt,
 }
 
+/// Hash of a DECLARE v3 (SNIP-8 Poseidon layout), independent of signature.
+///
+/// `class_hash` **must** be the hash a node derives from the broadcast
+/// `contract_class` (see [`crate::class_hash::SierraClass::class_hash`]); the
+/// node recomputes it and validates the signature against the resulting tx
+/// hash, so a mismatching caller-supplied value yields "invalid signature".
+pub fn declare_v3_hash(
+    sender: &Felt,
+    class_hash: &Felt,
+    compiled_class_hash: &Felt,
+    chain: ChainId,
+    params: &InvokeV3Params,
+) -> Felt {
+    compute_declare_v3_hash(
+        sender,
+        class_hash,
+        compiled_class_hash,
+        &chain.as_felt(),
+        &params.nonce,
+        params.tip,
+        &params.l1_gas,
+        &params.l2_gas,
+        &params.l1_data_gas,
+        &params.paymaster_data,
+        DaMode::L1,
+        DaMode::L1,
+        &params.account_deployment_data,
+    )
+}
+
 /// Build, hash, and sign a DECLARE v3. The signature only needs the Sierra
 /// `class_hash` and the CASM `compiled_class_hash`; broadcasting additionally
 /// needs the full contract class (caller-supplied). Sign-only.
@@ -215,21 +245,7 @@ pub fn sign_declare_v3(
     chain: ChainId,
     params: &InvokeV3Params,
 ) -> Result<SignedDeclare> {
-    let hash = compute_declare_v3_hash(
-        sender,
-        class_hash,
-        compiled_class_hash,
-        &chain.as_felt(),
-        &params.nonce,
-        params.tip,
-        &params.l1_gas,
-        &params.l2_gas,
-        &params.l1_data_gas,
-        &params.paymaster_data,
-        DaMode::L1,
-        DaMode::L1,
-        &params.account_deployment_data,
-    );
+    let hash = declare_v3_hash(sender, class_hash, compiled_class_hash, chain, params);
     let sig = sign_hash(mnemonic, domain, index, passphrase, &hash)?;
     Ok(SignedDeclare {
         transaction_hash: hash,

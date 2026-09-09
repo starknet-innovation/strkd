@@ -278,7 +278,7 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 | `wallet_signTypedData` | 1 | **yes** | Sign SNIP-12 typed data → `SIGNATURE` |
 | `wallet_addInvokeTransaction` | 1/2 | **yes** | Sign-only (P1) → broadcast opt-in (P2); see [§7.4](#74-broadcast-modes-sign-only-default-submit-opt-in). Optional `proof_facts`/`proof` for **SNIP-36** proof-carrying invokes |
 | `wallet_switchStarknetChain` | 2 | **yes** | Switch Sepolia ⇄ Mainnet |
-| `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; returns class hash + tx hash |
+| `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; `class_hash` **derived** from `contract_class` ([§7.4.1](#741-declare-the-class-hash-is-derived-not-trusted)); returns class hash + tx hash |
 | `wallet_watchAsset` | 2 | **yes** | Add token to display |
 | `wallet_addStarknetChain` | 2 | **yes** | Add a custom network |
 | `wallet_strk20PrepareInvoke` | 3 | **yes**² | Build STRK20 (Tongo) call + proof, no submit |
@@ -365,9 +365,40 @@ chain the methods are sign-only and require caller-supplied `nonce` +
 against a Sepolia v0.10 node for nonce/deploy-status/estimate (the broadcast hop
 still needs a funded-account submit to confirm).
 `wallet_switchStarknetChain` (Sepolia ⇄ Mainnet, switching the active node too)
-`wallet_watchAsset`, and `wallet_addDeclareTransaction` (sign-only needs just the
-class hashes; estimate/submit need the full `contract_class`) are implemented.
-Still pending: `addStarknetChain` (needs a generalized `ChainId`).
+`wallet_watchAsset`, and `wallet_addDeclareTransaction` (§7.4.1) are
+implemented. Still pending: `addStarknetChain` (needs a generalized `ChainId`).
+
+#### 7.4.1 Declare: the class hash is derived, not trusted
+
+A node does not take the caller's word for a declare's `class_hash`. It
+**recomputes** it from the `contract_class` in the broadcast, and that value
+goes into the transaction hash the account's `__validate_declare__` checks the
+signature against. So a wallet that signs a caller-supplied `class_hash` which
+does not match the class actually broadcast emits a signature the node rejects
+— surfacing as `Account: invalid signature` (RPC 55, or execution error 41)
+with nothing wrong in the wallet's own transaction hashing (strkd #9).
+
+The wallet therefore derives the class hash itself, from the exact class it
+broadcasts (`wallet_core::SierraClass::class_hash`, the `CONTRACT_CLASS_V0.1.0`
+Poseidon layout):
+
+- `contract_class` given → `class_hash` is **derived**, and the parameter is
+  optional. Accepts scarb's `*.contract_class.json` verbatim (ABI as an array,
+  debug info ignored) as well as the RPC `CONTRACT_CLASS` object.
+- Both given → cross-checked; a mismatch is **`114`** naming both hashes,
+  rather than a signature that fails on-chain.
+- `class_hash` alone → signed on trust (offline/hash-only flows): without the
+  class there is nothing to check it against.
+
+The ABI is hashed as the **exact string** the class carries, byte for byte, so
+the same ABI serialised two ways is two different classes. A string ABI is
+never re-serialised; an ABI supplied as an array is serialised the way the
+compiler hashes it (Python `json.dumps` separators, key order preserved).
+
+Sign-only returns a **complete** `BROADCASTED_DECLARE_TXN_V3` in
+`signed_transaction` — every field the RPC requires, signature and (when
+supplied) class included — so it can be POSTed as `declare_transaction`
+unchanged, matching what `addInvokeTransaction` already returns.
 
 ### 7.5 Error codes
 Use the spec's codes verbatim:

@@ -11,6 +11,7 @@
 //! AES-256-GCM).
 
 pub mod accounts;
+pub mod class_hash;
 pub mod domain;
 pub mod error;
 pub mod keys;
@@ -18,6 +19,7 @@ pub mod tx;
 pub mod vault;
 
 pub use accounts::{AccountRef, Registry};
+pub use class_hash::{SierraClass, SierraEntryPoint, SierraEntryPoints, CONTRACT_CLASS_VERSION};
 pub use domain::{Domain, AGENT_ACCOUNT_INDEX, STARKNET_COIN_TYPE, USER_ACCOUNT_INDEX};
 pub use error::{CoreError, Result};
 pub use keys::{
@@ -25,7 +27,8 @@ pub use keys::{
     DeploymentData,
 };
 pub use tx::{
-    encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector, sign_declare_v3,
+    declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector,
+    sign_declare_v3,
     sign_deploy_account_v3, sign_invoke_v3, starknet_keccak, Call, InvokeV3Params, SignedDeclare,
     SignedDeployAccount, SignedInvoke,
 };

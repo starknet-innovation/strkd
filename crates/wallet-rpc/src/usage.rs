@@ -243,9 +243,9 @@ companion_estimateFee is also unsafe here. Estimate bounds manually (~2× curren
 Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
 normal invoke." },
             { "method": "wallet_addDeclareTransaction", "auth": true, "prompts": true,
-              "params": "{ account_address, class_hash, compiled_class_hash, contract_class?, submit?, nonce?, resource_bounds?, chainId? }",
+              "params": "{ account_address, compiled_class_hash, contract_class?, class_hash?, submit?, nonce?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, class_hash, submitted } (+ signature/signed_transaction when not submitted)",
-              "note": "Signing needs only class_hash + compiled_class_hash. Estimation and submit:true also need the full Sierra contract_class. Sign-only by default — broadcast the returned tx together with your contract_class." },
+              "note": "PASS contract_class — the whole compiled Sierra class (scarb's *.contract_class.json works as-is, ABI array and debug info included; so does the RPC CONTRACT_CLASS object). class_hash is then DERIVED from it and you can omit it. That matters: the node re-derives the class hash from the class you broadcast and the account validates the signature against the tx hash built from THAT value, so a class_hash that disagrees with the class produces 'Account: invalid signature' on-chain. Pass both and the wallet cross-checks them and refuses (114, naming both hashes) instead of signing a doomed declare. class_hash alone (no class) still signs, on trust, for offline flows. Estimation and submit:true need contract_class. Sign-only returns a COMPLETE BROADCASTED_DECLARE_TXN_V3 in signed_transaction, class included — POST it as declare_transaction unchanged." },
 
             { "method": "wallet_switchStarknetChain", "auth": true, "prompts": true, "deprecated": true,
               "params": "{ chainId (felt: SN_SEPOLIA / SN_MAIN encoded) }", "returns": "true",

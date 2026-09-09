@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use wallet_core::{address_hex, AccountRef, ChainId, Felt};
 
-use wallet_core::{Call, InvokeV3Params, ResourceBounds};
+use wallet_core::{Call, InvokeV3Params, ResourceBounds, SierraClass};
 
 use crate::approval::{ApprovalRequest, Approver, Decision};
 use crate::auth::{ClientKind, ClientStore, PairedClient};
@@ -1006,9 +1006,19 @@ fn summarize_calls(calls: &[Call]) -> String {
         .join("; ")
 }
 
-/// Declare a contract class. The signature needs only `class_hash` +
-/// `compiled_class_hash`; estimation and `submit:true` additionally need the
-/// full Sierra `contract_class` (caller-supplied). Sign-only by default.
+/// Declare a contract class (DECLARE v3).
+///
+/// The `class_hash` a declare commits to is **derived by the node** from the
+/// broadcast `contract_class`, and the account validates the signature against
+/// the transaction hash built from *that* value — never from a caller-supplied
+/// one. So when `contract_class` is given we derive the hash ourselves
+/// (`SierraClass::class_hash`) and sign that; a caller-supplied `class_hash` is
+/// cross-checked and a mismatch is a `114` naming both hashes, instead of an
+/// opaque on-chain "invalid signature" (strkd #9). Without `contract_class`
+/// (hash-only signing), `class_hash` is required and taken on trust.
+///
+/// Estimation and `submit:true` need `contract_class`. Sign-only returns a
+/// complete `BROADCASTED_DECLARE_TXN_V3` (the class included when supplied).
 async fn handle_add_declare(
     state: &ServerState,
     client: &PairedClient,
@@ -1017,19 +1027,6 @@ async fn handle_add_declare(
     let submit = params.get("submit").and_then(|v| v.as_bool()) == Some(true);
     let account_address = param_str(params, "account_address")?;
     let want = normalize_address(&account_address)?;
-    let class_hash = felt_from(
-        params
-            .get("class_hash")
-            .ok_or_else(|| WalletRpcError::InvalidRequest("missing 'class_hash'".into()))?,
-        "class_hash",
-    )?;
-    let compiled_class_hash = felt_from(
-        params
-            .get("compiled_class_hash")
-            .ok_or_else(|| WalletRpcError::InvalidRequest("missing 'compiled_class_hash'".into()))?,
-        "compiled_class_hash",
-    )?;
-    let contract_class = params.get("contract_class").cloned();
 
     let account = {
         let session = state.session.lock().await;
@@ -1043,6 +1040,51 @@ async fn handle_add_declare(
     };
     let sender = Felt::from_hex(&account.address)
         .map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
+
+    // Accepts the RPC CONTRACT_CLASS object or scarb's *.contract_class.json
+    // (ABI as an array, debug info) — normalized to the canonical RPC object so
+    // what we hash is exactly what we broadcast.
+    let contract_class = match params.get("contract_class") {
+        Some(v) if !v.is_null() => Some(SierraClass::from_json(v)?),
+        _ => None,
+    };
+    let given_class_hash = match params.get("class_hash") {
+        Some(v) if !v.is_null() => Some(felt_from(v, "class_hash")?),
+        _ => None,
+    };
+    let class_hash = match (&contract_class, given_class_hash) {
+        (Some(cc), Some(given)) => {
+            let derived = cc.class_hash();
+            if derived != given {
+                return Err(WalletRpcError::InvalidRequest(format!(
+                    "class_hash {} does not match the supplied contract_class, which hashes to {}. \
+                     The node derives the class hash from contract_class and validates the \
+                     signature against THAT transaction hash, so signing {} would be rejected \
+                     on-chain as an invalid signature. Check the class (the abi string is hashed \
+                     byte-for-byte; pass the abi as the JSON array to have it serialised the way \
+                     the compiler hashes it), or omit class_hash to sign the derived one.",
+                    felt_hex(&given),
+                    felt_hex(&derived),
+                    felt_hex(&given),
+                )));
+            }
+            derived
+        }
+        (Some(cc), None) => cc.class_hash(),
+        (None, Some(given)) => given,
+        (None, None) => {
+            return Err(WalletRpcError::InvalidRequest(
+                "missing 'class_hash' (or pass 'contract_class' and it is derived)".into(),
+            ))
+        }
+    };
+    let compiled_class_hash = felt_from(
+        params
+            .get("compiled_class_hash")
+            .ok_or_else(|| WalletRpcError::InvalidRequest("missing 'compiled_class_hash'".into()))?,
+        "compiled_class_hash",
+    )?;
+    let contract_class_json = contract_class.as_ref().map(SierraClass::to_rpc_json);
     let chain = resolve_chain(state, params).await?;
 
     // Nonce: caller-supplied or node-fetched.
@@ -1060,7 +1102,7 @@ async fn handle_add_declare(
         Some(b) => b,
         None => {
             let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
-            let cc = contract_class.as_ref().ok_or_else(|| {
+            let cc = contract_class_json.as_ref().ok_or_else(|| {
                 WalletRpcError::InvalidRequest(
                     "to estimate a declare, provide 'contract_class' (or pass resource_bounds)".into(),
                 )
@@ -1104,7 +1146,7 @@ async fn handle_add_declare(
 
     if submit {
         let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
-        let cc = contract_class.as_ref().ok_or_else(|| {
+        let cc = contract_class_json.as_ref().ok_or_else(|| {
             WalletRpcError::InvalidRequest("submit:true requires 'contract_class'".into())
         })?;
         let hash = node
@@ -1118,17 +1160,22 @@ async fn handle_add_declare(
         }));
     }
 
+    // Sign-only: a COMPLETE, canonical-hex BROADCASTED_DECLARE_TXN_V3 ready to
+    // POST as `declare_transaction`. The class rides along when supplied; if
+    // not, the caller splices in the exact class that hashes to `class_hash`.
+    let tx = crate::node::declare_v3_tx_json(
+        &sender,
+        &compiled_class_hash,
+        contract_class_json.as_ref(),
+        &[signed.r, signed.s],
+        &nonce,
+        &bounds,
+    );
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
         "class_hash": felt_hex(&class_hash),
         "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
-        "signed_transaction": {
-            "type": "DECLARE",
-            "version": "0x3",
-            "sender_address": account.address,
-            "compiled_class_hash": felt_hex(&compiled_class_hash),
-            "nonce": felt_hex(&nonce),
-        },
+        "signed_transaction": tx,
         "submitted": false,
     }))
 }
