@@ -688,7 +688,7 @@ async fn sweep_one(
                 &signed.class_hash,
                 &signed.constructor_calldata,
                 &signed.salt,
-                &[signed.r, signed.s],
+                &signed.signature,
                 &bounds,
             )
             .await
@@ -767,7 +767,7 @@ async fn sweep_one(
             .map_err(|e| format!("signing the transfer failed: {e}"))?
     };
     let hash = node
-        .add_invoke(&addr, &signed.calldata, &[signed.r, signed.s], &nonce, &bounds, &[], None)
+        .add_invoke(&addr, &signed.calldata, &signed.signature, &nonce, &bounds, &[], None)
         .await
         .map_err(|e| format!("broadcasting the transfer failed: {e}"))?;
     let tx = format!("0x{:x}", hash);
@@ -844,7 +844,7 @@ async fn fund(
             .map_err(|e| format!("signing the top-up failed: {e}"))?
     };
     let hash = node
-        .add_invoke(&from, &signed.calldata, &[signed.r, signed.s], &nonce, &bounds, &[], None)
+        .add_invoke(&from, &signed.calldata, &signed.signature, &nonce, &bounds, &[], None)
         .await
         .map_err(|e| format!("broadcasting the top-up failed: {e}"))?;
     let tx = format!("0x{:x}", hash);

@@ -1,7 +1,7 @@
 //! Tests for selector derivation, multicall encoding, and invoke V3 signing.
 //! Public test vector only; no real key material.
 
-use wallet_core::{
+use wallet_core::{AccountContract, 
     declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector,
     sign_invoke_v3, Call, ChainId, Domain, Felt, InvokeV3Params, ResourceBounds,
 };
@@ -145,6 +145,7 @@ fn sign_invoke_v3_binds_signature_to_hash_and_account() {
         &calls,
         ChainId::Sepolia,
         &params,
+        AccountContract::OpenZeppelin,
     )
     .unwrap();
 
@@ -161,6 +162,7 @@ fn sign_invoke_v3_binds_signature_to_hash_and_account() {
     // Deterministic (RFC-6979).
     let again = sign_invoke_v3(
         TEST_MNEMONIC, Domain::User, 0, None, &sender, &calls, ChainId::Sepolia, &params,
+        AccountContract::OpenZeppelin,
     )
     .unwrap();
     assert_eq!(signed.r, again.r);
@@ -169,6 +171,7 @@ fn sign_invoke_v3_binds_signature_to_hash_and_account() {
     // A different account produces a different signature for the same tx.
     let other = sign_invoke_v3(
         TEST_MNEMONIC, Domain::User, 1, None, &sender, &calls, ChainId::Sepolia, &params,
+        AccountContract::OpenZeppelin,
     )
     .unwrap();
     assert_ne!(signed.s, other.s);
@@ -200,5 +203,35 @@ fn declare_v3_hash_matches_live_sepolia_transaction() {
     assert_eq!(
         hash,
         f("0x65d0f5b622d114af56c1281b12df07658763e8697acdef9791fb5aa4ecf1a41")
+    );
+}
+
+/// The account-contract seam must not have changed what OpenZeppelin accounts
+/// broadcast. For OZ the encoded signature is exactly the raw pair, so every
+/// existing account keeps signing identically (issue #15 is a pure refactor).
+#[test]
+fn openzeppelin_encoded_signature_is_still_the_raw_pair() {
+    let sender =
+        wallet_core::oz_address(TEST_MNEMONIC, Domain::User, 0, None, ChainId::Sepolia).unwrap();
+    let calls = sample_calls();
+    let params = sample_params();
+
+    let signed = sign_invoke_v3(
+        TEST_MNEMONIC,
+        Domain::User,
+        0,
+        None,
+        &sender,
+        &calls,
+        ChainId::Sepolia,
+        &params,
+        AccountContract::OpenZeppelin,
+    )
+    .unwrap();
+
+    assert_eq!(
+        signed.signature,
+        vec![signed.r, signed.s],
+        "OZ must broadcast the bare (r, s) pair, as it did before the seam"
     );
 }

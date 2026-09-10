@@ -704,7 +704,11 @@ async fn handle_sign_typed_data(
 
     let session = state.session.lock().await;
     let sig = session.sign_typed_data_for(&account, &typed_data_json)?;
-    Ok(json!([felt_hex(&sig.r), felt_hex(&sig.s)]))
+    // Serialized the way this account's `is_valid_signature` expects. A bare
+    // (r, s) is correct for OpenZeppelin and rejected by classes that wrap the
+    // signature (Argent's SignerSignature array).
+    let signature = account.contract.serialize_signature(&sig);
+    Ok(json!(signature.iter().map(felt_hex).collect::<Vec<_>>()))
 }
 
 /// `companion_typedDataHash` — compute the SNIP-12 (revision 1) message hash
@@ -967,7 +971,7 @@ async fn sign_and_submit(
             .add_invoke(
                 &sender,
                 &signed.calldata,
-                &[signed.r, signed.s],
+                &signed.signature,
                 &nonce,
                 &bounds,
                 &proof_facts,
@@ -983,7 +987,7 @@ async fn sign_and_submit(
     let tx = crate::node::invoke_v3_tx_json(
         &sender,
         &signed.calldata,
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
         &proof_facts,
@@ -991,7 +995,7 @@ async fn sign_and_submit(
     );
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": tx,
         "submitted": false,
     }))
@@ -1150,7 +1154,7 @@ async fn handle_add_declare(
             WalletRpcError::InvalidRequest("submit:true requires 'contract_class'".into())
         })?;
         let hash = node
-            .add_declare(&sender, &compiled_class_hash, cc, &[signed.r, signed.s], &nonce, &bounds)
+            .add_declare(&sender, &compiled_class_hash, cc, &signed.signature, &nonce, &bounds)
             .await
             .map_err(|e| WalletRpcError::Node(e.to_string()))?;
         return Ok(json!({
@@ -1167,14 +1171,14 @@ async fn handle_add_declare(
         &sender,
         &compiled_class_hash,
         contract_class_json.as_ref(),
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
     );
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
         "class_hash": felt_hex(&class_hash),
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": tx,
         "submitted": false,
     }))
@@ -1521,7 +1525,7 @@ async fn handle_sign_and_prove(
     let tx_json = crate::node::invoke_v3_tx_json(
         &sender,
         &signed.calldata,
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
         &[],
@@ -1969,7 +1973,7 @@ async fn handle_deploy_account(
                 &signed.class_hash,
                 &signed.constructor_calldata,
                 &signed.salt,
-                &[signed.r, signed.s],
+                &signed.signature,
                 &bounds,
             )
             .await
@@ -1984,7 +1988,7 @@ async fn handle_deploy_account(
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
         "contract_address": account.address,
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": {
             "type": "DEPLOY_ACCOUNT",
             "version": "0x3",

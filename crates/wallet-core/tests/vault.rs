@@ -78,6 +78,7 @@ fn seed_and_registry_seal_cycle() {
         index: registry.next_index(Domain::User),
         address: "0x0123".into(),
         label: "Main".into(),
+        contract: Default::default(),
         owner_client_id: None,
     });
     registry.add(AccountRef {
@@ -85,6 +86,7 @@ fn seed_and_registry_seal_cycle() {
         index: registry.next_index(Domain::Agent),
         address: "0x0abc".into(),
         label: "agent-bot".into(),
+        contract: Default::default(),
         owner_client_id: Some("client-42".into()),
     });
 
