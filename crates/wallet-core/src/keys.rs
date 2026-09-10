@@ -27,10 +27,13 @@ fn private_key(
     index: u32,
     passphrase: Option<&str>,
 ) -> Result<Felt> {
+    // Which BIP-44 axis carries `index` depends on the branch — see
+    // `domain::Domain::path_indices`.
+    let (account_index, address_index) = domain.path_indices(index);
     derive_private_key_with_coin_type(
         mnemonic,
-        index,
-        domain.account_index(),
+        address_index,
+        account_index,
         domain.coin_type(),
         passphrase,
     )

@@ -16,7 +16,12 @@ use zeroize::Zeroizing;
 
 use crate::error::{CoreError, Result};
 
-const VAULT_VERSION: u8 = 1;
+// v2: the account-derivation change (strkd#16) moved every address — the OZ
+// salt became zero and user accounts moved onto the BIP-44 account axis. A v1
+// vault's cached addresses no longer match what its seed derives, so it must be
+// refused rather than silently opened against the wrong accounts. There is no
+// migration by decision: assets were swept out beforehand (strkd#14).
+const VAULT_VERSION: u8 = 2;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;

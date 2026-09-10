@@ -47,7 +47,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | RPC method scope | **Full `wallet_rpc.json`** + companion extensions, delivered in phases |
 | Submit vs sign | **Both.** Default = **sign-only** (return payload + computed hash); caller opts in with `submit: true` to broadcast |
 | Node & fees | When submitting (or estimating), wallet uses a **configured RPC endpoint per network** and **auto-estimates** fees |
-| Account contract | **OpenZeppelin** accounts (counterfactual address from derived pubkey) |
+| Account contract | **OpenZeppelin** accounts (counterfactual address from derived pubkey), behind an account-contract seam so further classes can be added |
 | Networks | **Sepolia + Mainnet**. Agents pick the chain **per request** (optional `chainId` on the operational methods) — explicit and race-free across concurrent clients. `wallet_switchStarknetChain` is **deprecated for agents** (it mutates one shared default for all clients); it remains for EIP-1193 compatibility and as the omitted-`chainId` fallback, which the human sets in Settings |
 | Confirmation scope | Prompt on **signing / state-changing** methods; read-only auto-served to paired callers |
 | Tx display | **Decode calls + max fee + network + caller**; no full simulation |
@@ -222,19 +222,27 @@ All accounts derive from one BIP-39 seed via `krusty-kms`. krusty takes **struct
 
 Accounts are partitioned into two **non-overlapping branches**:
 
-| Domain | Who creates | Path | krusty call | Rationale |
+| Domain | Who creates | Account *n* | krusty call | Rationale |
 |---|---|---|---|---|
-| **User** | Human, in-app | `m/44'/9004'/0'/0/i` | `account_index = 0`, `coin_type = STARKNET_COIN_TYPE (9004)`, vary `index = i` | Matches Argent's base path → **portable**: re-importing the mnemonic into Argent/Braavos surfaces the same accounts. |
-| **Agent** | Agent, via RPC | `m/44'/9004'/0x41'/0/j` | `account_index = 0x41` (reserved "A"), vary `index = j` | A reserved hardened `account_index` fully isolates the keyspace; mainstream wallets only scan `account'=0'`, so agent accounts never collide with or appear in user wallets. |
+| **User** | Human, in-app | `m/44'/9004'/n'/0/0` | vary `account_index = n`, `address_index = 0`, `coin_type = STARKNET_COIN_TYPE (9004)` | Matches **bramble's recovery scan**, which enumerates `accountIndex` 0–19 with the address index fixed → the same seed surfaces the same accounts in both wallets. |
+| **Agent** | Agent, via RPC | `m/44'/9004'/AGNT'/0/n` | `account_index = 0x41474E54` (reserved), vary `address_index = n` | The whole branch sits under one reserved hardened `account_index`, off the axis user accounts occupy, so agent accounts can never collide with or appear as user accounts. |
 
-- **Reserved constant:** `AGENT_ACCOUNT_INDEX = 0x41`. Document it as reserved-for-agents; never reuse it for user accounts.
+- **Reserved constant:** `AGENT_ACCOUNT_INDEX = 0x41474E54` — `"AGNT"` in ASCII, 1,095,192,148, inside BIP-32's hardened ceiling `0x7FFFFFFF`. Never reuse it for user accounts.
+- **Why the two branches walk different axes.** BIP-44 offers a hardened *account* index and an *address* index, and wallets differ over which one "add another account" advances. User accounts follow bramble so a seed import agrees; agent accounts use the other axis under a reserved account index so one constant covers the branch.
+- **This changed in [#16](https://github.com/starknet-innovation/strkd/issues/16).** User accounts previously walked the address index under `account' = 0`, and the agent branch was `0x41`. Under the new axis `0x41` (65) is reachable by ordinary use — the 66th account — so the reservation moved. Every address changed; there is no migration (assets were swept out first, [#14](https://github.com/starknet-innovation/strkd/issues/14)), and the vault version is bumped to refuse pre-change vaults rather than open them against the wrong accounts.
+- **The reservation is a convention, not a chain rule.** Another wallet given a manual index could still derive there. Bramble is asked to exclude it explicitly in `mc-wallet#336`.
 - **Grinding/curve:** EIP-2645 SHA-256 rejection sampling to the STARK order, BIP-32 secp256k1 master (`HMAC-SHA512("Bitcoin seed", …)`) — all internal to krusty.
 
-> **Portability is a claim that must be tested, not assumed.** Argent's recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`); krusty uses standard BIP-39→BIP-32. Both should agree, but before asserting portability we **must round-trip**: derive a user account here, import the same mnemonic into Argent (and Braavos), and confirm identical addresses. Braavos's exact base was not verified from a primary source. See [Risks](#14-risks--open-questions).
+> **Portability is a claim that must be tested, not assumed.** The concrete target is now **bramble**, which shares strkd's crypto (both derive through `krusty-kms` with the same coin type, so the keys are bit-identical) and whose address formula strkd now matches — `user_account_zero_matches_brambles_address_formula` pins account 0 against a value cross-checked with starknet.js. What remains unverified is the **full round-trip through a running bramble**, and portability to Argent/Braavos, whose recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`) rather than BIP-39→BIP-32 directly. See [Risks](#14-risks--open-questions) and [`portability-test-plan.md`](./portability-test-plan.md).
 
 ### 6.2 Account contract
-- Accounts are **OpenZeppelin** account contracts.
-- Address computed **counterfactually**: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&public_key, SaltPolicy::PublicKey)` → `OzDeploymentDescriptor { address, class_hash, salt, constructor_calldata, deployer_address }`.
+- Accounts are **OpenZeppelin** account contracts, resolved through the
+  `AccountContract` seam ([#15](https://github.com/starknet-innovation/strkd/issues/15)),
+  which owns the class hash, constructor calldata, salt policy, and **how a
+  signature is serialized for `__validate__`**. Adding a class means adding a
+  variant, not revisiting the signing path.
+- Address computed **counterfactually**: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&public_key, SaltPolicy::Zero)` → `OzDeploymentDescriptor { address, class_hash, salt, constructor_calldata, deployer_address }`.
+- **Salt is zero**, matching bramble. It is security-neutral for OZ: the constructor takes `[public_key]`, so the key is bound into the address whatever the salt, and `DEPLOY_ACCOUNT` (deployer `0`) requires the account's own signature — an undeployed address cannot be squatted. A class whose constructor does *not* commit to the owner must not use a zero salt. The divergence that made this a decision is krusty's, not either wallet's: its two OZ address entry points carry different implicit defaults (`krusty-kms#138`).
 - OZ **class hash is resolved from krusty's embedded per-network manifest** (`OzAccountClassConfig::latest(chain_id)`), not a hardcoded constant — so it tracks the manifest per network.
 - Deployment data is exposed via `wallet_deploymentData`; deployment broadcasting follows the same submit/sign rules as any transaction ([§7.4](#74-broadcast-modes-sign-only-default-submit-opt-in)).
 
@@ -505,8 +513,8 @@ With `"submit": true` in params, the result is `{ "transaction_hash": "0x06f2...
 ## 12. Testing & Validation
 
 - **Crypto correctness:** known-answer tests for derivation (both domains), OZ address calc, and invoke-V3 hash against `krusty-kms` references; verify signatures validate on-chain (Sepolia) for an OZ account.
-- **Portability round-trip (must pass before claiming it):** derive a user account here → import the same mnemonic into **Argent** and **Braavos** → assert identical addresses. Confirm **agent** branch (`account_index = 0x41`) never appears in those wallets.
-- **Domain isolation:** prove user (`0'`) and agent (`0x41'`) branches never collide.
+- **Portability round-trip (must pass before claiming it):** derive a user account here → import the same mnemonic into **bramble** (and Argent/Braavos) → assert identical addresses. Confirm the **agent** branch (`account_index = 0x41474E54`) never appears in those wallets.
+- **Domain isolation:** prove the user (`n'/0/0`) and agent (`0x41474E54'/0/n`) branches never collide.
 - **Vault:** round-trip encrypt/decrypt; tamper detection; wrong-passphrase handling; scan to confirm no plaintext key material on disk.
 - **Memory hygiene:** assert seed/keys zeroized on lock (where testable).
 - **Service contract:** conformance tests against `wallet_rpc.json` per method; error-code coverage; `silent_mode` paths; sign-only vs submit results.
@@ -542,7 +550,7 @@ Full spec is the target; deliver in phases.
 - 🟡 **Mainnet + experimental code** is a deliberate risk per the network decision; revisit.
 
 **Resolved (was open)**
-- ✅ **Derivation paths** — user `m/44'/9004'/0'/0/i`; agent `m/44'/9004'/0x41'/0/j`; via `derive_keypair_with_coin_type`. (Portability still pending the round-trip test above.)
+- ✅ **Derivation paths** — user `m/44'/9004'/n'/0/0`; agent `m/44'/9004'/0x41474E54'/0/n`; via `derive_keypair_with_coin_type`. (Live round-trip through bramble still pending — see the test plan.)
 - ✅ **krusty-kms API surface** — mapped in [Appendix A](#appendix-a--method--krusty-kms-capability-map).
 - ✅ **`wallet_requestAccounts` scoping** — agent callers scoped to their own accounts.
 - ✅ **Auto-lock activity** — any RPC request or unlock resets the timer (busy granted agents stay unlocked); status-polling does not. Revised from "user-only" because grants enable unattended agents. See §5.3.
@@ -566,7 +574,7 @@ Full spec is the target; deliver in phases.
 | Public key | `stark_public_key(...)` |
 | Sign message hash | `sign_stark_hash(priv, msg_hash) -> StarkSignature` |
 | Sign typed data (SNIP-12) | `compute_typed_data_message_hash(...)` → `sign_stark_hash(...)` |
-| OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::PublicKey)` → `OzDeploymentDescriptor` |
+| OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::Zero)` → `OzDeploymentDescriptor` |
 | Invoke-V3 tx hash | `compute_invoke_v3_hash(sender, calldata, chain_id, nonce, account_deployment_data, tip, l1_gas, l2_gas, l1_data_gas, paymaster_data, nonce_da_mode, fee_da_mode)` |
 | Invoke-V3 with proof (Tongo) | `compute_invoke_v3_hash_with_proof_facts(..., proof_facts)` |
 | Tongo / STRK20 (Phase 3) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
