@@ -19,6 +19,7 @@ use krusty_kms_common::ChainId;
 use sha3::{Digest, Keccak256};
 use starknet_types_core::felt::Felt;
 
+use crate::account_contract::AccountContract;
 use crate::domain::Domain;
 use crate::error::{CoreError, Result};
 use crate::keys::{deployment_data, sign_hash};
@@ -129,11 +130,17 @@ pub fn invoke_v3_hash(
 }
 
 /// The product of signing an invoke: the tx hash, the encoded calldata (so the
-/// caller can broadcast), and the signature `(r, s)`.
+/// caller can broadcast), and the signature.
+///
+/// `signature` is the account-encoded form and is what belongs in a broadcast
+/// or a sign-only response. `r`/`s` are the raw ECDSA output, kept for callers
+/// doing cryptographic checks — using them as the transaction signature is
+/// correct only for OpenZeppelin. See [`AccountContract::serialize_signature`].
 #[derive(Debug, Clone)]
 pub struct SignedInvoke {
     pub transaction_hash: Felt,
     pub calldata: Vec<Felt>,
+    pub signature: Vec<Felt>,
     pub r: Felt,
     pub s: Felt,
 }
@@ -147,6 +154,8 @@ pub struct SignedDeployAccount {
     pub class_hash: Felt,
     pub salt: Felt,
     pub constructor_calldata: Vec<Felt>,
+    /// Account-encoded signature — what to broadcast.
+    pub signature: Vec<Felt>,
     pub r: Felt,
     pub s: Felt,
 }
@@ -156,6 +165,7 @@ pub struct SignedDeployAccount {
 /// `params.nonce` must be 0 (a deploy_account is the account's first tx). The
 /// account must already hold funds to pay its own deploy fee. Sign-only — the
 /// caller broadcasts via `starknet_addDeployAccountTransaction`.
+#[allow(clippy::too_many_arguments)]
 pub fn sign_deploy_account_v3(
     mnemonic: &str,
     domain: Domain,
@@ -163,8 +173,9 @@ pub fn sign_deploy_account_v3(
     passphrase: Option<&str>,
     chain: ChainId,
     params: &InvokeV3Params,
+    contract: AccountContract,
 ) -> Result<SignedDeployAccount> {
-    let d = deployment_data(mnemonic, domain, index, passphrase, chain)?;
+    let d = deployment_data(mnemonic, domain, index, passphrase, chain, contract)?;
     let hash = compute_deploy_account_v3_hash(
         &d.address,
         &d.class_hash,
@@ -187,6 +198,7 @@ pub fn sign_deploy_account_v3(
         class_hash: d.class_hash,
         salt: d.salt,
         constructor_calldata: d.constructor_calldata,
+        signature: contract.serialize_signature(&sig),
         r: sig.r,
         s: sig.s,
     })
@@ -196,6 +208,8 @@ pub fn sign_deploy_account_v3(
 #[derive(Debug, Clone)]
 pub struct SignedDeclare {
     pub transaction_hash: Felt,
+    /// Account-encoded signature — what to broadcast.
+    pub signature: Vec<Felt>,
     pub r: Felt,
     pub s: Felt,
 }
@@ -244,11 +258,13 @@ pub fn sign_declare_v3(
     compiled_class_hash: &Felt,
     chain: ChainId,
     params: &InvokeV3Params,
+    contract: AccountContract,
 ) -> Result<SignedDeclare> {
     let hash = declare_v3_hash(sender, class_hash, compiled_class_hash, chain, params);
     let sig = sign_hash(mnemonic, domain, index, passphrase, &hash)?;
     Ok(SignedDeclare {
         transaction_hash: hash,
+        signature: contract.serialize_signature(&sig),
         r: sig.r,
         s: sig.s,
     })
@@ -269,6 +285,7 @@ pub fn sign_invoke_v3(
     calls: &[Call],
     chain: ChainId,
     params: &InvokeV3Params,
+    contract: AccountContract,
 ) -> Result<SignedInvoke> {
     let calldata = encode_calls(calls);
     let hash = invoke_v3_hash(sender, calls, chain, params);
@@ -276,6 +293,7 @@ pub fn sign_invoke_v3(
     Ok(SignedInvoke {
         transaction_hash: hash,
         calldata,
+        signature: contract.serialize_signature(&sig),
         r: sig.r,
         s: sig.s,
     })

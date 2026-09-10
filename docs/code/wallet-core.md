@@ -20,7 +20,8 @@ registry. All cryptography is delegated to `krusty-kms`; vault encryption uses
 |---|---|
 | `lib.rs` | Public surface + re-exports; `generate_mnemonic`, `validate_mnemonic`, `address_hex`. |
 | `domain.rs` | The two derivation branches and their path/index constants. |
-| `keys.rs` | Derivation, public key, OZ address, signing, SNIP-12 typed-data. |
+| `account_contract.rs` | The account-contract seam: class hash, constructor calldata, salt policy, signature serialization. |
+| `keys.rs` | Derivation, public key, account address, signing, SNIP-12 typed-data. |
 | `tx.rs` | Entry-point selectors, multicall calldata encoding, invoke-V3 hash + signing. |
 | `vault.rs` | Passphrase-encrypted vault (Argon2id → AES-256-GCM). |
 | `accounts.rs` | Account registry + per-caller scoping. |
@@ -144,7 +145,7 @@ fn sign_invoke_v3(mnemonic, domain, index, passphrase, sender, calls, chain, par
 ### `accounts` — registry & scoping
 
 ```rust
-struct AccountRef { domain, index, address, label, owner_client_id: Option<String> }
+struct AccountRef { domain, index, address, label, contract: AccountContract, owner_client_id: Option<String> }
 struct Registry { accounts: Vec<AccountRef> }
 
 impl Registry {
@@ -159,6 +160,42 @@ impl Registry {
 - `scoped_for` implements the spec §6.3 rule: an **agent client** (`Some(id)`)
   sees only the agent accounts it owns; a **user/app caller** (`None`) sees user
   accounts. This is what `wallet_requestAccounts` will return per caller.
+- `contract` is `#[serde(default)]`, so registries written before the seam
+  existed load as `OpenZeppelin` — which is what they are. The wire name is part
+  of the vault format.
+
+### `account_contract` — the account-contract seam
+
+```rust
+enum AccountContract { OpenZeppelin }
+
+impl AccountContract {
+    fn salt_policy(self) -> SaltPolicy;
+    fn class_hash(self, chain: ChainId) -> Result<Felt>;
+    fn constructor_calldata(self, public_key: &Felt) -> Result<Vec<Felt>>;
+    fn deployment(self, public_key: &Felt, chain: ChainId) -> Result<DeploymentData>;
+    fn serialize_signature(self, sig: &StarkSignature) -> Vec<Felt>;
+}
+```
+
+Everything that differs between account classes lives here. A wallet supporting
+more than one class has to vary four things together — class hash, constructor
+calldata, salt, and **how a signature is serialized for `__validate__`**.
+Getting three right and the fourth wrong produces an account whose address is
+correct and whose every transaction is rejected.
+
+There is one variant today. The seam exists because the signature split is the
+expensive one to retrofit: it threads through signing, broadcasting, and the
+sign-only responses. Every broadcast and every `"signature"` field must go
+through `serialize_signature`; reaching for `(r, s)` directly is correct only
+for OpenZeppelin.
+
+`SignedInvoke` / `SignedDeclare` / `SignedDeployAccount` therefore carry both
+`signature` (account-encoded — what to broadcast) and `r`/`s` (raw ECDSA — for
+cryptographic checks).
+
+See [issue #15](https://github.com/starknet-innovation/strkd/issues/15) and
+[`docs/project/bramble-convergence.md`](../project/bramble-convergence.md) §5.2.
 
 ### `error`
 

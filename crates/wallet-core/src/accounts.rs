@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::account_contract::AccountContract;
 use crate::domain::Domain;
 
 /// A single derived account's metadata. The address is cached so the registry
@@ -16,6 +17,10 @@ pub struct AccountRef {
     pub address: String,
     /// User-facing label.
     pub label: String,
+    /// Which account contract this address is. Defaults to OpenZeppelin so
+    /// registries written before the seam existed load as what they are.
+    #[serde(default)]
+    pub contract: AccountContract,
     /// For agent accounts: the client id that created/owns it. `None` for user
     /// accounts. Used to scope `wallet_requestAccounts` per caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]

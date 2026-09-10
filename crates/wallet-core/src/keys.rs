@@ -4,7 +4,6 @@
 //! short-lived `Zeroizing` buffers and is wiped as soon as the derived public
 //! data (address / signature) has been produced.
 
-use krusty_kms::account_class::{OpenZeppelinAccount, SaltPolicy};
 use krusty_kms::{
     compute_typed_data_message_hash, derive_private_key_with_coin_type, sign_stark_hash,
     stark_public_key, StarkSignature,
@@ -12,18 +11,9 @@ use krusty_kms::{
 use krusty_kms_common::ChainId;
 use starknet_types_core::felt::Felt;
 
+use crate::account_contract::{AccountContract, DeploymentData};
 use crate::domain::Domain;
 use crate::error::{CoreError, Result};
-
-/// Counterfactual deployment parameters for an OpenZeppelin account, as needed
-/// by `wallet_deploymentData`.
-#[derive(Debug, Clone)]
-pub struct DeploymentData {
-    pub address: Felt,
-    pub class_hash: Felt,
-    pub salt: Felt,
-    pub constructor_calldata: Vec<Felt>,
-}
 
 /// Derive the raw Stark private key for `(domain, index)`.
 ///
@@ -58,11 +48,24 @@ pub fn public_key(
     Ok(stark_public_key(&sk))
 }
 
-/// Compute the counterfactual OpenZeppelin account address for `(domain, index)`
-/// on `chain`.
+/// Counterfactual address for `(domain, index)` under `contract` on `chain`.
+pub fn account_address(
+    mnemonic: &str,
+    domain: Domain,
+    index: u32,
+    passphrase: Option<&str>,
+    chain: ChainId,
+    contract: AccountContract,
+) -> Result<Felt> {
+    Ok(deployment_data(mnemonic, domain, index, passphrase, chain, contract)?.address)
+}
+
+/// Counterfactual **OpenZeppelin** address for `(domain, index)` on `chain`.
 ///
-/// Uses `SaltPolicy::PublicKey` and the OZ class hash from krusty's per-network
-/// manifest (`OzAccountClassConfig::latest`).
+/// A convenience for callers that specifically mean OZ (tests, examples, the
+/// pre-multi-contract paths). Anything that should follow the account's own
+/// contract must use [`account_address`] with the account's
+/// [`AccountContract`].
 pub fn oz_address(
     mnemonic: &str,
     domain: Domain,
@@ -70,28 +73,30 @@ pub fn oz_address(
     passphrase: Option<&str>,
     chain: ChainId,
 ) -> Result<Felt> {
-    Ok(deployment_data(mnemonic, domain, index, passphrase, chain)?.address)
+    account_address(
+        mnemonic,
+        domain,
+        index,
+        passphrase,
+        chain,
+        AccountContract::OpenZeppelin,
+    )
 }
 
-/// Compute the full counterfactual deployment data for `(domain, index)`.
+/// Full counterfactual deployment data for `(domain, index)` under `contract`.
+///
+/// The class hash, constructor calldata and salt all come from the
+/// [`AccountContract`] seam, so adding a class does not mean revisiting this.
 pub fn deployment_data(
     mnemonic: &str,
     domain: Domain,
     index: u32,
     passphrase: Option<&str>,
     chain: ChainId,
+    contract: AccountContract,
 ) -> Result<DeploymentData> {
     let pubkey = public_key(mnemonic, domain, index, passphrase)?;
-    let oz = OpenZeppelinAccount::latest(chain).map_err(|_| CoreError::Address)?;
-    let d = oz
-        .deployment_descriptor(&pubkey, SaltPolicy::PublicKey)
-        .map_err(|_| CoreError::Address)?;
-    Ok(DeploymentData {
-        address: d.address,
-        class_hash: d.class_hash,
-        salt: d.salt,
-        constructor_calldata: d.constructor_calldata,
-    })
+    contract.deployment(&pubkey, chain)
 }
 
 /// Sign SNIP-12 typed data with the key for `(domain, index)`.
