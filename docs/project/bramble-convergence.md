@@ -213,7 +213,22 @@ indices up to `0x7FFFFFFF`, so nothing currently prevents a collision.
 
 This is the only bramble-side code change in the plan.
 
-## 7. Documents this plan invalidates
+## 7. Issue map
+
+| Issue | Phase | Blocked by |
+|---|---|---|
+| [#14](https://github.com/starknet-innovation/strkd/issues/14) — temporary ERC-20 sweep | 1 | — |
+| [#15](https://github.com/starknet-innovation/strkd/issues/15) — account-contract seam | 2 | — |
+| [#16](https://github.com/starknet-innovation/strkd/issues/16) — adopt bramble's address conventions | 3 | #14, #15 |
+| [#17](https://github.com/starknet-innovation/strkd/issues/17) — import bramble's vectors into CI | 4 | #16 |
+| [#18](https://github.com/starknet-innovation/strkd/issues/18) — design tokens and skins | 5 | — |
+| [#19](https://github.com/starknet-innovation/strkd/issues/19) — component vocabulary | 5 | #18 |
+| [#20](https://github.com/starknet-innovation/strkd/issues/20) — park Tongo / STRK20 | — | — |
+| [#21](https://github.com/starknet-innovation/strkd/issues/21) — re-pin krusty | — | krusty (§6.1, §6.2) |
+
+Phases 1–4 are the critical path. Phase 5 and #20 run independently.
+
+## 8. Documents this plan invalidates
 
 - **[`spec/wallet-companion-spec.md`](../../spec/wallet-companion-spec.md) §6** — the account model
   changes: salt policy, primary index axis, and the agent constant. §6.1's portability claim should
