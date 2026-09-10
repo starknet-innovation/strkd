@@ -256,7 +256,11 @@ normal invoke." },
         ],
 
         "deferred": {
-            "note": "These exist in the Starknet wallet spec but return -32601 here for now.",
+            "note": "These exist in the Starknet wallet spec but return -32601 here. \
+wallet_addStarknetChain is not built yet (it needs a chain id beyond Sepolia/Mainnet). \
+The wallet_strk20* privacy methods are deliberately out of scope: strkd's backend cannot \
+express this surface, and shipping partial semantics under the standard names would mean \
+the same call meant different things in different wallets.",
             "methods": ["wallet_addStarknetChain", "wallet_strk20PrepareInvoke",
                         "wallet_strk20InvokeTransaction", "wallet_strk20Balances"]
         },
