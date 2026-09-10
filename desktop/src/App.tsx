@@ -6,11 +6,12 @@ import { Accounts } from "./components/Accounts";
 import { ActivityLog } from "./components/ActivityLog";
 import { Connect } from "./components/Connect";
 import { Settings } from "./components/Settings";
+import { Sweep } from "./components/Sweep";
 import { Agents } from "./components/Agents";
 import { Proving } from "./components/Proving";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 
-type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "settings";
+type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "sweep" | "settings";
 
 /// Cmd/Ctrl +, -, 0 zoom the whole UI (persisted). Answers "can I make it
 /// bigger with ⌘+?" — yes.
@@ -112,6 +113,9 @@ export default function App() {
           <button className={tab === "connect" ? "tab active" : "tab"} onClick={() => setTab("connect")}>
             Connect
           </button>
+          <button className={tab === "sweep" ? "tab active" : "tab"} onClick={() => setTab("sweep")}>
+            Sweep
+          </button>
           <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>
             Settings
           </button>
@@ -122,6 +126,7 @@ export default function App() {
           {tab === "agents" && <Agents />}
           {tab === "proving" && <Proving />}
           {tab === "connect" && <Connect status={status} />}
+          {tab === "sweep" && <Sweep status={status} />}
           {tab === "settings" && <Settings onChange={refresh} />}
         </main>
       </>
