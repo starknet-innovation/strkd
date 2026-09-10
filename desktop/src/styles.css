@@ -1,14 +1,132 @@
+/* ---------------------------------------------------------------------------
+ * Design tokens, ported from bramble's UI kit
+ * (packages/presentation/ui-kit/src/theme/) so the two wallets read as one
+ * product. Scales are values, so they port exactly; the component vocabulary
+ * they serve is a reimplementation, since bramble is framework-free HTML-string
+ * renderers and this is React. See strkd#18.
+ *
+ * The system is deliberately ACHROMATIC: hierarchy comes from contrast, weight,
+ * space and motion, with colour reserved for positive/danger/degraded
+ * semantics. Do not reintroduce a brand hue for emphasis — that is the thing
+ * bramble's design language is built around avoiding.
+ * ------------------------------------------------------------------------- */
+
 :root {
-  --bg: #0e1116;
-  --panel: #161b22;
-  --line: #232a33;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #6e8bff;
-  --ok: #2ea043;
-  --err: #f85149;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Spacing — 4px grid */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+
+  /* Radius */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-full: 999px;
+
+  /* Type */
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+  --type-micro: 12px;
+  --type-caption: 12px;
+  --type-mono: 12px;
+  --type-label: 13px;
+  --type-body: 14px;
+  --type-title: 17px;
+  --type-display: 22px;
+  --type-headline: 28px;
+  --type-amount: 36px;
+
+  --line-body: 1.45;
+  --line-title: 1.2;
+  --line-mono: 1.5;
+
+  /* Weight — hierarchy is weight + size + leading, not size alone */
+  --weight-regular: 400;
+  --weight-medium: 600;
+  --weight-semibold: 650;
+  --weight-bold: 700;
+  --weight-heavy: 800;
+
+  /* Tracking — never one value for all sizes */
+  --track-body: 0;
+  --track-title: -0.01em;
+  --track-display: -0.02em;
+  --track-eyebrow: 0.08em;
+
+  /* Motion */
+  --motion-press: 90ms;
+  --motion-lift: 160ms;
+  --motion-enter: 200ms;
+  --motion-tab: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  /* Control metrics */
+  --control-hit: 40px;
+  --control-icon: 18px;
+  --control-nav: 52px;
+
+  /* --- Skin: midnight (bramble's default build) ------------------------- */
+  --bramble-bg: #0a0a0a;
+  --bramble-sunken: #101010;
+  --bramble-panel: #151515;
+  --bramble-elevated: #242424;
+  --bramble-border: #2b2b2b;
+  --bramble-text: #f5f5f5;
+  --bramble-muted: #a3a3a3;
+  --bramble-accent: #f5f5f5;
+  --bramble-accent-text: #171717;
+  --bramble-positive: #4ade80;
+  --bramble-danger: #ff7474;
+  --bramble-warning: #fb923c;
+
+  /* Legacy aliases. The app's existing rules are written against these; they
+   * now resolve to skin tokens so a skin swap moves everything at once. */
+  --bg: var(--bramble-bg);
+  --panel: var(--bramble-panel);
+  --line: var(--bramble-border);
+  --text: var(--bramble-text);
+  --muted: var(--bramble-muted);
+  --accent: var(--bramble-accent);
+  --ok: var(--bramble-positive);
+  --err: var(--bramble-danger);
+
+  font-family: var(--font-ui);
+  color-scheme: dark;
 }
+
+/* Skin: daylight. Opt-in only — set `data-theme="light"` on <html>. Bramble
+ * ships midnight as its default build and treats light as a preference, so
+ * this mirrors that rather than following prefers-color-scheme unasked. */
+:root[data-theme="light"] {
+  --bramble-bg: #f5f5f5;
+  --bramble-sunken: #f0f0f0;
+  --bramble-panel: #ffffff;
+  --bramble-elevated: #ececec;
+  --bramble-border: #dedede;
+  --bramble-text: #171717;
+  --bramble-muted: #666666;
+  --bramble-accent: #171717;
+  --bramble-accent-text: #fafafa;
+  --bramble-positive: #087a4b;
+  --bramble-danger: #b4232c;
+  --bramble-warning: #9a3412;
+
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-press: 0ms;
+    --motion-lift: 0ms;
+    --motion-enter: 0ms;
+    --motion-tab: 0ms;
+  }
+}
+
 
 * {
   box-sizing: border-box;
@@ -18,7 +136,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  font-size: var(--type-body);
+  line-height: var(--line-body);
+  letter-spacing: var(--track-body);
 }
 
 .app {
@@ -91,44 +211,110 @@ h3 {
   margin: 0;
 }
 
+/* --- Controls -------------------------------------------------------------
+ * The button vocabulary mirrors bramble's UI kit (`ui-kit/src/components/
+ * controls.ts`): variants primary | secondary | ghost, a `small` size, and
+ * `danger` as a TONE that combines with a variant rather than a fourth variant.
+ * The templates cannot be shared — bramble renders HTML strings, this is React —
+ * so this is the same contract reimplemented, not a port. See strkd#19.
+ * ------------------------------------------------------------------------- */
+
 .input {
-  background: #0b0e13;
+  background: var(--bramble-sunken);
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 9px 11px;
-  font-size: 13px;
+  font-size: var(--type-label);
+  font-family: inherit;
   width: 100%;
+  transition: border-color var(--motion-lift) var(--motion-ease);
+}
+.input:focus-visible,
+.input:focus {
+  outline: none;
+  border-color: var(--bramble-accent);
 }
 textarea.input {
   resize: vertical;
   font-family: inherit;
 }
 
-button.primary {
-  background: var(--accent);
-  border: none;
-  color: white;
-  border-radius: 8px;
+/* The base IS the secondary treatment: before this, a button without a variant
+ * class fell through to the browser default, which reads as a foreign control
+ * in a dark app. Every button is now on-system whether or not it opts in. */
+button {
+  background: var(--bramble-elevated);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: var(--radius-sm);
   padding: 9px 14px;
-  font-weight: 600;
+  font-size: var(--type-label);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--track-title);
+  font-family: inherit;
   cursor: pointer;
+  transition:
+    transform var(--motion-press) var(--motion-ease),
+    background-color var(--motion-lift) var(--motion-ease),
+    border-color var(--motion-lift) var(--motion-ease);
 }
-button.primary:disabled {
+
+/* Feedback stays within a 2px lift / 0.96-1.0 scale so controls feel alive
+ * without drifting under the pointer. Reduced motion zeroes the durations. */
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button:disabled {
   opacity: 0.5;
   cursor: default;
 }
+
+button.primary {
+  background: var(--bramble-accent);
+  border: none;
+  /* The accent is near-white in midnight and near-black in daylight, so the
+   * ink on it must come from the skin, never a literal. */
+  color: var(--bramble-accent-text);
+  font-weight: var(--weight-semibold);
+}
+
+/* Explicit alias for the base treatment, so intent can be stated in markup. */
+button.secondary:hover:not(:disabled),
+button:hover:not(:disabled) {
+  border-color: var(--bramble-muted);
+}
+
 button.ghost {
   background: none;
   border: 1px solid var(--line);
   color: var(--text);
-  border-radius: 8px;
-  padding: 9px 14px;
-  cursor: pointer;
+}
+button.ghost:hover:not(:disabled) {
+  border-color: var(--bramble-muted);
+  background: none;
+}
+
+/* Tone, not variant: danger combines with secondary/ghost. */
+button.danger {
+  color: var(--bramble-danger);
+  border-color: var(--bramble-danger);
+}
+button.primary.danger {
+  background: var(--bramble-danger);
+  color: var(--bramble-accent-text);
+  border: none;
+}
+
+button.small,
+.small-btn {
+  padding: 3px 10px;
+  font-size: var(--type-caption);
 }
 
 .mnemonic {
-  background: #0b0e13;
+  background: var(--bramble-sunken);
   border: 1px dashed var(--accent);
   border-radius: 8px;
   padding: 14px;
@@ -153,7 +339,7 @@ button.ghost {
 .subtab.active {
   color: var(--text);
   border-color: var(--accent);
-  background: rgba(110, 139, 255, 0.12);
+  background: var(--bramble-elevated);
 }
 
 .addrow {
@@ -221,11 +407,6 @@ button.ghost {
   color: var(--text);
   border-color: var(--accent);
 }
-.small-btn {
-  padding: 3px 10px;
-  font-size: 12px;
-}
-
 .badge {
   font-size: 10px;
   text-transform: uppercase;
@@ -240,8 +421,8 @@ button.ghost {
   border-color: var(--accent);
 }
 .badge.agent {
-  color: #d29922;
-  border-color: #d29922;
+  color: var(--bramble-warning);
+  border-color: var(--bramble-warning);
 }
 .badge.ok {
   color: var(--ok);
@@ -296,7 +477,7 @@ button.ghost {
   margin-top: 8px;
 }
 .prompt {
-  background: #0b0e13;
+  background: var(--bramble-sunken);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
@@ -345,7 +526,7 @@ button.ghost {
   margin: 0;
 }
 .dialog-summary {
-  background: #0b0e13;
+  background: var(--bramble-sunken);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
