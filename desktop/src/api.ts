@@ -151,7 +151,91 @@ export const api = {
   clearStorage: () => invoke<number>("clear_storage"),
   listProofs: () => invoke<ProofSummary[]>("list_proofs"),
   proofDetail: (jobId: string) => invoke<ProofRecord | null>("proof_detail", { jobId }),
+
+  // Temporary asset recovery (issue #14). `sweepPlan` is read-only; only
+  // `sweepExecute` moves anything, and it is irreversible.
+  sweepDefaultTokens: () => invoke<SweepToken[]>("sweep_default_tokens"),
+  sweepPlan: (destination: string, tokens?: SweepToken[]) =>
+    invoke<SweepPlan>("sweep_plan", { destination, tokens }),
+  sweepExecute: (destination: string, tokens?: SweepToken[]) =>
+    invoke<SweepReport>("sweep_execute", { destination, tokens }),
 };
+
+/// Progress from a running sweep. Returns an unlisten fn.
+export function onSweepProgress(cb: (e: SweepEvent) => void): Promise<UnlistenFn> {
+  return listen<SweepEvent>("sweep-progress", (e) => cb(e.payload));
+}
+
+
+// --- Temporary: ERC-20 sweep (issue #14). Remove with the Sweep panel after
+// the derivation cutover in issue #16. ---
+
+export interface SweepToken {
+  address: string;
+  symbol: string;
+  decimals: number;
+  is_fee_token: boolean;
+}
+
+export interface TokenBalance {
+  symbol: string;
+  token: string;
+  /** Raw amount in the token's smallest unit (string: u128 exceeds JS precision). */
+  amount: string;
+}
+
+export interface AccountPlan {
+  address: string;
+  label: string;
+  domain: string;
+  index: number;
+  deployed: boolean;
+  is_funding_source: boolean;
+  is_destination: boolean;
+  balances: TokenBalance[];
+  gas: string;
+  needs_deploy: boolean;
+  needs_gas: string;
+  blockers: string[];
+}
+
+export interface SweepPlan {
+  destination: string;
+  network: string;
+  accounts: AccountPlan[];
+  totals: TokenBalance[];
+  funding_source: string;
+  funding_available: string;
+  funding_required: string;
+  warnings: string[];
+}
+
+export interface AccountOutcome {
+  address: string;
+  label: string;
+  status: "swept" | "skipped" | "failed";
+  transactions: string[];
+  moved: TokenBalance[];
+  detail?: string | null;
+}
+
+export interface SweepReport {
+  destination: string;
+  network: string;
+  outcomes: AccountOutcome[];
+  swept: number;
+  skipped: number;
+  failed: number;
+}
+
+export type SweepEvent =
+  | { kind: "started"; accounts: number }
+  | { kind: "step"; address: string; label: string; step: string }
+  | { kind: "sent"; address: string; what: string; tx: string }
+  | { kind: "waiting"; tx: string }
+  | { kind: "skipped"; address: string; why: string }
+  | { kind: "failed"; address: string; why: string }
+  | { kind: "done"; swept: number; skipped: number; failed: number };
 
 /// Subscribe to approval prompts pushed from the service. Returns an unlisten fn.
 export function onApprovalRequest(cb: (req: ApprovalRequest) => void): Promise<UnlistenFn> {
