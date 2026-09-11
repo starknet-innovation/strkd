@@ -53,19 +53,29 @@ D7 is **not** being closed: PBKDF2 is a WebCrypto constraint on bramble's side, 
 stronger one, and vault files never need to be interchangeable — migration between wallets is by
 recovery phrase.
 
-### 3.1 D1 is krusty's inconsistency, not a wallet bug
+### 3.1 D1: bramble pins zero deliberately; strkd chose the public key
 
-krusty ships two OpenZeppelin address entry points with different implicit conventions:
+> **Corrected 2026-09-11.** This section previously blamed the divergence on krusty shipping two
+> OZ address entry points with different implicit salt defaults. That was wrong — written from a
+> local checkout pinned at `b673e81` (2026-07-06). Commit `4639de5` (2026-08-10) changed the
+> default to the public key; `main` and tags `v0.5.3`–`v0.11.0` all read
+> `salt.unwrap_or(public_key)`, and the WASM docs say so. `krusty-kms#138` is closed as invalid.
+> The decision below is unchanged; its justification is not.
 
-| Entry point | Salt behaviour | Consumer |
-|---|---|---|
-| `derive_oz_account_address(pk, class, salt: Option<&Felt>)` | `salt.unwrap_or(&Felt::ZERO)` | WASM binding → bramble |
-| `OpenZeppelinAccount::deployment_descriptor(&pk, SaltPolicy)` | no default; caller chooses | Rust → strkd |
+Bramble passes `"0x0"` **explicitly** (`packages/platform/vault/src/accounts/account-contract.ts:155`),
+so its addresses are salt-0 regardless of any library default. That argument was added in commit
+`70acb4b6` (2026-08-28) when bramble adopted the published `0.10.0` package, replacing a call that
+omitted the salt — the commit message says it is there to *"preserve the wallet established
+OpenZeppelin and scoped STRK20 derivation vectors"*. In other words, bramble pinned the old
+zero-salt behaviour so addresses it had already deployed survived krusty's default change. That is
+what a wallet with funds on mainnet should do.
 
-Bramble's explicit `"0x0"` was introduced in krusty-package commit `70acb4b6` (2026-08-28) and
-replaced a call that omitted the salt entirely — it pins krusty's documented default to preserve
-existing addresses, not a design decision. Neither wallet chose wrongly; they consumed different
-entry points.
+strkd passed `SaltPolicy::PublicKey` explicitly all along. So both wallets made deliberate,
+defensible choices and simply made different ones; neither inherited an accident.
+
+Note the consequence: aligning strkd to zero means **deliberately overriding krusty's current
+default**, which moved to the public key inside a broad security-hardening PR. That is safe for
+OpenZeppelin (see below) but makes the caveat load-bearing rather than incidental.
 
 **Address squatting does not apply here.** The Starknet address commits to the constructor
 calldata, and OZ's constructor takes `[public_key]`, so the key is inside the address preimage
@@ -84,7 +94,7 @@ that in mind.
 |---|---|---|
 | A | Narrow now, general later | Agent focus this cycle; architectural choices keep a general wallet cheap to grow into. |
 | B | Converge, stay separate | Keeps the native Rust signing path and the trust model in [spec §14](../../spec/wallet-companion-spec.md). Accepts duplicated protocol logic. |
-| C | strkd adopts salt `0x0`; fix krusty | Security-neutral for OZ (§3.1), so cost decides: bramble holds real mainnet funds, strkd is alpha with one user. |
+| C | strkd adopts salt `0x0` | Security-neutral for OZ (§3.1), so cost decides: bramble holds real mainnet funds at salt-0 addresses and pins that explicitly, strkd was alpha with one user. |
 | D | `accountIndex` primary, `addressIndex` kept | Matches bramble's recovery scan so a seed import surfaces the same accounts; `addressIndex` stays available underneath. |
 | E | Agent branch moves `0x41` → `0x41474E54` | Decision D makes user accounts walk the same axis the agent branch sits on; `0x41` (65) is reachable by ordinary use. |
 | F | Fix krusty release provenance, then pin | "Match bramble exactly" is not currently verifiable (§6.1). |
@@ -190,10 +200,11 @@ integrity-digest pin guarantees byte-stability for them but does not identify th
 consequential of the two krusty items. strkd holds its current pin until there is a release both
 wallets can name.
 
-### 6.2 krusty — inconsistent OZ salt default
+### 6.2 krusty — inconsistent OZ salt default *(withdrawn)*
 
-Make the salt explicit at both entry points so no future consumer inherits a convention by
-accident, as these two did (§3.1).
+Filed as `krusty-kms#138` and **closed as invalid on 2026-09-11**: krusty's two OZ address entry
+points already agree, both defaulting to the public key since `4639de5` (2026-08-10), and the WASM
+docs are accurate. The report came from a stale local checkout. Nothing is owed by krusty here.
 
 ### 6.3 krusty — Argent constructor calldata
 
@@ -224,7 +235,7 @@ This is the only bramble-side code change in the plan.
 | [#18](https://github.com/starknet-innovation/strkd/issues/18) — design tokens and skins | 5 | — |
 | [#19](https://github.com/starknet-innovation/strkd/issues/19) — component vocabulary | 5 | #18 |
 | [#20](https://github.com/starknet-innovation/strkd/issues/20) — park Tongo / STRK20 | — | — |
-| [#21](https://github.com/starknet-innovation/strkd/issues/21) — re-pin krusty | — | krusty (§6.1, §6.2) |
+| [#21](https://github.com/starknet-innovation/strkd/issues/21) — re-pin krusty | — | krusty (§6.1 only; §6.2 withdrawn) |
 
 Phases 1–4 are the critical path. Phase 5 and #20 run independently.
 
