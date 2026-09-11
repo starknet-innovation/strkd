@@ -140,6 +140,11 @@ export const api = {
   respondApproval: (id: number, approved: boolean) =>
     invoke<void>("respond_approval", { id, approved }),
 
+  // Recovery-phrase reveal. IPC only — the loopback service has no equivalent
+  // and must never get one. Re-authenticates against the on-disk vault, so a
+  // wrong passphrase fails at the AEAD tag rather than a comparison.
+  revealSeed: (passphrase: string) => invoke<string>("reveal_seed", { passphrase }),
+
   // On-device proving companion (IPC-only; agents prove via companion_prove on
   // the loopback service). Settings carry an API key, so they never leave IPC.
   proverStatus: () => invoke<ProverStatus>("prover_status"),

@@ -35,7 +35,7 @@ pub use node::{
     TxState,
 };
 pub use server::{bind_loopback, router, transport_guard, write_port_lock};
-pub use session::{VaultContents, WalletSession};
+pub use session::{reveal_mnemonic, VaultContents, WalletSession};
 pub use store::VaultStore;
 pub use sweep::{
     AccountOutcome, AccountPlan, SweepAccount, SweepEvent, SweepPlan, SweepReport, SweepToken,
