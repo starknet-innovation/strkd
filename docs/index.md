@@ -38,6 +38,9 @@ Lives in [`docs/project/`](./project/).
   log progress, pick up work, and the security gates.
 - [`project/backlog.md`](./project/backlog.md) — deferred work (e.g. fund sweep,
   Phase 3) with context to pick it up later.
+- [`project/bramble-convergence.md`](./project/bramble-convergence.md) — plan and
+  decision record for aligning strkd with the bramble browser wallet (account
+  model, krusty pin, design system).
 
 ## Quick routes
 
