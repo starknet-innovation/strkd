@@ -56,3 +56,49 @@ fn sign_deploy_account_produces_hash_signature_and_deployment_fields() {
     assert_eq!(wallet_core::address_hex(&signed.address), acct.address);
     assert_eq!(signed.constructor_calldata.len(), 1); // OZ ctor = [public_key]
 }
+
+// --- Seed reveal (#28) ----------------------------------------------------
+// Public test vector only; never a real seed.
+
+#[test]
+fn reveal_returns_the_phrase_when_the_passphrase_is_right() {
+    use wallet_rpc::reveal_mnemonic;
+
+    let s =
+        WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "correct horse", Registry::default());
+    let vault = s.reseal().unwrap();
+
+    let revealed = reveal_mnemonic(&vault, "correct horse").unwrap();
+    assert_eq!(&*revealed as &str, TEST_MNEMONIC);
+}
+
+#[test]
+fn reveal_rejects_a_wrong_passphrase() {
+    use wallet_rpc::reveal_mnemonic;
+
+    let s =
+        WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "correct horse", Registry::default());
+    let vault = s.reseal().unwrap();
+
+    // Re-authentication is the AEAD tag, not a comparison: a wrong passphrase
+    // cannot decrypt, so there is no path that returns a phrase without it.
+    assert!(reveal_mnemonic(&vault, "wrong").is_err());
+    assert!(reveal_mnemonic(&vault, "").is_err());
+    assert!(reveal_mnemonic(&vault, "correct horse ").is_err(), "not trimmed or fuzzy-matched");
+}
+
+/// Being unlocked must not be sufficient. The session already holds the
+/// mnemonic, so reveal deliberately goes back to the vault — otherwise "reveal"
+/// would just mean "the app is open".
+#[test]
+fn reveal_does_not_depend_on_session_state() {
+    use wallet_rpc::reveal_mnemonic;
+
+    let s =
+        WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "pass", Registry::default());
+    let vault = s.reseal().unwrap();
+    drop(s);
+
+    // No session in scope at all; the vault and passphrase are the whole input.
+    assert_eq!(&*reveal_mnemonic(&vault, "pass").unwrap() as &str, TEST_MNEMONIC);
+}
