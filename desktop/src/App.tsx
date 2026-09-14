@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { api, onApprovalRequest, type Status, type ApprovalRequest } from "./api";
 import { Onboarding } from "./components/Onboarding";
 import { Unlock } from "./components/Unlock";
+import { VaultUnsupported } from "./components/VaultUnsupported";
 import { Accounts } from "./components/Accounts";
 import { ActivityLog } from "./components/ActivityLog";
 import { Connect } from "./components/Connect";
@@ -90,6 +91,10 @@ export default function App() {
   let view;
   if (!status) {
     view = <div className="loading">connecting…</div>;
+  } else if (status.vault_unsupported) {
+    // Must come before the locked branch: unlocking a refused vault can only
+    // ever fail, and onboarding is unreachable while the file exists.
+    view = <VaultUnsupported onArchived={refresh} />;
   } else if (status.needs_onboarding) {
     view = <Onboarding onDone={refresh} />;
   } else if (status.locked) {
@@ -133,7 +138,8 @@ export default function App() {
     );
   }
 
-  const unlocked = status && !status.locked && !status.needs_onboarding;
+  const unlocked =
+    status && !status.locked && !status.needs_onboarding && !status.vault_unsupported;
 
   return (
     <div className="app">

@@ -162,11 +162,20 @@ fn notif_sound() -> &'static str {
 /// unlock vs main).
 #[tauri::command]
 async fn status(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
+    // Version check only — no passphrase, no decryption.
+    let vault_unsupported = matches!(
+        state.vault_store.load(),
+        Ok(Some(ref v)) if !v.is_supported_version()
+    );
     let session = state.server.session.lock().await;
     let accounts = session.registry().map(|r| r.accounts.len()).unwrap_or(0);
     Ok(serde_json::json!({
         "locked": session.is_locked(),
         "needs_onboarding": !state.vault_store.exists(),
+        // A vault this build cannot open is NOT the same as a wrong passphrase,
+        // and must not route to the unlock screen: unlock would fail forever
+        // with no way out, since onboarding only appears when no file exists.
+        "vault_unsupported": vault_unsupported,
         "network": chain_name(session.chain()),
         "version": env!("CARGO_PKG_VERSION"),
         "service_url": state.service_url,
@@ -220,12 +229,67 @@ async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<()
         .map_err(|e| e.to_string())?
         .ok_or("no vault file")?;
     let mut session = state.server.session.lock().await;
-    session
-        .unlock(&vault, &passphrase)
-        .map_err(|_| "incorrect passphrase or corrupt vault".to_string())?;
+    // Report the real reason. Collapsing these was harmless while a wrong
+    // passphrase was the only realistic failure; once a vault version can be
+    // refused, "corrupt vault" is both false and dangerous — it invites someone
+    // to delete a vault that is perfectly intact.
+    session.unlock(&vault, &passphrase).map_err(|e| match e {
+        wallet_core::CoreError::UnsupportedVaultVersion(found) => format!(
+            "this vault is version {found}; this build of strkd uses version {}. \
+Your vault is not damaged and your passphrase is not wrong — this version changed how \
+accounts are derived, so old vaults are deliberately not opened. Start over from your \
+recovery phrase; the old vault file is kept as a backup.",
+            wallet_core::EncryptedVault::supported_version(),
+        ),
+        _ => "incorrect passphrase".to_string(),
+    })?;
     drop(session);
     state.server.touch_activity(); // start the auto-lock idle clock fresh
     Ok(())
+}
+
+/// Move an unopenable vault aside so onboarding can run, and return where it went.
+///
+/// **Renames, never deletes.** A vault this build refuses is still the user's
+/// only copy of their seed if they have no written backup, and a build that
+/// destroys it to unblock its own UI would be indefensible. The file is kept
+/// next to the original with its version and a timestamp in the name, so it can
+/// be restored by hand or opened by an older build.
+///
+/// Refuses to touch a vault this build *can* open — that would be a wipe, not a
+/// migration, and it is not what this exists for.
+#[tauri::command]
+async fn archive_unsupported_vault(state: State<'_, DesktopState>) -> Result<String, String> {
+    let vault = state
+        .vault_store
+        .load()
+        .map_err(|e| e.to_string())?
+        .ok_or("no vault file to archive")?;
+    if vault.is_supported_version() {
+        return Err("this vault is readable by this build; refusing to move it aside".into());
+    }
+
+    let path = state.vault_store.path().to_path_buf();
+    let stamp = wallet_rpc::now_unix_ms();
+    let backup = path.with_file_name(format!(
+        "{}.v{}.{}.bak",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("vault.bin"),
+        vault.version,
+        stamp
+    ));
+    std::fs::rename(&path, &backup).map_err(|e| format!("could not move the vault aside: {e}"))?;
+
+    let where_ = backup.display().to_string();
+    log_ui_action(
+        &state,
+        "ui_archiveVault",
+        chain_name(state.chain),
+        "ok",
+        None,
+        Some(format!("{{\"backup\":\"{where_}\"}}")),
+    )
+    .await;
+    Ok(where_)
 }
 
 /// Re-lock the wallet (wipes the in-memory seed).
@@ -1105,6 +1169,7 @@ pub fn run() {
             import,
             finalize_setup,
             unlock,
+            archive_unsupported_vault,
             lock,
             set_network,
             get_settings,

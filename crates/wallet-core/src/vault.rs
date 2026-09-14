@@ -115,6 +115,22 @@ impl EncryptedVault {
         Ok(Zeroizing::new(plaintext))
     }
 
+    /// Whether this build can open a vault of this version.
+    ///
+    /// Lets a caller distinguish "your passphrase is wrong" from "this build
+    /// refuses this vault" *before* asking for a passphrase. The difference
+    /// matters: one is a typo, the other means the on-disk vault is fine and the
+    /// way forward is the recovery phrase. Telling a user their vault may be
+    /// corrupt when it is not invites them to delete it.
+    pub fn is_supported_version(&self) -> bool {
+        self.version == VAULT_VERSION
+    }
+
+    /// The vault format this build writes and can open.
+    pub const fn supported_version() -> u8 {
+        VAULT_VERSION
+    }
+
     /// Serialize the sealed vault to JSON for on-disk storage.
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string_pretty(self).map_err(|_| CoreError::Serialization)
