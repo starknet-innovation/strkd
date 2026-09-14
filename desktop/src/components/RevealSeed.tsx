@@ -99,8 +99,12 @@ export function RevealSeed() {
           </label>
           <div style={{ marginTop: 8 }}>
             <button
-              className="primary"
-              style={{ background: "var(--err)", color: "#fff" }}
+              // `danger` is a tone that combines with a variant (#19). It is a
+              // no-op on this branch, which predates that CSS, and renders as a
+              // plain primary — readable either way. Deliberately not an inline
+              // colour override: the danger red is light in the midnight skin,
+              // so white ink on it would fail contrast.
+              className="primary danger"
               onClick={reveal}
               disabled={!passphrase || busy}
             >
