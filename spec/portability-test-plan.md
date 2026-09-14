@@ -24,12 +24,18 @@ The whole account model sits on one assumption: that a "user" account derived by
 
 ## 3. Reference paths under test
 
-| Branch | Path | Companion call (`krusty-kms`) |
+| Branch | Account *n* | Companion call (`krusty-kms`) |
 |---|---|---|
-| User | `m/44'/9004'/0'/0/i` | `derive_keypair_with_coin_type(mnemonic, index=i, account_index=0, coin_type=STARKNET_COIN_TYPE, passphrase)` |
-| Agent | `m/44'/9004'/0x41'/0/j` | `derive_keypair_with_coin_type(mnemonic, index=j, account_index=0x41, coin_type=STARKNET_COIN_TYPE, passphrase)` |
+| User | `m/44'/9004'/n'/0/0` | `derive_keypair_with_coin_type(mnemonic, index=0, account_index=n, coin_type=STARKNET_COIN_TYPE, passphrase)` |
+| Agent | `m/44'/9004'/0x41474E54'/0/n` | `derive_keypair_with_coin_type(mnemonic, index=n, account_index=0x41474E54, coin_type=STARKNET_COIN_TYPE, passphrase)` |
 
-Address from public key: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::PublicKey)` → `.address`.
+> Updated by [#16](https://github.com/starknet-innovation/strkd/issues/16). The
+> primary comparison target is now **bramble**, which shares this crypto: both
+> wallets derive through `krusty-kms` with coin type 9004, so the keys should be
+> bit-identical and only the address step could differ. Argent and Braavos remain
+> secondary targets.
+
+Address from public key: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::Zero)` → `.address`. The **zero** salt is what bramble uses; `user_account_zero_matches_brambles_address_formula` already pins account 0 against a starknet.js-computed value, so this plan is now about the seed→key step and the live round-trip rather than the address formula.
 
 > Note: Argent/Braavos use **their own** account class hashes. A cross-wallet address match requires deriving the **same public key** *and* using the **same account class** the other wallet uses. So run the comparison in two layers (below): first the **public key** (pure derivation), then the **address** (derivation + matching account class).
 

@@ -71,9 +71,22 @@ impl AccountContract {
     /// compatibility choice rather than a security one. It must match whatever
     /// other wallets use for the same class, or the same seed yields different
     /// addresses in each.
+    ///
+    /// OpenZeppelin uses **zero**, matching bramble. Both wallets get this from
+    /// krusty, which has two OZ address entry points with different implicit
+    /// defaults — bramble's WASM path defaults to zero, the Rust `AccountClass`
+    /// path makes the caller choose, and strkd used to choose the public key.
+    /// That is why the same seed used to give different addresses in each
+    /// (`krusty-kms#138`, strkd#16).
+    ///
+    /// Note for a future class: zero is safe **here** because OZ's constructor
+    /// takes `[public_key]`, so the key is bound into the address regardless,
+    /// and `DEPLOY_ACCOUNT` needs the account's own signature. A class whose
+    /// constructor does not commit to the owner must not use a zero salt —
+    /// there, first deployer wins.
     pub fn salt_policy(self) -> SaltPolicy {
         match self {
-            AccountContract::OpenZeppelin => SaltPolicy::PublicKey,
+            AccountContract::OpenZeppelin => SaltPolicy::Zero,
         }
     }
 

@@ -45,23 +45,36 @@ Re-exported foreign types so callers needn't depend on krusty directly:
 ```rust
 enum Domain { User, Agent }
 
-const STARKNET_COIN_TYPE: u32 = 9004;
-const USER_ACCOUNT_INDEX:  u32 = 0;      // portable branch (mirrors Argent base)
-const AGENT_ACCOUNT_INDEX: u32 = 0x41;   // reserved, segregated branch
+const STARKNET_COIN_TYPE:  u32 = 9004;
+const USER_ACCOUNT_INDEX:  u32 = 0;            // user account n is at account index n
+const AGENT_ACCOUNT_INDEX: u32 = 0x41474E54;   // "AGNT" — reserved, segregated branch
+const MAX_HARDENED_INDEX:  u32 = 0x7FFFFFFF;
 
 impl Domain {
-    const fn account_index(self) -> u32;
-    const fn coin_type(self) -> u32;     // always 9004
-    fn path(self, index: u32) -> String; // e.g. "m/44'/9004'/0'/0/3"
+    const fn path_indices(self, n: u32) -> (u32, u32); // (account_index, address_index)
+    const fn coin_type(self) -> u32;                   // always 9004
+    fn path(self, n: u32) -> String;                   // e.g. "m/44'/9004'/3'/0/0"
 }
 ```
 
-- **User** → `m/44'/9004'/0'/0/i`. Matches Argent's base path, so user accounts
-  are intended to be portable into Argent/Braavos (claim pending the
-  [portability test plan](../../spec/portability-test-plan.md)).
-- **Agent** → `m/44'/9004'/0x41'/0/j`. A reserved hardened account index;
-  mainstream wallets only scan `account' = 0'`, so agent accounts stay isolated.
-  **`0x41` must never be reused for user accounts.**
+- **User** → `m/44'/9004'/n'/0/0`. User accounts walk the **account** index,
+  which is what bramble's recovery scan enumerates (`accountIndex` 0–19 with the
+  address index fixed), so the same seed surfaces the same accounts in both
+  wallets.
+- **Agent** → `m/44'/9004'/0x41474E54'/0/n`. The whole branch sits under one
+  reserved hardened account index and walks the **address** index instead,
+  keeping it off the axis user accounts occupy. **`0x41474E54` must never be
+  reused for a user account.**
+
+The two branches deliberately use different BIP-44 axes. That is what lets one
+reserved constant isolate the entire agent branch while user accounts stay
+enumerable by any wallet that scans account indices.
+
+> Changed by [#16](https://github.com/starknet-innovation/strkd/issues/16). User
+> accounts previously walked the address index under `account' = 0` and the agent
+> branch was `0x41`; under the new axis, 65 is reachable as the 66th user
+> account, so the reservation moved out of range. Every address changed — see
+> `vault.rs`, whose version bump refuses pre-change vaults.
 
 ### `keys` — derivation & signing
 

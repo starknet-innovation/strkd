@@ -414,13 +414,16 @@ async fn typed_data_hash_is_the_signed_digest_and_verifies_under_account_key() {
         "signature must verify against the reported SNIP-12 digest under the account key",
     );
 
-    // Guard the pin against SNIP-12 regressions: this exact digest was
-    // cross-checked against starknet.py TypedData.message_hash (== starknet.js
-    // and on-chain is_valid_signature). If the krusty pin regressed (keccak
-    // prefix, or shortstring not going through parse_felt), this would change.
+    // Guard the pin against SNIP-12 regressions. The digest binds the account
+    // address, so it moved when #16 changed the OZ salt and the account axis —
+    // the value below was re-derived for the new address and cross-checked
+    // against starknet.js `typedData.getMessageHash`, which agrees exactly. The
+    // hashing itself is unchanged. If the krusty pin regressed (keccak prefix,
+    // or shortstring not going through parse_felt), this would change *without*
+    // the address changing.
     assert_eq!(
         hres["hash"].as_str().unwrap(),
-        "0x68b4250d022dce3e45e64683935b0e0f8bf95e3dbf17eb9839e255578ddc061",
+        "0x2e3d857f3f9e5d3c23b3268017e1c1ea65baba457b0ec82ec2e63e8de7d4869",
         "SNIP-12 rev-1 digest changed — check the krusty-kms pin",
     );
 }
