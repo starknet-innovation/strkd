@@ -1,0 +1,64 @@
+name: CI
+
+# Build, test and lint the headless core on every push and pull request.
+#
+# The conformance vectors (crates/wallet-core/tests/conformance.rs) are the
+# reason this exists as a gate rather than a convenience: strkd and bramble are
+# separate implementations of one account model, and the only thing keeping them
+# converged is a test that fails when strkd drifts. Both crypto defects this
+# project has hit were found in production instead. See
+# docs/project/bramble-convergence.md §5.4.
+#
+# Scope: the Cargo workspace only. The desktop (Tauri) crate is excluded from
+# the workspace and needs the full GTK/WebKit toolchain to build, which the
+# release workflow already provides — adding it here would roughly triple the
+# run for a crate whose logic is thin over these ones.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref; only the latest matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # Third-party actions pinned to commit SHAs, matching desktop-release.yml:
+      # a moved tag must not be able to change what runs. Bump deliberately.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      # The first build fetches krusty-kms from git (pinned commit), so this
+      # needs network access.
+      #
+      # Not `--locked`: Cargo.lock is gitignored in this repo, so there is no
+      # committed lockfile to check against. That means CI and a release can
+      # resolve different dependency versions — worth fixing for a wallet, but
+      # out of scope here.
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Test
+        run: cargo test
+
+      # The workspace is clippy-clean; keep it that way rather than letting
+      # warnings accumulate into noise nobody reads.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings

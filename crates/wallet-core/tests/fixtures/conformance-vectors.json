@@ -1,0 +1,73 @@
+{
+  "_provenance": {
+    "purpose": "Cross-wallet conformance: seed -> public key -> account address. strkd asserts against this in tests/conformance.rs; bramble can adopt the same file.",
+    "generated_by": "cargo run --example conformance_vectors (wallet-core)",
+    "verified_against": "starknet.js hash.calculateContractAddressFromHash(salt, class_hash, [public_key], 0) — exactly the call bramble makes. All vectors agreed when generated.",
+    "warning": "Regenerating is not verifying. If a value here changes, re-check it against an independent implementation before committing, or this file just asserts strkd against itself.",
+    "seed": "Published BIP-39 test vector. Never a real seed — see spec §14.",
+    "issue": "https://github.com/starknet-innovation/strkd/issues/17"
+  },
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "coin_type": 9004,
+  "account_contract": "openzeppelin",
+  "class_hash": "0x01d1777db36cdd06dd62cfde77b1b6ae06412af95d57a13dc40ac77b8a702381",
+  "salt": "0x0",
+  "vectors": [
+    {
+      "domain": "user",
+      "n": 0,
+      "path": "m/44'/9004'/0'/0/0",
+      "public_key": "0x05d97a4a9174d9158c3886717a70112c5e60b17318a1d3ae17f563f1cf8292f4",
+      "address": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f"
+    },
+    {
+      "domain": "user",
+      "n": 1,
+      "path": "m/44'/9004'/1'/0/0",
+      "public_key": "0x0778adb3e8d3684245b0f34bef44f32ff432aa54f5bd4b382e65be037cf7832c",
+      "address": "0x024680b5c991308b71103b02c2b17507e30ce70fc639fa9ef4de873c634f8270"
+    },
+    {
+      "domain": "user",
+      "n": 2,
+      "path": "m/44'/9004'/2'/0/0",
+      "public_key": "0x00fbc76ebecc96d26330015ed422a56eb63be79047ab7b7eefdd48424d46ed05",
+      "address": "0x059f8f1b677e8b011a809d8307cde96eecb7229b96338ee771d029b8af2dce66"
+    },
+    {
+      "domain": "user",
+      "n": 3,
+      "path": "m/44'/9004'/3'/0/0",
+      "public_key": "0x019fd4d4657457f5c7e3a56eeb66d493b6cfd5d9896abee36af60ec1f9c4f206",
+      "address": "0x05893ed13c2522d8bb2b6b41d6c942ac2812eaf79dca9e5f74b503fb383d7832"
+    },
+    {
+      "domain": "agent",
+      "n": 0,
+      "path": "m/44'/9004'/1095192148'/0/0",
+      "public_key": "0x04ec0a378de883d4419ae8bc7ad6e6bae2dd83b719045c2b876ad7a3ff0d44d0",
+      "address": "0x0325958564ad594b4fb4a0e76d9939fef0801edd4105e855b9f4ac036207a1f5"
+    },
+    {
+      "domain": "agent",
+      "n": 1,
+      "path": "m/44'/9004'/1095192148'/0/1",
+      "public_key": "0x0358a650c44f82e66a2e6beb5376edb08aa1be40476b85d60ee7888524638ecb",
+      "address": "0x03895f389e4db4721637ca89b7cc22339cebe386136aaf2ca35776042f9292ce"
+    },
+    {
+      "domain": "agent",
+      "n": 2,
+      "path": "m/44'/9004'/1095192148'/0/2",
+      "public_key": "0x058718c69cf3d7ffa3f16cd83efc200735a37990d20b7ecaff4432cf194c1bf0",
+      "address": "0x05430a9022672251a456b96236214fc9a0ff83aaad4b4446dac09657e8ac9640"
+    },
+    {
+      "domain": "agent",
+      "n": 3,
+      "path": "m/44'/9004'/1095192148'/0/3",
+      "public_key": "0x07b56854ac714f26b757c5df746691bb9a00fdc45c449b4b3efc610d4144570e",
+      "address": "0x0760f30628b27a3a42a8e7374e01c814ebdb3d29ba5750be6a89bdab5a4c6eda"
+    }
+  ]
+}
