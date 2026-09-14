@@ -305,8 +305,19 @@ struct Handled {
     client: Option<String>,
 }
 
-/// Standard methods that exist in the spec but are not implemented in this
-/// phase (broadcast/declare/chain-management/privacy).
+/// Standard methods that exist in the spec but return `-32601` here.
+///
+/// Two different reasons, deliberately kept in one list because callers only
+/// care that the method is unavailable:
+///
+/// - `wallet_addStarknetChain` is **not built yet** — it needs a generalized
+///   chain id beyond the Sepolia/Mainnet enum.
+/// - The `wallet_strk20*` privacy methods are **deliberately out of scope**
+///   (strkd#20). strkd's Tongo backend cannot express this surface — it is a
+///   per-token encrypted balance where the spec models a note-based pool — and
+///   shipping partial semantics under the standard names would mean the same
+///   call meant different things in strkd and bramble. The names stay free for
+///   a real implementation.
 fn is_deferred(method: &str) -> bool {
     matches!(
         method,
