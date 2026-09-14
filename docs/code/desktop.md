@@ -235,3 +235,22 @@ Reduced motion is honoured by zeroing the duration tokens.
 
 See [issues #18 and #19](https://github.com/starknet-innovation/strkd/issues/18)
 and [`bramble-convergence.md`](../project/bramble-convergence.md) §5.5.
+## Recovery-phrase reveal
+
+Settings → **Show recovery phrase** reveals the wallet's mnemonic, gated on a fresh passphrase
+check. `reveal_seed` is an **IPC command only**; the loopback service has no equivalent and must
+never get one (see `wallet_rpc::reveal_mnemonic`, and the guard test
+`the_service_exposes_no_way_to_reveal_the_seed`).
+
+Re-authentication is cryptographic rather than a comparison: the command decrypts the on-disk vault
+with the passphrase supplied at that moment, so a wrong one fails at the AES-GCM tag. It
+deliberately does not read the mnemonic from the unlocked session — the app stays unlocked for a
+whole session, and that must not be the same thing as consenting to show the seed. Reveal is also
+refused while locked.
+
+The request log records the event (`ui_revealSeed`) and never the phrase. The UI keeps it blurred
+until clicked, clears on hide, on leaving the tab, and after two minutes, and offers no copy
+button — the system clipboard is readable by every other process on the machine, including the
+agents this wallet serves.
+
+Per-account private keys are **not** revealed. See spec §6.5.

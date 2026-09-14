@@ -6,6 +6,7 @@ import {
   type ProverNetworkConfig,
   type StorageStats,
 } from "../api";
+import { RevealSeed } from "./RevealSeed";
 
 const EMPTY_PROVER: ProverSettings = {
   mainnet: { rpc_url: "", prover_url: "", prover_api_key: "" },
@@ -120,6 +121,8 @@ export function Settings({ onChange }: { onChange: () => void }) {
         {saved ? "Saved ✓" : "Save"}
       </button>
       {err && <p className="error">{err}</p>}
+
+      <RevealSeed />
 
       <h3>On-device proving</h3>
       <p className="muted small">

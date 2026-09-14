@@ -639,6 +639,65 @@ fn sweep_default_tokens() -> Vec<SweepToken> {
     wallet_rpc::sweep::default_tokens()
 }
 
+/// Reveal the wallet's recovery phrase, after re-authenticating.
+///
+/// **IPC only.** The loopback JSON-RPC service has no equivalent and must never
+/// get one — it is reachable by any local process, including the AI agents the
+/// wallet exists to serve, and its contract is that it never returns key
+/// material. `wallet_rpc::reveal_mnemonic` carries the full rationale, and
+/// `the_service_exposes_no_way_to_reveal_the_seed` guards it.
+///
+/// Re-authentication is cryptographic rather than a comparison: the on-disk
+/// vault is decrypted with the passphrase supplied *now*, so a wrong one fails
+/// at the AEAD tag. Being unlocked is deliberately not sufficient — the app
+/// stays unlocked for a whole session, and that should not be the same thing as
+/// consenting to show the seed.
+///
+/// The phrase is returned to the app's own window and nowhere else. The request
+/// is logged; the phrase never is.
+#[tauri::command]
+async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Result<String, String> {
+    let network = {
+        let session = state.server.session.lock().await;
+        // Refuse from the lock screen: reveal belongs behind an unlocked app, so
+        // an unattended machine does not offer it.
+        if session.is_locked() {
+            let msg = "unlock the wallet first".to_string();
+            log_ui_action(&state, "ui_revealSeed", chain_name(session.chain()), &format!("error: {msg}"), Some(-32001), None).await;
+            return Err(msg);
+        }
+        chain_name(session.chain()).to_string()
+    };
+
+    let vault = match state.vault_store.load() {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            let msg = "no vault on disk".to_string();
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(163), None).await;
+            return Err(msg);
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(163), None).await;
+            return Err(msg);
+        }
+    };
+
+    match wallet_rpc::reveal_mnemonic(&vault, &passphrase) {
+        Ok(phrase) => {
+            // Logged as an event only. `result_json` stays None — the phrase must
+            // never reach the request log, which the Activity tab renders.
+            log_ui_action(&state, "ui_revealSeed", &network, "ok", None, None).await;
+            Ok(phrase.to_string())
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(114), None).await;
+            Err(msg)
+        }
+    }
+}
+
 /// Paired clients with their grant status (for the Agents control panel).
 #[tauri::command]
 async fn list_clients(state: State<'_, DesktopState>) -> Result<Vec<wallet_rpc::ClientInfo>, String> {
@@ -1063,6 +1122,7 @@ pub fn run() {
             revoke_permission,
             recent_log,
             respond_approval,
+            reveal_seed,
             prover_status,
             proof_activity,
             get_prover_settings,

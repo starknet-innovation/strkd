@@ -42,6 +42,46 @@ pub struct WalletSession {
     unlocked: Option<Unlocked>,
 }
 
+/// Decrypt the on-disk vault with a **freshly supplied** passphrase and return
+/// the recovery phrase.
+///
+/// ## Why this is a free function and not a `WalletSession` method
+///
+/// The unlocked session already holds the mnemonic, so a method could hand it
+/// back without proving anything. That would make "reveal" a function of *being
+/// unlocked*, and the wallet auto-unlocks for the length of a session. Going
+/// back to the vault instead makes re-authentication **cryptographic**: the
+/// passphrase is only right if AES-GCM authenticates the ciphertext. There is no
+/// comparison to get wrong and no timing side-channel in a string equality.
+///
+/// ## Why this is not reachable over RPC
+///
+/// It is deliberately absent from [`crate::dispatch`] and from the usage doc.
+/// strkd's entire premise is that the loopback service never returns key
+/// material — spec §5.1 and §10 — and that service is reachable by any local
+/// process, including the AI agents it exists to serve. This function is for the
+/// desktop app's own IPC surface only, behind a screen the user drives.
+/// **Do not add a `wallet_*` or `companion_*` method that calls it.**
+///
+/// The caller is responsible for not logging, persisting, or transmitting the
+/// result. The desktop command logs that a reveal happened, never what it
+/// returned.
+pub fn reveal_mnemonic(
+    vault: &EncryptedVault,
+    passphrase: &str,
+) -> Result<Zeroizing<String>, WalletRpcError> {
+    // Wrong passphrase fails here, at the AEAD tag — no separate check needed.
+    let plaintext = vault
+        .open(passphrase)
+        .map_err(|_| WalletRpcError::InvalidRequest("wrong passphrase".into()))?;
+    let contents: VaultContents = serde_json::from_slice(&plaintext)
+        .map_err(|_| WalletRpcError::Unknown("vault contents are unreadable".into()))?;
+    // Moves the String's buffer into Zeroizing rather than copying it, so the
+    // only heap copy is the one that gets wiped on drop. `plaintext` is already
+    // Zeroizing.
+    Ok(Zeroizing::new(contents.mnemonic))
+}
+
 impl WalletSession {
     pub fn new_locked(chain: ChainId) -> Self {
         WalletSession {
