@@ -6,6 +6,34 @@ this is the "later" pile. Newest first within each group.
 
 ## Features
 
+### Block-sized SNIP-36 proofs (v0.14.4 large-proof path, `PROOF2`)
+*Issue #29; investigated 2026-10-01 (PR #30 names the current cap). Up next.*
+
+Today a SNIP-36 tx can use at most 2^20 rows per AIR component (the `PROOF1`
+small prover — see [`prover.md` → Proof size limit](../code/prover.md#proof-size-limit)).
+Starknet v0.14.4 can prove any single-tx virtual block that would fit in a block,
+up to 1.1B L2 gas, via `privacy_recursive_prove_large` (starkware-libs/proving
+≥ `2b495a36`). It emits `PROOF2`. The stock `starknet_transaction_prover` never
+calls it.
+
+- **Shape:** patch the `main-v0.14.4` runner's `prove()` to use the small prover
+  when the trace fits and fall back to `privacy_recursive_prove_large` when it
+  doesn't. Build from source (nightly, ~40+ min) through the staging scripts, and
+  bump to the 0.14.4 stack (upstream backend PR #118 / deps-v11).
+- **Verify locally first:** prove a tx over the cap (#29's 200-intent settlement),
+  then check it with `starknet_proof_verifier::verify_proof` from `main-v0.14.4`.
+  That is the same call the node makes (`apollo_transaction_converter`). Also
+  check the proof is ≤ 480,000 bytes (gateway `max_proof_size`) and that the
+  `proof_facts` program hash is the one 0.14.4 expects.
+- **On-chain e2e later:** as of 2026-10-01 the Sepolia gateway rejects `PROOF2`
+  (`allow_proof_version_v2` is off) and accepts `PROOF1`. Mainnet is on 0.14.3.
+  0.14.4 is slated for 2026-10-05 (pending governance) and its config turns
+  `PROOF1` **off**, which breaks the current v1.2.2 pin. Run the e2e on whichever
+  network flips first, and keep the `PROOF1` pin for Sepolia until then.
+- **Watch:** the snip36 CLI's hard 600 s timeout on `starknet_proveTransaction`.
+  Large proofs on a laptop may need it raised (or strkd calling the runner
+  directly).
+
 ### Sweep stranded/agent funds back to the manager
 *Raised by the GoL agent's feedback (item 4, alternative to re-attach), 2026-06-10.*
 
