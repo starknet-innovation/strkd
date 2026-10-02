@@ -2,15 +2,17 @@ import { useEffect, useState, useCallback } from "react";
 import { api, onApprovalRequest, type Status, type ApprovalRequest } from "./api";
 import { Onboarding } from "./components/Onboarding";
 import { Unlock } from "./components/Unlock";
+import { VaultUnsupported } from "./components/VaultUnsupported";
 import { Accounts } from "./components/Accounts";
 import { ActivityLog } from "./components/ActivityLog";
 import { Connect } from "./components/Connect";
 import { Settings } from "./components/Settings";
+import { Sweep } from "./components/Sweep";
 import { Agents } from "./components/Agents";
 import { Proving } from "./components/Proving";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 
-type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "settings";
+type Tab = "accounts" | "activity" | "agents" | "proving" | "connect" | "sweep" | "settings";
 
 /// Cmd/Ctrl +, -, 0 zoom the whole UI (persisted). Answers "can I make it
 /// bigger with ⌘+?" — yes.
@@ -89,6 +91,10 @@ export default function App() {
   let view;
   if (!status) {
     view = <div className="loading">connecting…</div>;
+  } else if (status.vault_unsupported) {
+    // Must come before the locked branch: unlocking a refused vault can only
+    // ever fail, and onboarding is unreachable while the file exists.
+    view = <VaultUnsupported onArchived={refresh} />;
   } else if (status.needs_onboarding) {
     view = <Onboarding onDone={refresh} />;
   } else if (status.locked) {
@@ -112,6 +118,9 @@ export default function App() {
           <button className={tab === "connect" ? "tab active" : "tab"} onClick={() => setTab("connect")}>
             Connect
           </button>
+          <button className={tab === "sweep" ? "tab active" : "tab"} onClick={() => setTab("sweep")}>
+            Sweep
+          </button>
           <button className={tab === "settings" ? "tab active" : "tab"} onClick={() => setTab("settings")}>
             Settings
           </button>
@@ -122,13 +131,15 @@ export default function App() {
           {tab === "agents" && <Agents />}
           {tab === "proving" && <Proving />}
           {tab === "connect" && <Connect status={status} />}
+          {tab === "sweep" && <Sweep status={status} />}
           {tab === "settings" && <Settings onChange={refresh} />}
         </main>
       </>
     );
   }
 
-  const unlocked = status && !status.locked && !status.needs_onboarding;
+  const unlocked =
+    status && !status.locked && !status.needs_onboarding && !status.vault_unsupported;
 
   return (
     <div className="app">

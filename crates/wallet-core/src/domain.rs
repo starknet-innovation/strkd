@@ -3,45 +3,109 @@
 //! A single BIP-39 seed feeds two non-overlapping branches (see
 //! `spec/wallet-companion-spec.md` §6.1):
 //!
-//! | Domain | Path                     | Rationale                                  |
-//! |--------|--------------------------|--------------------------------------------|
-//! | User   | `m/44'/9004'/0'/0/i`     | Mirrors Argent's base path → portable.     |
-//! | Agent  | `m/44'/9004'/0x41'/0/j`  | Reserved hardened account index → isolated.|
+//! | Domain | Account *n* is         | Rationale                                    |
+//! |--------|------------------------|----------------------------------------------|
+//! | User   | `m/44'/9004'/n'/0/0`   | Matches bramble's recovery scan → portable.  |
+//! | Agent  | `m/44'/9004'/AGNT'/0/n`| Reserved account index → cannot collide.     |
 //!
-//! Mainstream wallets only ever scan `account' = 0'`, so any account index
-//! other than 0 is collision-free against them. We reserve `0x41` ("A") for
-//! agent-created accounts and never reuse it for user accounts.
+//! ## Why the two branches use different axes
+//!
+//! BIP-44 gives two indices below the coin type: a hardened *account* index and
+//! an *address* index. Wallets differ in which one they walk for "add another
+//! account", and the choice is a compatibility decision, not a free one.
+//!
+//! **User accounts walk the account index**, because that is what bramble's
+//! recovery scan enumerates (`accountIndex` 0–19, address index fixed at 0). A
+//! seed imported into either wallet therefore surfaces the same accounts. Before
+//! [#16](https://github.com/starknet-innovation/strkd/issues/16) strkd walked
+//! the address index instead, so only account 0 agreed.
+//!
+//! **Agent accounts sit under one reserved account index and walk the address
+//! index**, which keeps every agent account off the axis user accounts occupy.
+//! One reserved constant covers the whole branch.
+//!
+//! ## The reserved index
+//!
+//! [`AGENT_ACCOUNT_INDEX`] is `0x41474E54` — `"AGNT"` in ASCII, 1,095,192,148,
+//! comfortably inside BIP-32's hardened ceiling of `0x7FFFFFFF`. It was `0x41`
+//! (`"A"`, 65) when user accounts walked the address index and nothing traversed
+//! the account axis. Once user accounts march `0, 1, 2, …` up that axis, 65 is
+//! reachable by ordinary use — the 66th account — so the constant moved somewhere
+//! no realistic enumeration reaches.
+//!
+//! The reservation is a convention, not something the chain enforces: another
+//! wallet given a manual index could still derive here. Bramble is being asked
+//! to exclude it explicitly (`mc-wallet#336`).
+//!
+//! **strkd enforces it.** Because user account *n* sits at account index *n*, an
+//! unbounded user index *would* reach the agent branch (and, at `0x80000000` or
+//! above, wrap: the hardened bit is ORed in, so `0xC1474E54` derives the same
+//! key as `0x41474E54`). [`Domain::check_index`] bounds both branches, and every
+//! derivation goes through it.
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::CoreError;
 
 /// Starknet SLIP-44 coin type (9004), re-exported from krusty for a single
 /// source of truth.
 pub const STARKNET_COIN_TYPE: u32 = krusty_kms::STARKNET_COIN_TYPE;
 
-/// Hardened BIP-44 account index for the user (portable) branch.
+/// Hardened BIP-44 account index reserved for the agent branch — `"AGNT"`.
+///
+/// Must never be used for a user account, and no wallet sharing this seed
+/// should derive here. See the module docs.
+pub const AGENT_ACCOUNT_INDEX: u32 = 0x4147_4E54;
+
+/// The account index of the first user account. User account *n* is at account
+/// index *n*, so this is also the base of the user branch.
 pub const USER_ACCOUNT_INDEX: u32 = 0;
 
-/// Hardened BIP-44 account index reserved for the agent (segregated) branch.
-///
-/// Reserved constant — must never be reused for user accounts.
-pub const AGENT_ACCOUNT_INDEX: u32 = 0x41;
+/// BIP-32's ceiling on a hardened index. Anything reserved must be below it.
+pub const MAX_HARDENED_INDEX: u32 = 0x7FFF_FFFF;
+
+/// Exclusive upper bound on a user account number: user account *n* is account
+/// index *n*, so it must stay below the reserved agent index.
+pub const USER_INDEX_LIMIT: u32 = AGENT_ACCOUNT_INDEX;
+
+/// Exclusive upper bound on an agent account number (a non-hardened address
+/// index: at `2^31` and above it would read as hardened).
+pub const AGENT_INDEX_LIMIT: u32 = 0x8000_0000;
 
 /// Which derivation branch an account belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Domain {
-    /// Human-created, portable accounts (`account' = 0`).
+    /// Human-created, portable accounts.
     User,
-    /// Agent-created, segregated accounts (`account' = 0x41`).
+    /// Agent-created, segregated accounts.
     Agent,
 }
 
 impl Domain {
-    /// The hardened BIP-44 `account` index for this domain.
-    pub const fn account_index(self) -> u32 {
+    /// The BIP-44 `(account_index, address_index)` for the *n*-th account in
+    /// this branch.
+    ///
+    /// The two branches deliberately walk different axes — see the module docs.
+    pub const fn path_indices(self, n: u32) -> (u32, u32) {
         match self {
-            Domain::User => USER_ACCOUNT_INDEX,
-            Domain::Agent => AGENT_ACCOUNT_INDEX,
+            Domain::User => (n, 0),
+            Domain::Agent => (AGENT_ACCOUNT_INDEX, n),
+        }
+    }
+
+    /// Refuse an account number outside this branch's range. A user number at or
+    /// above [`USER_INDEX_LIMIT`] would derive an agent (or another user's)
+    /// key; this is what keeps the branches apart, so derivation calls it.
+    pub fn check_index(self, n: u32) -> Result<(), CoreError> {
+        let limit = match self {
+            Domain::User => USER_INDEX_LIMIT,
+            Domain::Agent => AGENT_INDEX_LIMIT,
+        };
+        if n < limit {
+            Ok(())
+        } else {
+            Err(CoreError::IndexOutOfRange { domain: self, index: n })
         }
     }
 
@@ -50,14 +114,44 @@ impl Domain {
         STARKNET_COIN_TYPE
     }
 
-    /// Human-readable derivation path for an address index, e.g.
-    /// `m/44'/9004'/0'/0/3`.
-    pub fn path(self, index: u32) -> String {
-        format!(
-            "m/44'/{}'/{}'/0/{}",
-            self.coin_type(),
-            self.account_index(),
-            index
-        )
+    /// Human-readable derivation path for the *n*-th account in this branch,
+    /// e.g. `m/44'/9004'/3'/0/0` for user account 3.
+    pub fn path(self, n: u32) -> String {
+        let (account, address) = self.path_indices(n);
+        format!("m/44'/{}'/{}'/0/{}", self.coin_type(), account, address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reserved_agent_index_is_a_valid_hardened_index() {
+        // Compile-time: a reserved index above the hardened ceiling would derive
+        // the wrong path rather than fail, so this must never build.
+        const _: () = assert!(AGENT_ACCOUNT_INDEX < MAX_HARDENED_INDEX);
+        assert_eq!(AGENT_ACCOUNT_INDEX, u32::from_be_bytes(*b"AGNT"));
+    }
+
+    #[test]
+    fn indices_that_would_reach_another_branch_are_refused() {
+        // Each of these derived an agent key (or wrapped onto user 0) before.
+        for n in [AGENT_ACCOUNT_INDEX, 0xC147_4E54, 0x8000_0000, u32::MAX] {
+            assert!(Domain::User.check_index(n).is_err(), "user {n:#x}");
+        }
+        assert!(Domain::Agent.check_index(0x8000_0000).is_err());
+        assert!(Domain::User.check_index(AGENT_ACCOUNT_INDEX - 1).is_ok());
+        assert!(Domain::User.check_index(0).is_ok() && Domain::Agent.check_index(0).is_ok());
+    }
+
+    #[test]
+    fn the_branches_never_share_a_derivation_path() {
+        // The agent branch is unreachable by user enumeration: a user account
+        // would have to be the 1,095,192,148th.
+        for n in [0u32, 1, 65, 19, 1000] {
+            assert_ne!(Domain::User.path_indices(n), Domain::Agent.path_indices(n));
+            assert_ne!(Domain::User.path_indices(n).0, AGENT_ACCOUNT_INDEX);
+        }
     }
 }

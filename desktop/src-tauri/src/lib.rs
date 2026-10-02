@@ -93,7 +93,7 @@ fn refresh_tray(app: &AppHandle, pending: usize) {
 use wallet_core::{generate_mnemonic, validate_mnemonic, AccountRef, ChainId, Registry};
 use wallet_rpc::{
     bind_loopback, ChannelApprover, Decision, LogEntry, PendingApproval, RequestLog, ServerState,
-    VaultStore, WalletSession,
+    SweepAccount, SweepPlan, SweepReport, SweepToken, VaultStore, WalletSession,
 };
 use prover::{
     build_prover_state, Activity, ProofRecord, ProofSummary, ProverConfig, ProverState,
@@ -118,6 +118,9 @@ struct DesktopState {
     /// the loopback `companion_prove*` methods and the Proving panel share one
     /// job/storage/settings store). Holds no key material.
     prover: Arc<ProverState>,
+    /// Temporary (issue #14): one sweep at a time — two would race on nonces
+    /// and balances.
+    sweep_lock: tokio::sync::Mutex<()>,
 }
 
 fn chain_name(c: ChainId) -> &'static str {
@@ -162,11 +165,20 @@ fn notif_sound() -> &'static str {
 /// unlock vs main).
 #[tauri::command]
 async fn status(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
+    // Version check only — no passphrase, no decryption.
+    let vault_unsupported = matches!(
+        state.vault_store.load(),
+        Ok(Some(ref v)) if !v.is_supported_version()
+    );
     let session = state.server.session.lock().await;
     let accounts = session.registry().map(|r| r.accounts.len()).unwrap_or(0);
     Ok(serde_json::json!({
         "locked": session.is_locked(),
         "needs_onboarding": !state.vault_store.exists(),
+        // A vault this build cannot open is NOT the same as a wrong passphrase,
+        // and must not route to the unlock screen: unlock would fail forever
+        // with no way out, since onboarding only appears when no file exists.
+        "vault_unsupported": vault_unsupported,
         "network": chain_name(session.chain()),
         "version": env!("CARGO_PKG_VERSION"),
         "service_url": state.service_url,
@@ -220,12 +232,67 @@ async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<()
         .map_err(|e| e.to_string())?
         .ok_or("no vault file")?;
     let mut session = state.server.session.lock().await;
-    session
-        .unlock(&vault, &passphrase)
-        .map_err(|_| "incorrect passphrase or corrupt vault".to_string())?;
+    // Report the real reason. Collapsing these was harmless while a wrong
+    // passphrase was the only realistic failure; once a vault version can be
+    // refused, "corrupt vault" is both false and dangerous — it invites someone
+    // to delete a vault that is perfectly intact.
+    session.unlock(&vault, &passphrase).map_err(|e| match e {
+        wallet_core::CoreError::UnsupportedVaultVersion(found) => format!(
+            "this vault is version {found}; this build of strkd uses version {}. \
+Your vault is not damaged and your passphrase is not wrong — this version changed how \
+accounts are derived, so old vaults are deliberately not opened. Start over from your \
+recovery phrase; the old vault file is kept as a backup.",
+            wallet_core::EncryptedVault::supported_version(),
+        ),
+        _ => "incorrect passphrase".to_string(),
+    })?;
     drop(session);
     state.server.touch_activity(); // start the auto-lock idle clock fresh
     Ok(())
+}
+
+/// Move an unopenable vault aside so onboarding can run, and return where it went.
+///
+/// **Renames, never deletes.** A vault this build refuses is still the user's
+/// only copy of their seed if they have no written backup, and a build that
+/// destroys it to unblock its own UI would be indefensible. The file is kept
+/// next to the original with its version and a timestamp in the name, so it can
+/// be restored by hand or opened by an older build.
+///
+/// Refuses to touch a vault this build *can* open — that would be a wipe, not a
+/// migration, and it is not what this exists for.
+#[tauri::command]
+async fn archive_unsupported_vault(state: State<'_, DesktopState>) -> Result<String, String> {
+    let vault = state
+        .vault_store
+        .load()
+        .map_err(|e| e.to_string())?
+        .ok_or("no vault file to archive")?;
+    if vault.is_supported_version() {
+        return Err("this vault is readable by this build; refusing to move it aside".into());
+    }
+
+    let path = state.vault_store.path().to_path_buf();
+    let stamp = wallet_rpc::now_unix_ms();
+    let backup = path.with_file_name(format!(
+        "{}.v{}.{}.bak",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("vault.bin"),
+        vault.version,
+        stamp
+    ));
+    std::fs::rename(&path, &backup).map_err(|e| format!("could not move the vault aside: {e}"))?;
+
+    let where_ = backup.display().to_string();
+    log_ui_action(
+        &state,
+        "ui_archiveVault",
+        chain_name(state.chain),
+        "ok",
+        None,
+        Some(format!("{{\"backup\":\"{where_}\"}}")),
+    )
+    .await;
+    Ok(where_)
 }
 
 /// Re-lock the wallet (wipes the in-memory seed).
@@ -471,7 +538,7 @@ async fn deploy_account(
             &signed.class_hash,
             &signed.constructor_calldata,
             &signed.salt,
-            &[signed.r, signed.s],
+            &signed.signature,
             &bounds,
         )
         .await
@@ -491,6 +558,171 @@ async fn deploy_account(
     )
     .await;
     Ok(serde_json::json!({ "transaction_hash": tx }))
+}
+
+// ---------------------------------------------------------------------------
+// Temporary: ERC-20 sweep (issue #14). Delete with the module it calls, after
+// the derivation cutover in issue #16.
+// ---------------------------------------------------------------------------
+
+/// Every registry account paired with its deployment data, plus the funding
+/// source and the active chain. Deployment data needs the unlocked session, so
+/// it is gathered here rather than inside the sweep module.
+///
+/// The manager (user account 0, the funding source) is always included even
+/// when it is not in the registry — it is derived on demand — or its own
+/// balance would be stranded by the derivation change and nothing could pay
+/// for the others' deploys.
+async fn sweep_inputs(
+    state: &DesktopState,
+) -> Result<(ChainId, Vec<SweepAccount>, String), String> {
+    let s = state.server.session.lock().await;
+    let chain = s.chain();
+    let manager = s.manager_account(0).map_err(|e| e.to_string())?;
+    let mut refs: Vec<AccountRef> = s.registry().map_err(|e| e.to_string())?.accounts.clone();
+    let same = |a: &str, b: &str| {
+        wallet_core::Felt::from_hex(a).ok().zip(wallet_core::Felt::from_hex(b).ok()).map(|(x, y)| x == y).unwrap_or(false)
+    };
+    if !refs.iter().any(|a| same(&a.address, &manager.address)) {
+        refs.insert(0, manager.clone());
+    }
+    let accounts = refs
+        .iter()
+        .map(|a| {
+            s.deployment_data_for(a)
+                .map(|deployment| SweepAccount { acct: a.clone(), deployment })
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((chain, accounts, manager.address))
+}
+
+/// Survey what a sweep would move, without signing or sending anything.
+///
+/// This is the consent surface: the user sees exactly which accounts hold what,
+/// which need deploying or topping up, and what the funding source will pay,
+/// before [`sweep_execute`] is allowed to run.
+#[tauri::command]
+async fn sweep_plan(
+    state: State<'_, DesktopState>,
+    destination: String,
+    tokens: Option<Vec<SweepToken>>,
+) -> Result<SweepPlan, String> {
+    let (chain, accounts, funding) = sweep_inputs(&state).await?;
+    let node = state
+        .server
+        .node_for(chain)
+        .ok_or("set a Starknet RPC URL in Settings before sweeping")?;
+    let tokens = tokens.unwrap_or_else(wallet_rpc::sweep::default_tokens);
+    wallet_rpc::sweep::plan(
+        node.as_ref(),
+        &accounts,
+        &tokens,
+        &destination,
+        &funding,
+        chain_name(chain),
+    )
+    .await
+}
+
+/// Run the sweep. **Irreversible.**
+///
+/// Re-plans against fresh chain state immediately before executing, so the
+/// amounts moved are whatever is actually there — that is the point of a sweep —
+/// but refuses unless the fresh plan has the `fingerprint` of the plan the user
+/// confirmed (same destination, same accounts deployed/topped up/skipped).
+/// Mainnet is refused unless `STRKD_SWEEP_ALLOW_MAINNET=1` is set, until the
+/// sweep has had its security review (#14). Progress is emitted on the
+/// `sweep-progress` event so a run that waits on several blocks is not a
+/// silent spinner.
+#[tauri::command]
+async fn sweep_execute(
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+    destination: String,
+    fingerprint: String,
+    tokens: Option<Vec<SweepToken>>,
+) -> Result<SweepReport, String> {
+    let _running = state.sweep_lock.try_lock().map_err(|_| "a sweep is already running")?;
+    let (chain, accounts, funding) = sweep_inputs(&state).await?;
+    let network = chain_name(chain).to_string();
+    let node = state
+        .server
+        .node_for(chain)
+        .ok_or("set a Starknet RPC URL in Settings before sweeping")?;
+    let tokens = tokens.unwrap_or_else(wallet_rpc::sweep::default_tokens);
+
+    let plan = wallet_rpc::sweep::plan(
+        node.as_ref(),
+        &accounts,
+        &tokens,
+        &destination,
+        &funding,
+        &network,
+    )
+    .await?;
+
+    log_ui_action(
+        &state,
+        "ui_sweepStart",
+        &network,
+        "ok",
+        None,
+        Some(format!(
+            "{{\"destination\":\"{}\",\"accounts\":{}}}",
+            plan.destination,
+            wallet_rpc::sweep::execution_order(&plan).len()
+        )),
+    )
+    .await;
+
+    let emitter = app.clone();
+    let confirmation = wallet_rpc::sweep::Confirmation {
+        fingerprint,
+        allow_mainnet: std::env::var("STRKD_SWEEP_ALLOW_MAINNET").as_deref() == Ok("1"),
+    };
+    let report = wallet_rpc::sweep::execute(
+        node.as_ref(),
+        &state.server.session,
+        &accounts,
+        &tokens,
+        &plan,
+        chain,
+        &confirmation,
+        &move |ev| {
+            let _ = emitter.emit("sweep-progress", ev);
+        },
+    )
+    .await;
+
+    match report {
+        Ok(r) => {
+            log_ui_action(
+                &state,
+                "ui_sweep",
+                &network,
+                "ok",
+                None,
+                Some(format!(
+                    "{{\"destination\":\"{}\",\"swept\":{},\"skipped\":{},\"failed\":{}}}",
+                    r.destination, r.swept, r.skipped, r.failed
+                )),
+            )
+            .await;
+            Ok(r)
+        }
+        Err(e) => {
+            log_ui_action(&state, "ui_sweep", &network, &format!("error: {e}"), Some(-32004), None)
+                .await;
+            Err(e)
+        }
+    }
+}
+
+/// The default token list the sweep uses, so the UI can show and edit it.
+#[tauri::command]
+fn sweep_default_tokens() -> Vec<SweepToken> {
+    wallet_rpc::sweep::default_tokens()
 }
 
 /// Paired clients with their grant status (for the Agents control panel).
@@ -870,6 +1102,7 @@ pub fn run() {
                 pending,
                 onboarding: Mutex::new(None),
                 prover: prover_state,
+                sweep_lock: tokio::sync::Mutex::new(()),
             });
 
             // Menu-bar tray.
@@ -900,6 +1133,7 @@ pub fn run() {
             import,
             finalize_setup,
             unlock,
+            archive_unsupported_vault,
             lock,
             set_network,
             get_settings,
@@ -909,6 +1143,9 @@ pub fn run() {
             balance,
             deploy_status,
             deploy_account,
+            sweep_plan,
+            sweep_execute,
+            sweep_default_tokens,
             list_clients,
             grant_permission,
             revoke_permission,

@@ -2,13 +2,21 @@
 //! on Sepolia — used to craft a real `starknet_estimateFee` request when
 //! verifying the node wire format. No real key material.
 
-use wallet_core::{address_hex, deployment_data, ChainId, Domain};
+use wallet_core::{address_hex, deployment_data, AccountContract, ChainId, Domain};
 
 const TEST_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
 fn main() {
-    let d = deployment_data(TEST_MNEMONIC, Domain::User, 0, None, ChainId::Sepolia).unwrap();
+    let d = deployment_data(
+        TEST_MNEMONIC,
+        Domain::User,
+        0,
+        None,
+        ChainId::Sepolia,
+        AccountContract::OpenZeppelin,
+    )
+    .unwrap();
     let hexes: Vec<String> = d
         .constructor_calldata
         .iter()
