@@ -174,6 +174,20 @@ What every release guarantees:
 Before publishing a draft, check the attached files and notes, then press
 *Publish* on the release page.
 
+**Publishing: only the CLI release may be "Latest".** GitHub marks one release
+per repo as Latest, by default the one published most recently. The CLI install
+command fetches `releases/latest/download/strkd-installer.sh`, which exists only
+in the CLI release. If a desktop release becomes Latest, that command breaks for
+everyone. So publish the desktop release with *Set as the latest release*
+**unticked**, and the CLI release with it ticked:
+
+```bash
+gh release edit desktop-vX.Y.Z --draft=false --latest=false   # desktop: never Latest
+gh release edit vX.Y.Z         --draft=false --latest         # CLI: Latest
+curl -sI https://github.com/starknet-innovation/strkd/releases/latest | grep -i location
+                                                              # must end in /tag/vX.Y.Z
+```
+
 **Maintainers.** CLI dist *policy* lives in `[workspace.metadata.dist]` (root
 `Cargo.toml`). `release.yml` was generated from it and carries one deliberate
 local edits, listed in its banner: the release-safety changes above, and a
