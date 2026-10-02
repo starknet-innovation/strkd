@@ -121,6 +121,8 @@ struct DesktopState {
     /// Temporary (issue #14): one sweep at a time — two would race on nonces
     /// and balances.
     sweep_lock: tokio::sync::Mutex<()>,
+    /// Escalating delay after wrong passphrases on seed reveal.
+    reveal_backoff: Mutex<wallet_rpc::PassphraseBackoff>,
 }
 
 fn chain_name(c: ChainId) -> &'static str {
@@ -684,6 +686,14 @@ async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Resu
     let passphrase = Zeroizing::new(passphrase);
     let network = chain_name(state.server.session.lock().await.chain()).to_string();
 
+    // Read into a local so the std guard is dropped before any `.await`.
+    let blocked = state.reveal_backoff.lock().unwrap().check(std::time::Instant::now());
+    if let Err(wait) = blocked {
+        let msg = format!("too many wrong passphrases — try again in {}s", wait.as_secs().max(1));
+        log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(114), None).await;
+        return Err(msg);
+    }
+
     let vault = match state.vault_store.load() {
         Ok(Some(v)) => v,
         Ok(None) => {
@@ -706,6 +716,7 @@ async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Resu
     };
     match revealed {
         Ok(phrase) => {
+            state.reveal_backoff.lock().unwrap().record_success();
             // Logged as an event only. `result_json` stays None — the phrase must
             // never reach the request log, which the Activity tab renders.
             log_ui_action(&state, "ui_revealSeed", &network, "ok", None, None).await;
@@ -716,6 +727,9 @@ async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Resu
         }
         Err(e) => {
             let code = if matches!(e, wallet_rpc::WalletRpcError::Locked) { -32001 } else { 114 };
+            if code == 114 {
+                state.reveal_backoff.lock().unwrap().record_failure(std::time::Instant::now());
+            }
             let msg = if code == -32001 { "unlock the wallet first".to_string() } else { e.to_string() };
             log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(code), None).await;
             Err(msg)
@@ -1101,6 +1115,7 @@ pub fn run() {
                 onboarding: Mutex::new(None),
                 prover: prover_state,
                 sweep_lock: tokio::sync::Mutex::new(()),
+                reveal_backoff: Mutex::new(Default::default()),
             });
 
             // Menu-bar tray.

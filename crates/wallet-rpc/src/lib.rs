@@ -20,6 +20,7 @@ pub mod server;
 pub mod session;
 pub mod store;
 pub mod sweep;
+pub mod backoff;
 pub mod usage;
 
 pub use approval::{
@@ -35,6 +36,7 @@ pub use node::{
     TxState,
 };
 pub use server::{bind_loopback, router, transport_guard, write_port_lock};
+pub use backoff::PassphraseBackoff;
 pub use session::{reveal_for_session, reveal_mnemonic, VaultContents, WalletSession};
 pub use store::VaultStore;
 pub use sweep::{
