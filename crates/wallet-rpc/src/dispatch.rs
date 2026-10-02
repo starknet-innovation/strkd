@@ -1758,10 +1758,15 @@ async fn handle_request_funding(
         opt_param_str(params, "token").unwrap_or_else(|| STRK_TOKEN_ADDRESS.to_string());
     let token = Felt::from_hex(&token_str)
         .map_err(|_| WalletRpcError::InvalidRequest("bad token address".into()))?;
-    let manager_index = params
-        .get("funding_source_index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    // Checked, not `as u32`: a truncated u64 could land on the agent branch.
+    // The range itself is enforced by wallet-core when the key is derived.
+    let manager_index = match params.get("funding_source_index") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| WalletRpcError::InvalidRequest("bad funding_source_index".into()))?,
+    };
 
     // Resolve the recipient: an explicit address (must be one of the caller's
     // own accounts) or the caller's first account. Enforces that funds can only
@@ -1840,10 +1845,12 @@ Deploy and fund it on {} first — it pays the transfer fee.",
             client_label: format!("{} ({})", client.label, client.id),
             method: "companion_requestFunding".into(),
             summary: format!(
-                "Agent {} ({}) requests a top-up of {strk:.4} STRK ({amount} fri) on {} → account {}",
+                "Agent {} ({}) requests a top-up of {strk:.4} STRK ({amount} fri) on {} from \
+                 manager #{manager_index} {} → account {}",
                 client.label,
                 client.id,
                 chain_name(chain),
+                manager.address,
                 recipient_acct.address
             ),
         })
