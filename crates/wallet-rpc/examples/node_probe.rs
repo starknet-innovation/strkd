@@ -5,7 +5,7 @@
 //! Run: `cargo run -p wallet-rpc --example node_probe`
 //! Uses the `http://` URL on purpose to exercise http→https redirect handling.
 
-use wallet_core::{deployment_data, ChainId, Domain, Felt};
+use wallet_core::{AccountContract, deployment_data, ChainId, Domain, Felt};
 use wallet_rpc::{HttpStarknetRpc, StarknetRpc};
 
 const TEST_MNEMONIC: &str =
@@ -21,7 +21,15 @@ async fn main() {
     println!("is_deployed(STRK token) = {:?}", node.is_deployed(&strk).await);
     println!("get_nonce(STRK token)   = {:?}", node.get_nonce(&strk).await);
 
-    let d = deployment_data(TEST_MNEMONIC, Domain::User, 0, None, ChainId::Sepolia).unwrap();
+    let d = deployment_data(
+        TEST_MNEMONIC,
+        Domain::User,
+        0,
+        None,
+        ChainId::Sepolia,
+        AccountContract::OpenZeppelin,
+    )
+    .unwrap();
     println!("is_deployed(test acct)  = {:?}", node.is_deployed(&d.address).await);
     let est = node
         .estimate_deploy_account(&d.address, &d.class_hash, &d.constructor_calldata, &d.salt)

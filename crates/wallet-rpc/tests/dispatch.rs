@@ -189,6 +189,7 @@ fn user_registry() -> (Registry, String) {
         index: 0,
         address: address.clone(),
         label: "Main".into(),
+        contract: Default::default(),
         owner_client_id: None,
     });
     (reg, address)

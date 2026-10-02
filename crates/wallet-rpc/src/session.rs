@@ -14,7 +14,8 @@
 use serde::{Deserialize, Serialize};
 use wallet_core::{
     address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_invoke_v3,
-    sign_typed_data, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain, EncryptedVault,
+    sign_typed_data, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
+    EncryptedVault,
     Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature,
 };
 use zeroize::Zeroizing;
@@ -139,8 +140,15 @@ impl WalletSession {
         account: &AccountRef,
     ) -> Result<DeploymentData, WalletRpcError> {
         let u = self.require_unlocked()?;
-        deployment_data(&u.mnemonic, account.domain, account.index, None, self.chain)
-            .map_err(WalletRpcError::from)
+        deployment_data(
+            &u.mnemonic,
+            account.domain,
+            account.index,
+            None,
+            self.chain,
+            account.contract,
+        )
+        .map_err(WalletRpcError::from)
     }
 
     /// Sign SNIP-12 typed data with the given account's key.
@@ -184,6 +192,7 @@ impl WalletSession {
             calls,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -211,6 +220,7 @@ impl WalletSession {
             compiled_class_hash,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -231,6 +241,7 @@ impl WalletSession {
             None,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -244,13 +255,16 @@ impl WalletSession {
         let chain = self.chain;
         let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
         let index = u.registry.next_index(Domain::Agent);
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::Agent, index, None, chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr =
+            wallet_core::account_address(&u.mnemonic, Domain::Agent, index, None, chain, contract)
+                .map_err(WalletRpcError::from)?;
         let account = AccountRef {
             domain: Domain::Agent,
             index,
             address: address_hex(&addr),
             label: label.into(),
+            contract,
             owner_client_id: Some(client_id.to_string()),
         };
         u.registry.add(account.clone());
@@ -264,13 +278,22 @@ impl WalletSession {
     /// own accounts, never spend from an arbitrary one.
     pub fn manager_account(&self, index: u32) -> Result<AccountRef, WalletRpcError> {
         let u = self.require_unlocked()?;
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::User, index, None, self.chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr = wallet_core::account_address(
+            &u.mnemonic,
+            Domain::User,
+            index,
+            None,
+            self.chain,
+            contract,
+        )
+        .map_err(WalletRpcError::from)?;
         Ok(AccountRef {
             domain: Domain::User,
             index,
             address: address_hex(&addr),
             label: "manager".into(),
+            contract,
             owner_client_id: None,
         })
     }
@@ -284,13 +307,16 @@ impl WalletSession {
         let chain = self.chain;
         let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
         let index = u.registry.next_index(Domain::User);
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::User, index, None, chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr =
+            wallet_core::account_address(&u.mnemonic, Domain::User, index, None, chain, contract)
+                .map_err(WalletRpcError::from)?;
         let account = AccountRef {
             domain: Domain::User,
             index,
             address: address_hex(&addr),
             label: label.into(),
+            contract,
             owner_client_id: None,
         };
         u.registry.add(account.clone());
