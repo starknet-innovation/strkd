@@ -28,7 +28,9 @@ fn private_key(
     passphrase: Option<&str>,
 ) -> Result<Felt> {
     // Which BIP-44 axis carries `index` depends on the branch — see
-    // `domain::Domain::path_indices`.
+    // `domain::Domain::path_indices`. Bound it first: an out-of-range user
+    // index would derive a key on the agent branch.
+    domain.check_index(index)?;
     let (account_index, address_index) = domain.path_indices(index);
     derive_private_key_with_coin_type(
         mnemonic,

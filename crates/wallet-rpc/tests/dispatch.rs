@@ -1454,6 +1454,24 @@ async fn funding_errors_clearly_when_manager_not_deployed() {
 }
 
 #[tokio::test]
+async fn a_funding_source_index_on_the_agent_branch_is_refused() {
+    // User account n sits at account index n, so an unbounded index reached the
+    // agent branch: 0x41474E54 derived agent #0's key, 0xC1474E54 wrapped onto
+    // it via the hardened bit, and a u64 truncated onto it. None may sign.
+    let state = state_with_node_opts(Decision::Approve, "0x3", "0xfeed", vec![], true);
+    let (token, _) = agent_with_account(&state).await;
+    for idx in [json!(0x4147_4E54u64), json!(0xC147_4E54u64), json!(0x1_4147_4E54u64), json!("1")] {
+        let mut p = funding_params("1000");
+        p["funding_source_index"] = idx.clone();
+        let resp = call(&state, Some(&token), "companion_requestFunding", p).await;
+        assert_eq!(err_code(&resp), 114, "{idx} must be refused as an invalid request");
+    }
+    // Control: the default index is accepted (so the refusals above are the bound).
+    let resp = call(&state, Some(&token), "companion_requestFunding", funding_params("1000")).await;
+    assert!(resp.error.as_ref().map(|e| e.code != 114).unwrap_or(true), "{:?}", resp.error);
+}
+
+#[tokio::test]
 async fn deploy_account_already_deployed_errors() {
     // Account already on-chain → a clear precondition error (-32006) instead of a
     // confusing "invalid nonce" from reusing nonce 0 (the bug the maintainer hit
