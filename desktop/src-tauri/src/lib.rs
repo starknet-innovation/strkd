@@ -118,6 +118,9 @@ struct DesktopState {
     /// the loopback `companion_prove*` methods and the Proving panel share one
     /// job/storage/settings store). Holds no key material.
     prover: Arc<ProverState>,
+    /// Temporary (issue #14): one sweep at a time — two would race on nonces
+    /// and balances.
+    sweep_lock: tokio::sync::Mutex<()>,
 }
 
 fn chain_name(c: ChainId) -> &'static str {
@@ -501,15 +504,25 @@ async fn deploy_account(
 /// Every registry account paired with its deployment data, plus the funding
 /// source and the active chain. Deployment data needs the unlocked session, so
 /// it is gathered here rather than inside the sweep module.
+///
+/// The manager (user account 0, the funding source) is always included even
+/// when it is not in the registry — it is derived on demand — or its own
+/// balance would be stranded by the derivation change and nothing could pay
+/// for the others' deploys.
 async fn sweep_inputs(
     state: &DesktopState,
 ) -> Result<(ChainId, Vec<SweepAccount>, String), String> {
     let s = state.server.session.lock().await;
     let chain = s.chain();
-    let accounts = s
-        .registry()
-        .map_err(|e| e.to_string())?
-        .accounts
+    let manager = s.manager_account(0).map_err(|e| e.to_string())?;
+    let mut refs: Vec<AccountRef> = s.registry().map_err(|e| e.to_string())?.accounts.clone();
+    let same = |a: &str, b: &str| {
+        wallet_core::Felt::from_hex(a).ok().zip(wallet_core::Felt::from_hex(b).ok()).map(|(x, y)| x == y).unwrap_or(false)
+    };
+    if !refs.iter().any(|a| same(&a.address, &manager.address)) {
+        refs.insert(0, manager.clone());
+    }
+    let accounts = refs
         .iter()
         .map(|a| {
             s.deployment_data_for(a)
@@ -517,8 +530,7 @@ async fn sweep_inputs(
                 .map_err(|e| e.to_string())
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let funding = s.manager_account(0).map_err(|e| e.to_string())?.address;
-    Ok((chain, accounts, funding))
+    Ok((chain, accounts, manager.address))
 }
 
 /// Survey what a sweep would move, without signing or sending anything.
@@ -553,16 +565,21 @@ async fn sweep_plan(
 ///
 /// Re-plans against fresh chain state immediately before executing, so the
 /// amounts moved are whatever is actually there — that is the point of a sweep —
-/// while the destination stays the one the user passed. Progress is emitted on
-/// the `sweep-progress` event so a run that waits on several blocks is not a
+/// but refuses unless the fresh plan has the `fingerprint` of the plan the user
+/// confirmed (same destination, same accounts deployed/topped up/skipped).
+/// Mainnet is refused unless `STRKD_SWEEP_ALLOW_MAINNET=1` is set, until the
+/// sweep has had its security review (#14). Progress is emitted on the
+/// `sweep-progress` event so a run that waits on several blocks is not a
 /// silent spinner.
 #[tauri::command]
 async fn sweep_execute(
     app: AppHandle,
     state: State<'_, DesktopState>,
     destination: String,
+    fingerprint: String,
     tokens: Option<Vec<SweepToken>>,
 ) -> Result<SweepReport, String> {
+    let _running = state.sweep_lock.try_lock().map_err(|_| "a sweep is already running")?;
     let (chain, accounts, funding) = sweep_inputs(&state).await?;
     let network = chain_name(chain).to_string();
     let node = state
@@ -596,6 +613,10 @@ async fn sweep_execute(
     .await;
 
     let emitter = app.clone();
+    let confirmation = wallet_rpc::sweep::Confirmation {
+        fingerprint,
+        allow_mainnet: std::env::var("STRKD_SWEEP_ALLOW_MAINNET").as_deref() == Ok("1"),
+    };
     let report = wallet_rpc::sweep::execute(
         node.as_ref(),
         &state.server.session,
@@ -603,6 +624,7 @@ async fn sweep_execute(
         &tokens,
         &plan,
         chain,
+        &confirmation,
         &move |ev| {
             let _ = emitter.emit("sweep-progress", ev);
         },
@@ -1016,6 +1038,7 @@ pub fn run() {
                 pending,
                 onboarding: Mutex::new(None),
                 prover: prover_state,
+                sweep_lock: tokio::sync::Mutex::new(()),
             });
 
             // Menu-bar tray.
