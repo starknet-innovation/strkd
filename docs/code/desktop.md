@@ -216,7 +216,8 @@ Re-authentication is cryptographic rather than a comparison: the command decrypt
 with the passphrase supplied at that moment, so a wrong one fails at the AES-GCM tag. It
 deliberately does not read the mnemonic from the unlocked session — the app stays unlocked for a
 whole session, and that must not be the same thing as consenting to show the seed. Reveal is also
-refused while locked.
+refused while locked, and after 3 wrong passphrases each further attempt waits 5 s, doubling up to
+5 min (`wallet_rpc::PassphraseBackoff`); a right one resets it. Unlock shares the same limiter.
 
 The request log records the event (`ui_revealSeed`) and never the phrase. The UI keeps it blurred
 until clicked, clears on hide, on leaving the tab, and after two minutes, and offers no copy
@@ -224,3 +225,35 @@ button — the system clipboard is readable by every other process on the machin
 agents this wallet serves.
 
 Per-account private keys are **not** revealed. See spec §6.5.
+
+## Design tokens
+
+`src/styles.css` carries bramble's design system, ported from
+`packages/presentation/ui-kit/src/theme/`: the `SPACE` / `RADIUS` / `FONT` /
+`TYPE` / `WEIGHT` / `TRACKING` / `MOTION` / `CONTROL` scales as CSS custom
+properties, plus both skins — `midnight` (the default, as in bramble) and
+`daylight`, opt-in via `data-theme="light"` on `<html>`.
+
+The system is deliberately **achromatic**: hierarchy comes from contrast,
+weight, space and motion, with colour reserved for positive / danger / degraded
+semantics. Do not reintroduce a brand hue for emphasis — avoiding one is the
+point of bramble's language. The accent is near-white in midnight and near-black
+in daylight, so ink on an accent surface must come from `--bramble-accent-text`,
+never a literal.
+
+The legacy `--bg` / `--panel` / `--line` / `--text` / `--muted` / `--accent` /
+`--ok` / `--err` variables are kept as aliases onto skin tokens, so existing
+rules keep working and a skin swap moves everything at once.
+
+The button vocabulary mirrors bramble's `controls.ts`: variants `primary` /
+`secondary` / `ghost`, a `small` size, and `danger` as a **tone** that combines
+with a variant rather than a fourth variant. The base `button` rule *is* the
+secondary treatment, so a button without a variant class is still on-system.
+The templates themselves cannot be shared — bramble renders escaped HTML
+strings, this is React — so this is the same contract reimplemented.
+
+Reduced motion is honoured by zeroing the duration tokens, and by switching off
+keyframe animations (the deploy wiggle) that don't read them.
+
+See [issues #18 and #19](https://github.com/starknet-innovation/strkd/issues/18)
+and [`bramble-convergence.md`](../project/bramble-convergence.md) §5.5.

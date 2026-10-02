@@ -69,8 +69,9 @@ fn user_and_agent_domains_are_isolated() {
     let chain = ChainId::Sepolia;
     // Sanity on the reserved constants.
     assert_eq!(USER_ACCOUNT_INDEX, 0);
-    assert_eq!(AGENT_ACCOUNT_INDEX, 0x41);
-    assert_ne!(Domain::User.account_index(), Domain::Agent.account_index());
+    assert_eq!(AGENT_ACCOUNT_INDEX, 0x4147_4E54, "\"AGNT\"");
+    // The branches walk different BIP-44 axes, so they can never meet.
+    assert_ne!(Domain::User.path_indices(0), Domain::Agent.path_indices(0));
 
     let mut all = HashSet::new();
     for i in 0..5u32 {
@@ -87,10 +88,31 @@ fn user_and_agent_domains_are_isolated() {
 
 #[test]
 fn derivation_paths_match_expected_layout() {
-    // User branch must match Argent's portable base: m/44'/9004'/0'/0/i
-    assert_eq!(Domain::User.path(3), "m/44'/9004'/0'/0/3");
-    // Agent branch on the reserved account index.
-    assert_eq!(Domain::Agent.path(2), "m/44'/9004'/65'/0/2");
+    // User accounts walk the ACCOUNT index, which is what bramble's recovery
+    // scan enumerates — so the same seed surfaces the same accounts in both.
+    assert_eq!(Domain::User.path(0), "m/44'/9004'/0'/0/0");
+    assert_eq!(Domain::User.path(3), "m/44'/9004'/3'/0/0");
+    // Agent accounts share the reserved account index and walk the ADDRESS
+    // index, keeping the whole branch off the axis user accounts occupy.
+    assert_eq!(Domain::Agent.path(0), "m/44'/9004'/1095192148'/0/0");
+    assert_eq!(Domain::Agent.path(2), "m/44'/9004'/1095192148'/0/2");
+}
+
+/// Account 0 is the one path both wallets always agreed on, even before #16.
+/// If this ever changes, seed portability is broken at the root.
+#[test]
+fn user_account_zero_is_the_canonical_first_account() {
+    assert_eq!(Domain::User.path(0), "m/44'/9004'/0'/0/0");
+    assert_eq!(Domain::User.path_indices(0), (0, 0));
+}
+
+/// The agent branch must be far enough up the account axis that ordinary use
+/// cannot reach it. Bramble scans 0-19 by default; 0x41 (65) was reachable.
+#[test]
+fn the_agent_branch_is_out_of_reach_of_account_enumeration() {
+    let (agent_account, _) = Domain::Agent.path_indices(0);
+    assert!(agent_account > 1_000_000, "must be far beyond any wallet's scan");
+    assert_ne!(agent_account, 0x41, "0x41 became reachable once user accounts walked this axis");
 }
 
 #[test]
@@ -122,4 +144,41 @@ fn signing_is_deterministic_and_bound_to_account() {
     // A different account signing the same hash yields a different signature.
     let other = sign_hash(TEST_MNEMONIC, Domain::Agent, 0, None, &hash).unwrap();
     assert_ne!(s1.s, other.s);
+}
+
+/// The address a seed produces must be the one bramble produces from the same
+/// public key. This is what "same seed, same accounts" means in practice, and
+/// it is the whole point of issue #16.
+///
+/// The expected value was cross-checked with starknet.js:
+/// `hash.calculateContractAddressFromHash("0x0", OZ_CLASS, [publicKeyX], 0)`
+/// — exactly the call bramble makes — and agrees to the digit.
+#[test]
+fn user_account_zero_matches_brambles_address_formula() {
+    let chain = ChainId::Sepolia;
+    let d = wallet_core::deployment_data(
+        TEST_MNEMONIC,
+        Domain::User,
+        0,
+        None,
+        chain,
+        wallet_core::AccountContract::OpenZeppelin,
+    )
+    .unwrap();
+
+    // Bramble salts OpenZeppelin deployments with zero, not the public key.
+    assert_eq!(d.salt, Felt::ZERO, "OZ salt must be zero to match bramble");
+    // Pinned OpenZeppelin AccountUpgradeable 3.0, identical on mainnet and Sepolia.
+    assert_eq!(
+        address_hex(&d.class_hash),
+        "0x01d1777db36cdd06dd62cfde77b1b6ae06412af95d57a13dc40ac77b8a702381"
+    );
+    // The constructor commits to the key — which is why a zero salt is safe here.
+    assert_eq!(d.constructor_calldata.len(), 1);
+
+    assert_eq!(
+        address_hex(&d.address),
+        "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+        "address drifted from bramble's formula — re-check the salt and class hash",
+    );
 }

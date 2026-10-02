@@ -189,6 +189,7 @@ fn user_registry() -> (Registry, String) {
         index: 0,
         address: address.clone(),
         label: "Main".into(),
+        contract: Default::default(),
         owner_client_id: None,
     });
     (reg, address)
@@ -413,13 +414,16 @@ async fn typed_data_hash_is_the_signed_digest_and_verifies_under_account_key() {
         "signature must verify against the reported SNIP-12 digest under the account key",
     );
 
-    // Guard the pin against SNIP-12 regressions: this exact digest was
-    // cross-checked against starknet.py TypedData.message_hash (== starknet.js
-    // and on-chain is_valid_signature). If the krusty pin regressed (keccak
-    // prefix, or shortstring not going through parse_felt), this would change.
+    // Guard the pin against SNIP-12 regressions. The digest binds the account
+    // address, so it moved when #16 changed the OZ salt and the account axis —
+    // the value below was re-derived for the new address and cross-checked
+    // against starknet.js `typedData.getMessageHash`, which agrees exactly. The
+    // hashing itself is unchanged. If the krusty pin regressed (keccak prefix,
+    // or shortstring not going through parse_felt), this would change *without*
+    // the address changing.
     assert_eq!(
         hres["hash"].as_str().unwrap(),
-        "0x68b4250d022dce3e45e64683935b0e0f8bf95e3dbf17eb9839e255578ddc061",
+        "0x2e3d857f3f9e5d3c23b3268017e1c1ea65baba457b0ec82ec2e63e8de7d4869",
         "SNIP-12 rev-1 digest changed — check the krusty-kms pin",
     );
 }
@@ -486,6 +490,19 @@ async fn deferred_methods_report_not_implemented() {
     )
     .await;
     assert_eq!(err_code(&resp), -32601);
+    assert!(resp.error.unwrap().message.contains("later phase"));
+}
+
+#[tokio::test]
+async fn parked_privacy_methods_say_out_of_scope_not_later() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction", "wallet_strk20Balances"] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(err_code(&resp), -32601, "{method}");
+        let msg = resp.error.unwrap().message;
+        assert!(msg.contains("out of scope") && !msg.contains("later phase"), "{method}: {msg}");
+    }
 }
 
 /// The loopback service must never expose seed reveal. It is IPC-only by
@@ -1463,6 +1480,24 @@ async fn funding_errors_clearly_when_manager_not_deployed() {
     assert_eq!(err_code(&resp), -32006);
     let msg = resp.error.unwrap().message;
     assert!(msg.contains("not deployed"), "message should explain the cause: {msg}");
+}
+
+#[tokio::test]
+async fn a_funding_source_index_on_the_agent_branch_is_refused() {
+    // User account n sits at account index n, so an unbounded index reached the
+    // agent branch: 0x41474E54 derived agent #0's key, 0xC1474E54 wrapped onto
+    // it via the hardened bit, and a u64 truncated onto it. None may sign.
+    let state = state_with_node_opts(Decision::Approve, "0x3", "0xfeed", vec![], true);
+    let (token, _) = agent_with_account(&state).await;
+    for idx in [json!(0x4147_4E54u64), json!(0xC147_4E54u64), json!(0x1_4147_4E54u64), json!("1")] {
+        let mut p = funding_params("1000");
+        p["funding_source_index"] = idx.clone();
+        let resp = call(&state, Some(&token), "companion_requestFunding", p).await;
+        assert_eq!(err_code(&resp), 114, "{idx} must be refused as an invalid request");
+    }
+    // Control: the default index is accepted (so the refusals above are the bound).
+    let resp = call(&state, Some(&token), "companion_requestFunding", funding_params("1000")).await;
+    assert!(resp.error.as_ref().map(|e| e.code != 114).unwrap_or(true), "{:?}", resp.error);
 }
 
 #[tokio::test]

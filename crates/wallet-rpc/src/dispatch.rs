@@ -305,15 +305,29 @@ struct Handled {
     client: Option<String>,
 }
 
-/// Standard methods that exist in the spec but are not implemented in this
-/// phase (broadcast/declare/chain-management/privacy).
+/// Standard methods that exist in the spec but return `-32601` here.
+///
+/// Two different reasons, deliberately kept in one list because callers only
+/// care that the method is unavailable:
+///
+/// - `wallet_addStarknetChain` is **not built yet** — it needs a generalized
+///   chain id beyond the Sepolia/Mainnet enum.
+/// - The `wallet_strk20*` privacy methods are **deliberately out of scope**
+///   (strkd#20). strkd's Tongo backend cannot express this surface — it is a
+///   per-token encrypted balance where the spec models a note-based pool — and
+///   shipping partial semantics under the standard names would mean the same
+///   call meant different things in strkd and bramble. The names stay free for
+///   a real implementation.
 fn is_deferred(method: &str) -> bool {
+    method == "wallet_addStarknetChain" || is_out_of_scope(method)
+}
+
+/// The parked privacy surface (strkd#20): unlike `wallet_addStarknetChain`,
+/// these are not coming in a later phase, and the error says so.
+fn is_out_of_scope(method: &str) -> bool {
     matches!(
         method,
-        "wallet_addStarknetChain"
-            | "wallet_strk20InvokeTransaction"
-            | "wallet_strk20PrepareInvoke"
-            | "wallet_strk20Balances"
+        "wallet_strk20InvokeTransaction" | "wallet_strk20PrepareInvoke" | "wallet_strk20Balances"
     )
 }
 
@@ -436,9 +450,11 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 
     if is_deferred(method) {
         return Handled {
-            result: Err(WalletRpcError::NotImplemented(format!(
-                "{method} is planned for a later phase"
-            ))),
+            result: Err(WalletRpcError::NotImplemented(if is_out_of_scope(method) {
+                format!("{method} is out of scope: strkd does not implement the STRK20 privacy surface (strkd#20)")
+            } else {
+                format!("{method} is planned for a later phase")
+            })),
             decision: "n/a".into(),
             client: Some(client_label),
         };
@@ -704,14 +720,18 @@ async fn handle_sign_typed_data(
 
     let session = state.session.lock().await;
     let sig = session.sign_typed_data_for(&account, &typed_data_json)?;
-    Ok(json!([felt_hex(&sig.r), felt_hex(&sig.s)]))
+    // Serialized the way this account's `is_valid_signature` expects. A bare
+    // (r, s) is correct for OpenZeppelin and rejected by classes that wrap the
+    // signature (Argent's SignerSignature array).
+    let signature = account.contract.serialize_signature(&sig);
+    Ok(json!(signature.iter().map(felt_hex).collect::<Vec<_>>()))
 }
 
 /// `companion_typedDataHash` — compute the SNIP-12 (revision 1) message hash
 /// that `wallet_signTypedData` would sign for `{ account_address, typed_data }`.
 ///
-/// Pure and key-free: `wallet_signTypedData` returns only the spec `[r, s]`
-/// signature, so this lets a caller confirm strkd hashes a typed message the
+/// Pure and key-free: `wallet_signTypedData` returns only the signature
+/// (account-encoded; `[r, s]` for OpenZeppelin), so this lets a caller confirm strkd hashes a typed message the
 /// same way starknet.js `typedData.getMessageHash` does — and thus that a Cairo
 /// account's `is_valid_signature` will accept the resulting signature — without
 /// signing anything. Needs no unlock and prompts no approval.
@@ -967,7 +987,7 @@ async fn sign_and_submit(
             .add_invoke(
                 &sender,
                 &signed.calldata,
-                &[signed.r, signed.s],
+                &signed.signature,
                 &nonce,
                 &bounds,
                 &proof_facts,
@@ -983,7 +1003,7 @@ async fn sign_and_submit(
     let tx = crate::node::invoke_v3_tx_json(
         &sender,
         &signed.calldata,
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
         &proof_facts,
@@ -991,7 +1011,7 @@ async fn sign_and_submit(
     );
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": tx,
         "submitted": false,
     }))
@@ -1150,7 +1170,7 @@ async fn handle_add_declare(
             WalletRpcError::InvalidRequest("submit:true requires 'contract_class'".into())
         })?;
         let hash = node
-            .add_declare(&sender, &compiled_class_hash, cc, &[signed.r, signed.s], &nonce, &bounds)
+            .add_declare(&sender, &compiled_class_hash, cc, &signed.signature, &nonce, &bounds)
             .await
             .map_err(|e| WalletRpcError::Node(e.to_string()))?;
         return Ok(json!({
@@ -1167,14 +1187,14 @@ async fn handle_add_declare(
         &sender,
         &compiled_class_hash,
         contract_class_json.as_ref(),
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
     );
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
         "class_hash": felt_hex(&class_hash),
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": tx,
         "submitted": false,
     }))
@@ -1521,7 +1541,7 @@ async fn handle_sign_and_prove(
     let tx_json = crate::node::invoke_v3_tx_json(
         &sender,
         &signed.calldata,
-        &[signed.r, signed.s],
+        &signed.signature,
         &nonce,
         &bounds,
         &[],
@@ -1754,10 +1774,15 @@ async fn handle_request_funding(
         opt_param_str(params, "token").unwrap_or_else(|| STRK_TOKEN_ADDRESS.to_string());
     let token = Felt::from_hex(&token_str)
         .map_err(|_| WalletRpcError::InvalidRequest("bad token address".into()))?;
-    let manager_index = params
-        .get("funding_source_index")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    // Checked, not `as u32`: a truncated u64 could land on the agent branch.
+    // The range itself is enforced by wallet-core when the key is derived.
+    let manager_index = match params.get("funding_source_index") {
+        None | Some(Value::Null) => 0,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| WalletRpcError::InvalidRequest("bad funding_source_index".into()))?,
+    };
 
     // Resolve the recipient: an explicit address (must be one of the caller's
     // own accounts) or the caller's first account. Enforces that funds can only
@@ -1836,10 +1861,12 @@ Deploy and fund it on {} first — it pays the transfer fee.",
             client_label: format!("{} ({})", client.label, client.id),
             method: "companion_requestFunding".into(),
             summary: format!(
-                "Agent {} ({}) requests a top-up of {strk:.4} STRK ({amount} fri) on {} → account {}",
+                "Agent {} ({}) requests a top-up of {strk:.4} STRK ({amount} fri) on {} from \
+                 manager #{manager_index} {} → account {}",
                 client.label,
                 client.id,
                 chain_name(chain),
+                manager.address,
                 recipient_acct.address
             ),
         })
@@ -1969,7 +1996,7 @@ async fn handle_deploy_account(
                 &signed.class_hash,
                 &signed.constructor_calldata,
                 &signed.salt,
-                &[signed.r, signed.s],
+                &signed.signature,
                 &bounds,
             )
             .await
@@ -1984,7 +2011,7 @@ async fn handle_deploy_account(
     Ok(json!({
         "transaction_hash": felt_hex(&signed.transaction_hash),
         "contract_address": account.address,
-        "signature": [felt_hex(&signed.r), felt_hex(&signed.s)],
+        "signature": signed.signature.iter().map(felt_hex).collect::<Vec<_>>(),
         "signed_transaction": {
             "type": "DEPLOY_ACCOUNT",
             "version": "0x3",
