@@ -490,6 +490,48 @@ async fn deferred_methods_report_not_implemented() {
     )
     .await;
     assert_eq!(err_code(&resp), -32601);
+    assert!(resp.error.unwrap().message.contains("later phase"));
+}
+
+#[tokio::test]
+async fn parked_privacy_methods_say_out_of_scope_not_later() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction", "wallet_strk20Balances"] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(err_code(&resp), -32601, "{method}");
+        let msg = resp.error.unwrap().message;
+        assert!(msg.contains("out of scope") && !msg.contains("later phase"), "{method}: {msg}");
+    }
+}
+
+/// The loopback service must never expose seed reveal. It is IPC-only by
+/// design (see `wallet_rpc::reveal_mnemonic`): this service is reachable by any
+/// local process, including the AI agents strkd exists to serve, and spec §5.1
+/// is that it never returns key material.
+///
+/// This test exists so that adding such a method is a deliberate act that
+/// breaks a test naming the reason, rather than a plausible-looking addition.
+#[tokio::test]
+async fn the_service_exposes_no_way_to_reveal_the_seed() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in [
+        "companion_revealSeed",
+        "companion_exportSeed",
+        "companion_revealMnemonic",
+        "wallet_exportSeed",
+        "companion_getMnemonic",
+        "companion_exportPrivateKey",
+    ] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(
+            err_code(&resp),
+            -32601,
+            "{method} must not exist on the loopback service",
+        );
+        assert!(resp.result.is_none(), "{method} returned a result");
+    }
 }
 
 /// A well-formed sign-only invoke request for the user account.

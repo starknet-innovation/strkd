@@ -121,6 +121,9 @@ struct DesktopState {
     /// Temporary (issue #14): one sweep at a time — two would race on nonces
     /// and balances.
     sweep_lock: tokio::sync::Mutex<()>,
+    /// Escalating delay after wrong passphrases, shared by unlock and seed
+    /// reveal (both take the vault passphrase over IPC).
+    passphrase_backoff: Mutex<wallet_rpc::PassphraseBackoff>,
 }
 
 fn chain_name(c: ChainId) -> &'static str {
@@ -226,6 +229,11 @@ async fn finalize_setup(state: State<'_, DesktopState>, passphrase: String) -> R
 /// Unlock an existing vault with `passphrase`.
 #[tauri::command]
 async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<(), String> {
+    let passphrase = Zeroizing::new(passphrase);
+    let blocked = state.passphrase_backoff.lock().unwrap().check(std::time::Instant::now());
+    if let Err(wait) = blocked {
+        return Err(format!("too many wrong passphrases — try again in {}s", wait.as_secs().max(1)));
+    }
     let vault = state
         .vault_store
         .load()
@@ -236,7 +244,15 @@ async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<()
     // passphrase was the only realistic failure; once a vault version can be
     // refused, "corrupt vault" is both false and dangerous — it invites someone
     // to delete a vault that is perfectly intact.
-    session.unlock(&vault, &passphrase).map_err(|e| match e {
+    let opened = session.unlock(&vault, &passphrase);
+    // Only a wrong passphrase counts toward the delay; a refused vault version
+    // is not a guess.
+    match &opened {
+        Ok(()) => state.passphrase_backoff.lock().unwrap().record_success(),
+        Err(wallet_core::CoreError::UnsupportedVaultVersion(_)) => {}
+        Err(_) => state.passphrase_backoff.lock().unwrap().record_failure(std::time::Instant::now()),
+    }
+    opened.map_err(|e| match e {
         wallet_core::CoreError::UnsupportedVaultVersion(found) => format!(
             "this vault is version {found}; this build of strkd uses version {}. \
 Your vault is not damaged and your passphrase is not wrong — this version changed how \
@@ -725,6 +741,80 @@ fn sweep_default_tokens() -> Vec<SweepToken> {
     wallet_rpc::sweep::default_tokens()
 }
 
+/// Reveal the wallet's recovery phrase, after re-authenticating.
+///
+/// **IPC only.** The loopback JSON-RPC service has no equivalent and must never
+/// get one — it is reachable by any local process, including the AI agents the
+/// wallet exists to serve, and its contract is that it never returns key
+/// material. `wallet_rpc::reveal_mnemonic` carries the full rationale, and
+/// `the_service_exposes_no_way_to_reveal_the_seed` guards it.
+///
+/// Re-authentication is cryptographic rather than a comparison: the on-disk
+/// vault is decrypted with the passphrase supplied *now*, so a wrong one fails
+/// at the AEAD tag. Being unlocked is deliberately not sufficient — the app
+/// stays unlocked for a whole session, and that should not be the same thing as
+/// consenting to show the seed.
+///
+/// The phrase is returned to the app's own window and nowhere else. The request
+/// is logged; the phrase never is.
+#[tauri::command]
+async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Result<String, String> {
+    // Wiped when this command returns. (Tauri deserialized it from the IPC
+    // message, so earlier copies exist outside our control.)
+    let passphrase = Zeroizing::new(passphrase);
+    let network = chain_name(state.server.session.lock().await.chain()).to_string();
+
+    // Read into a local so the std guard is dropped before any `.await`.
+    let blocked = state.passphrase_backoff.lock().unwrap().check(std::time::Instant::now());
+    if let Err(wait) = blocked {
+        let msg = format!("too many wrong passphrases — try again in {}s", wait.as_secs().max(1));
+        log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(114), None).await;
+        return Err(msg);
+    }
+
+    let vault = match state.vault_store.load() {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            let msg = "no vault on disk".to_string();
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(163), None).await;
+            return Err(msg);
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(163), None).await;
+            return Err(msg);
+        }
+    };
+
+    // Refused from the lock screen, and otherwise re-authenticated against the
+    // vault — see `wallet_rpc::reveal_for_session`.
+    let revealed = {
+        let session = state.server.session.lock().await;
+        wallet_rpc::reveal_for_session(&session, &vault, &passphrase)
+    };
+    match revealed {
+        Ok(phrase) => {
+            state.passphrase_backoff.lock().unwrap().record_success();
+            // Logged as an event only. `result_json` stays None — the phrase must
+            // never reach the request log, which the Activity tab renders.
+            log_ui_action(&state, "ui_revealSeed", &network, "ok", None, None).await;
+            // The IPC reply needs a plain String; the Zeroizing original is wiped
+            // here, but Tauri's serialized copy is not. That is the limit of
+            // returning a secret over IPC at all.
+            Ok(phrase.to_string())
+        }
+        Err(e) => {
+            let code = if matches!(e, wallet_rpc::WalletRpcError::Locked) { -32001 } else { 114 };
+            if code == 114 {
+                state.passphrase_backoff.lock().unwrap().record_failure(std::time::Instant::now());
+            }
+            let msg = if code == -32001 { "unlock the wallet first".to_string() } else { e.to_string() };
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(code), None).await;
+            Err(msg)
+        }
+    }
+}
+
 /// Paired clients with their grant status (for the Agents control panel).
 #[tauri::command]
 async fn list_clients(state: State<'_, DesktopState>) -> Result<Vec<wallet_rpc::ClientInfo>, String> {
@@ -1103,6 +1193,7 @@ pub fn run() {
                 onboarding: Mutex::new(None),
                 prover: prover_state,
                 sweep_lock: tokio::sync::Mutex::new(()),
+                passphrase_backoff: Mutex::new(Default::default()),
             });
 
             // Menu-bar tray.
@@ -1151,6 +1242,7 @@ pub fn run() {
             revoke_permission,
             recent_log,
             respond_approval,
+            reveal_seed,
             prover_status,
             proof_activity,
             get_prover_settings,

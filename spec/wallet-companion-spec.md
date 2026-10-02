@@ -27,7 +27,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 ### 1.2 Non-goals (v1)
 - ❌ Hardware-wallet / external-signer support.
 - ❌ Multi-device vault sync (vault stays local).
-- ❌ Key export / seed re-reveal UI after setup.
+- ❌ **Private-key** export (per-account keys are never shown or returned). Recovery-phrase reveal *is* supported as of [#28](https://github.com/starknet-innovation/strkd/issues/28) — see [§6.5](#65-recovery-phrase-reveal) — but only in the app's own window, behind a fresh passphrase check, and never over the service.
 - ❌ Browser-dApp (`get-starknet`) injection — callers are local native processes only.
 - ❌ Transaction **simulation / effects preview** in the prompt (decode + fee only; see [§8](#8-confirmation-ux)). Note: fee *estimation* is in scope; full simulation is not.
 - ✅ Auto-approval via **time-bounded permission grants** (see §5.8). (Per-call
@@ -118,7 +118,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | Shell / packaging | Tauri 2.x | Native macOS tray; small binary; webview frontend |
 | Core language | Rust | Same language as `krusty-kms` → keys never cross an FFI/language boundary |
 | Crypto | `krusty-kms` (+ `krusty-kms-common`) | BIP-39/44 derivation, STARK signing, OZ address calc, invoke-V3 hash |
-| Tongo / STRK20 (Phase 3) | `krusty-kms-sdk` | Confidential proof generation |
+| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` | Confidential proof generation — not shipped |
 | Node RPC | `krusty-kms-client` or `starknet-rs` | Fee estimation + optional broadcast |
 | Frontend | Web (framework TBD — Svelte/React) | Renders prompts + log; no key access |
 | Vault encryption | `argon2` (Argon2id) + AES-256-GCM (`aes-gcm`) | Authenticated encryption |
@@ -256,7 +256,34 @@ On first run, the user chooses:
 - **Generate:** `generate_mnemonic` → display once (12/24 words) with a verification step → encrypt into the vault. Set passphrase.
 - **Import:** paste an existing phrase → `validate_mnemonic` → encrypt into the vault. Set passphrase.
 
-No re-reveal/export of the mnemonic after setup (non-goal).
+### 6.5 Recovery-phrase reveal
+
+**Reversal of an earlier non-goal ([#28](https://github.com/starknet-innovation/strkd/issues/28)).**
+This spec previously ruled out any re-reveal. That made strkd a one-way door for a seed it had
+generated: a user who lost their written backup could neither move to another device nor to
+bramble, which does offer a reveal flow. Worse, it interacts badly with vault-version changes —
+a vault strkd refuses to open is a seed nobody can recover.
+
+Settings offers **Show recovery phrase**, subject to all of:
+
+- **Re-authentication is cryptographic, not a comparison.** The reveal decrypts the *on-disk vault*
+  with the passphrase supplied at that moment; a wrong one fails at the AES-GCM tag. Deliberately
+  not read from the unlocked session — the app stays unlocked for a whole session, and that must
+  not be the same thing as consenting to show the seed.
+- **Unlocked is necessary but not sufficient.** Refused from the lock screen.
+- **IPC only.** There is no `wallet_*` or `companion_*` equivalent and there must never be: the
+  loopback service is reachable by any local process, including the AI agents strkd exists to
+  serve, and [§5.1](#51-security-boundary) is that it never returns key material. A test
+  (`the_service_exposes_no_way_to_reveal_the_seed`) fails if such a method is added.
+- **Never logged.** The reveal is recorded in the request log as an event (`ui_revealSeed`, with
+  its outcome); the phrase itself is never written to the log, disk, or any other sink.
+- **Shown, not copied.** Blurred until clicked, cleared on hide, on leaving the tab, and after a
+  two-minute timeout. There is no copy button: the system clipboard is readable by every other
+  process on the machine, which is precisely the threat model here.
+
+**Per-account private keys remain a non-goal.** Bramble's equivalent screen reveals both; strkd
+reveals only the phrase, which is the smaller surface and the one that actually enables recovery
+and portability.
 
 ---
 
@@ -289,12 +316,15 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 | `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; `class_hash` **derived** from `contract_class` ([§7.4.1](#741-declare-the-class-hash-is-derived-not-trusted)); returns class hash + tx hash |
 | `wallet_watchAsset` | 2 | **yes** | Add token to display |
 | `wallet_addStarknetChain` | 2 | **yes** | Add a custom network |
-| `wallet_strk20PrepareInvoke` | 3 | **yes**² | Build STRK20 (Tongo) call + proof, no submit |
-| `wallet_strk20InvokeTransaction` | 3 | **yes** | STRK20 privacy action |
-| `wallet_strk20Balances` | 3 | no | Query private balances |
+| `wallet_strk20PrepareInvoke` | parked³ | — | Out of scope: returns `-32601` |
+| `wallet_strk20InvokeTransaction` | parked³ | — | Out of scope: returns `-32601` |
+| `wallet_strk20Balances` | parked³ | — | Out of scope: returns `-32601` |
 
 ¹ First connection requires pairing approval; thereafter auto-served to the paired caller (within scope).
 ² Proof generation may be heavy; prompt + progress indication.
+³ Privacy is parked, not pending (strkd#20). strkd's Tongo backend cannot express the
+  spec's note-based pool, so the standard names stay free rather than carrying partial
+  semantics. The Tongo work is preserved, unmerged, in PR #11.
 
 ### 7.3 Companion extension methods (`companion_*`)
 Non-standard, namespaced to avoid clashing with `wallet_*`.
@@ -533,7 +563,7 @@ Full spec is the target; deliver in phases.
 - **Phase 0 — Skeleton:** Tauri menu-bar app, vault (gen/import + passphrase + lock/unlock), single user account, `krusty-kms` wired in (`generate_mnemonic`, `derive_keypair_with_coin_type`, OZ address). No service.
 - **Phase 1 — Core service (minimal usable wallet):** loopback JSON-RPC + pairing + per-request approval + log; methods `supportedWalletApi/Specs`, `getPermissions`, `requestAccounts`, `requestChainId`, `deploymentData`, `signTypedData`, `addInvokeTransaction` **sign-only** with node-backed **fee estimation**. Multi-account (user domain) + agent domain + `companion_createAgentAccount` + scoping.
 - **Phase 2 — Broadcast & remaining standard methods:** `submit: true` broadcasting via configured node; `switchStarknetChain` (Sepolia ⇄ Mainnet); `addDeclareTransaction`, `watchAsset`, `addStarknetChain`. Log viewer polish.
-- **Phase 3 — Privacy (Tongo / STRK20):** `strk20PrepareInvoke`, `strk20InvokeTransaction`, `strk20Balances` via `krusty-kms-sdk`.
+- **Phase 3 — Privacy (Tongo / STRK20):** **parked** (strkd#20). The standard `strk20*` names return `-32601`; the Tongo work stays unmerged in PR #11.
 - **Hardening (parallel/after):** portability round-trip tests; UDS + peer-cred transport option; security audit; validate experimental crypto before Mainnet.
 
 ---
@@ -558,7 +588,7 @@ Full spec is the target; deliver in phases.
 
 **Remaining open (confirm at implementation)**
 1. **`StarkSignature` field names** and whether `compute_typed_data_message_hash` takes a structured SNIP-12 object vs pre-decomposed felts — verify against source at the pinned commit.
-2. **Tongo SDK signatures** (`transfer`/`withdraw`/`rollover`/`ragequit`) — only `fund` was observed; confirm before Phase 3.
+2. **Tongo SDK signatures** (`transfer`/`withdraw`/`rollover`/`ragequit`) — only `fund` was observed; confirm if privacy is un-parked (#20).
 3. **OZ class-hash manifest** currency per network (`OzAccountClassConfig::latest`) — confirm it carries the class hashes you want on Sepolia + Mainnet.
 
 ---
@@ -577,7 +607,7 @@ Full spec is the target; deliver in phases.
 | OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::Zero)` → `OzDeploymentDescriptor` |
 | Invoke-V3 tx hash | `compute_invoke_v3_hash(sender, calldata, chain_id, nonce, account_deployment_data, tip, l1_gas, l2_gas, l1_data_gas, paymaster_data, nonce_da_mode, fee_da_mode)` |
 | Invoke-V3 with proof (Tongo) | `compute_invoke_v3_hash_with_proof_facts(..., proof_facts)` |
-| Tongo / STRK20 (Phase 3) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
+| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
 
 Constants: `STARKNET_COIN_TYPE = 9004`, `TONGO_COIN_TYPE = 5454`. Types: `ResourceBounds { max_amount: u64, max_price_per_unit: u128 }`, `DaMode { L1, L2 }`, `SaltPolicy { PublicKey, Zero, Explicit(Felt) }`.
 

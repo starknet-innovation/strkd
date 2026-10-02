@@ -305,15 +305,29 @@ struct Handled {
     client: Option<String>,
 }
 
-/// Standard methods that exist in the spec but are not implemented in this
-/// phase (broadcast/declare/chain-management/privacy).
+/// Standard methods that exist in the spec but return `-32601` here.
+///
+/// Two different reasons, deliberately kept in one list because callers only
+/// care that the method is unavailable:
+///
+/// - `wallet_addStarknetChain` is **not built yet** — it needs a generalized
+///   chain id beyond the Sepolia/Mainnet enum.
+/// - The `wallet_strk20*` privacy methods are **deliberately out of scope**
+///   (strkd#20). strkd's Tongo backend cannot express this surface — it is a
+///   per-token encrypted balance where the spec models a note-based pool — and
+///   shipping partial semantics under the standard names would mean the same
+///   call meant different things in strkd and bramble. The names stay free for
+///   a real implementation.
 fn is_deferred(method: &str) -> bool {
+    method == "wallet_addStarknetChain" || is_out_of_scope(method)
+}
+
+/// The parked privacy surface (strkd#20): unlike `wallet_addStarknetChain`,
+/// these are not coming in a later phase, and the error says so.
+fn is_out_of_scope(method: &str) -> bool {
     matches!(
         method,
-        "wallet_addStarknetChain"
-            | "wallet_strk20InvokeTransaction"
-            | "wallet_strk20PrepareInvoke"
-            | "wallet_strk20Balances"
+        "wallet_strk20InvokeTransaction" | "wallet_strk20PrepareInvoke" | "wallet_strk20Balances"
     )
 }
 
@@ -436,9 +450,11 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 
     if is_deferred(method) {
         return Handled {
-            result: Err(WalletRpcError::NotImplemented(format!(
-                "{method} is planned for a later phase"
-            ))),
+            result: Err(WalletRpcError::NotImplemented(if is_out_of_scope(method) {
+                format!("{method} is out of scope: strkd does not implement the STRK20 privacy surface (strkd#20)")
+            } else {
+                format!("{method} is planned for a later phase")
+            })),
             decision: "n/a".into(),
             client: Some(client_label),
         };
