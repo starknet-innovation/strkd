@@ -50,31 +50,52 @@ dirs = "5"
 libc = "0.2"
 
 # ---------------------------------------------------------------------------
-# Distribution — cargo-dist (https://opensource.axo.dev/cargo-dist/).
+# Distribution — cargo-dist / `dist` (https://opensource.axo.dev/cargo-dist/).
 #
-# This block is the policy: which installers, which targets, where the Homebrew
-# formula lands. It is NOT complete on its own — run `dist init` once to pin
-# `cargo-dist-version` (to whatever `dist` you have installed) and to GENERATE
-# `.github/workflows/release.yml`. Never hand-edit that workflow; re-run
-# `dist generate` after changing anything here. Only `strkd` (wallet-cli) is a
-# binary, so it's the sole shipped artifact.
+# This block is the policy: which installers, which targets. It drives
+# `.github/workflows/release.yml`, which is GENERATED — change this block and
+# re-run `dist generate` rather than editing the workflow. That file does carry
+# ONE deliberate local modification (a narrowed tag glob, so `desktop-v*` tags
+# don't trigger the CLI release); its top-of-file banner says how to re-apply it
+# after a regenerate. Only `strkd` (crates/wallet-cli) is a binary, so it's the
+# sole shipped artifact. A `v*` tag triggers the CLI release; the desktop app
+# ships separately on `desktop-v*`.
+#
+# Note: `dist init` rewrites this block and DROPS these comments (it wrote its
+# own one-liners). Re-add them after any future init.
+#
+# HOMEBREW IS OFF for now. Adding "homebrew" to `installers` builds a formula
+# and `publish-jobs = ["homebrew"]` pushes it to a `tap`, but the intended tap
+# repo `starknet-innovation/homebrew-tap` does not exist and this repo has no
+# secrets configured, so every release would fail on the publish step. To turn
+# it on: create that repo, add a PAT with write access to it as the
+# `HOMEBREW_TAP_TOKEN` secret, then re-add to this block
+#     installers = ["shell", "homebrew"]
+#     tap = "starknet-innovation/homebrew-tap"
+#     publish-jobs = ["homebrew"]
+# and re-run `dist generate`. Until then the shell installer is the download
+# path, alongside the plain per-target tarballs.
 # ---------------------------------------------------------------------------
 [workspace.metadata.dist]
-# Build installers for these. A tagged release (e.g. `v0.1.0`) triggers CI.
-installers = ["shell", "homebrew"]
-# Homebrew formula is published to this tap: `brew install starknet-innovation/tap/strkd`.
-tap = "starknet-innovation/homebrew-tap"
-publish-jobs = ["homebrew"]
-# Prebuilt binaries: Apple silicon + Intel macOS, x86_64 + arm64 Linux.
-targets = [
-    "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-]
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax): Apple silicon
+# + Intel macOS, x86_64 + arm64 Linux.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# CI backends to support
 ci = "github"
-# Don't auto-publish; cut releases deliberately while strkd is alpha.
+# Whether to install an updater program
 install-updater = false
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# Path that installers should place binaries in (~/.cargo/bin)
+install-path = "CARGO_HOME"
+# `release.yml` is intentionally hand-modified (narrowed tag glob — see that
+# file's banner). Without this, dist treats the file as out of date and refuses
+# to build; with it, dist leaves the file alone instead of reverting the fix.
+# So `dist generate` will NOT rewrite the CI: to adopt upstream CI changes,
+# temporarily drop this key, regenerate, then re-apply the tag-glob edit.
+allow-dirty = ["ci"]
 
 # Optimized release builds for the shipped binary.
 [profile.dist]
