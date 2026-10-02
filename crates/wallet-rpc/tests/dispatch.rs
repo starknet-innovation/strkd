@@ -113,6 +113,9 @@ impl StarknetRpc for MockNode {
     ) -> Result<Felt, NodeError> {
         Ok(self.hash)
     }
+    async fn tx_state(&self, _tx_hash: &Felt) -> Result<wallet_rpc::TxState, NodeError> {
+        Ok(wallet_rpc::TxState::Accepted)
+    }
 }
 
 /// State with a mock node attached (enables auto nonce/fee + broadcast). The
