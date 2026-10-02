@@ -161,8 +161,10 @@ export const api = {
   sweepDefaultTokens: () => invoke<SweepToken[]>("sweep_default_tokens"),
   sweepPlan: (destination: string, tokens?: SweepToken[]) =>
     invoke<SweepPlan>("sweep_plan", { destination, tokens }),
-  sweepExecute: (destination: string, tokens?: SweepToken[]) =>
-    invoke<SweepReport>("sweep_execute", { destination, tokens }),
+  // `fingerprint` is the confirmed plan's: the backend re-plans and refuses if
+  // what it would do has changed since.
+  sweepExecute: (destination: string, fingerprint: string, tokens?: SweepToken[]) =>
+    invoke<SweepReport>("sweep_execute", { destination, fingerprint, tokens }),
 };
 
 /// Progress from a running sweep. Returns an unlisten fn.
@@ -184,6 +186,7 @@ export interface SweepToken {
 export interface TokenBalance {
   symbol: string;
   token: string;
+  decimals: number;
   /** Raw amount in the token's smallest unit (string: u128 exceeds JS precision). */
   amount: string;
 }
@@ -200,6 +203,9 @@ export interface AccountPlan {
   gas: string;
   needs_deploy: boolean;
   needs_gas: string;
+  required_gas: string;
+  /** Fee token kept back in this account to pay for its own drain (upper bound). */
+  fee_reserve: string;
   blockers: string[];
 }
 
@@ -211,6 +217,10 @@ export interface SweepPlan {
   funding_source: string;
   funding_available: string;
   funding_required: string;
+  /** Fee token that stays behind as reserves (upper bound). */
+  left_behind: string;
+  /** Pass back to sweepExecute: the backend refuses if the plan has changed. */
+  fingerprint: string;
   warnings: string[];
 }
 
@@ -220,6 +230,7 @@ export interface AccountOutcome {
   status: "swept" | "skipped" | "failed";
   transactions: string[];
   moved: TokenBalance[];
+  left_behind: TokenBalance[];
   detail?: string | null;
 }
 

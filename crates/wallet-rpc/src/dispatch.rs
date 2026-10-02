@@ -714,8 +714,8 @@ async fn handle_sign_typed_data(
 /// `companion_typedDataHash` — compute the SNIP-12 (revision 1) message hash
 /// that `wallet_signTypedData` would sign for `{ account_address, typed_data }`.
 ///
-/// Pure and key-free: `wallet_signTypedData` returns only the spec `[r, s]`
-/// signature, so this lets a caller confirm strkd hashes a typed message the
+/// Pure and key-free: `wallet_signTypedData` returns only the signature
+/// (account-encoded; `[r, s]` for OpenZeppelin), so this lets a caller confirm strkd hashes a typed message the
 /// same way starknet.js `typedData.getMessageHash` does — and thus that a Cairo
 /// account's `is_valid_signature` will accept the resulting signature — without
 /// signing anything. Needs no unlock and prompts no approval.
