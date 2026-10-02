@@ -12,7 +12,10 @@
 //! types in, it deploys accounts, and it spends from the funding source. There
 //! is no undo. The consent model is therefore *plan first*: [`plan`] is strictly
 //! read-only and shows exactly what would move and what it will cost, and
-//! [`execute`] runs only against a plan the user has confirmed.
+//! [`execute`] runs only against a plan the user has confirmed: it re-plans
+//! against fresh chain state and refuses unless the result still matches the
+//! [`SweepPlan::fingerprint`] the user saw. Mainnet is refused unless the
+//! caller explicitly allows it (#14 requires a security review first).
 //!
 //! ## Ordering
 //!
@@ -38,6 +41,17 @@ const TX_POLL_MS: u64 = 3_000;
 /// already carries its own margin; this covers drift between estimating and
 /// landing, and a fee-token transfer that reserves too little simply reverts.
 const FEE_MARGIN_PCT: u128 = 200;
+/// Most an account may be topped up during execution, as a multiple of the
+/// gas the plan said it needed. A node that suddenly prices fees far above the
+/// plan (faulty or hostile) must not be able to drain the funding source into
+/// an old-derivation account.
+const TOP_UP_CAP_MULTIPLE: u128 = 2;
+/// Smallest destination accepted. Real Starknet addresses are hash outputs
+/// spread over 251 bits; anything below 2^200 is almost certainly truncated or
+/// a typo, and sending a whole wallet there is unrecoverable.
+const MIN_DESTINATION_HEX: &str = "0x0000000000000100000000000000000000000000000000000000000000000000";
+/// Exclusive upper bound for a contract address (2^251).
+const ADDRESS_BOUND_HEX: &str = "0x0800000000000000000000000000000000000000000000000000000000000000";
 
 // ---------------------------------------------------------------------------
 // Inputs and outputs
@@ -72,8 +86,9 @@ pub struct SweepAccount {
 /// values on mainnet and Sepolia, rather than being written from memory. The
 /// STRK entry matches [`crate::dispatch::STRK_TOKEN_ADDRESS`] exactly.
 ///
-/// Deliberately short: anything else the user holds is added through the UI,
-/// because guessing a token address is how funds reach the wrong contract.
+/// Deliberately short: anything else must be passed in explicitly by the
+/// caller, because guessing a token address is how funds reach the wrong
+/// contract. Whatever is passed is checked by [`validate_tokens`].
 pub fn default_tokens() -> Vec<SweepToken> {
     vec![
         SweepToken {
@@ -96,6 +111,7 @@ pub fn default_tokens() -> Vec<SweepToken> {
 pub struct TokenBalance {
     pub symbol: String,
     pub token: String,
+    pub decimals: u8,
     /// Raw amount in the token's smallest unit, as a string — u128 exceeds
     /// JavaScript's integer precision.
     pub amount: String,
@@ -121,6 +137,13 @@ pub struct AccountPlan {
     /// Fee-token top-up needed before this account can send, as a string.
     /// `"0"` when it can already pay its own way.
     pub needs_gas: String,
+    /// Fee-token cost of everything this account must do (deploy + drain,
+    /// with margin), as a string. Execution caps top-ups against it.
+    pub required_gas: String,
+    /// Fee token kept back to pay for the drain itself, so it stays in this
+    /// (old-derivation) account rather than reaching the destination. An upper
+    /// bound: the actual fee comes out of it.
+    pub fee_reserve: String,
     /// Reasons this account cannot be swept as things stand.
     pub blockers: Vec<String>,
 }
@@ -149,6 +172,13 @@ pub struct SweepPlan {
     pub funding_available: String,
     /// Total top-ups the funding source is expected to pay, as a string.
     pub funding_required: String,
+    /// Sum of every account's `fee_reserve`: fee token that will NOT reach the
+    /// destination. Upper bound, as a string.
+    pub left_behind: String,
+    /// Digest of what the sweep will do (destination, network, tokens, and each
+    /// account's deploy/top-up/skip decision). [`execute`] refuses unless a
+    /// fresh plan still produces the fingerprint the user confirmed.
+    pub fingerprint: String,
     /// What the user needs to know before confirming.
     pub warnings: Vec<String>,
 }
@@ -176,7 +206,19 @@ pub struct AccountOutcome {
     /// Transaction hashes produced for this account, in order.
     pub transactions: Vec<String>,
     pub moved: Vec<TokenBalance>,
+    /// Fee token deliberately left in the account to pay for the drain (upper
+    /// bound — the fee came out of it).
+    pub left_behind: Vec<TokenBalance>,
     pub detail: Option<String>,
+}
+
+/// What the caller asserts before [`execute`] may move anything.
+#[derive(Debug, Clone)]
+pub struct Confirmation {
+    /// The [`SweepPlan::fingerprint`] of the plan the user confirmed.
+    pub fingerprint: String,
+    /// Mainnet stays refused until the sweep has had its security review (#14).
+    pub allow_mainnet: bool,
 }
 
 /// The result of a run.
@@ -215,9 +257,86 @@ fn felt_of(hex: &str, what: &str) -> Result<Felt, String> {
     Felt::from_hex(hex).map_err(|_| format!("bad {what}: {hex}"))
 }
 
-/// Canonical zero-padded form, so addresses compare as strings.
+/// Canonical zero-padded form, so addresses compare as strings (and, being
+/// fixed-width hex, compare numerically too).
 fn canon(f: &Felt) -> String {
     format!("0x{:064x}", f)
+}
+
+/// Parse and sanity-check the destination. Everything the wallet holds goes
+/// here, so reject anything that is not plausibly a real Starknet address.
+pub fn validate_destination(raw: &str) -> Result<Felt, String> {
+    let t = raw.trim();
+    let digits = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .ok_or_else(|| format!("destination must be 0x-prefixed hex: {t}"))?;
+    if digits.is_empty() || digits.len() > 64 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("destination is not a hex address of at most 64 digits: {t}"));
+    }
+    let f = felt_of(t, "destination address")?;
+    let c = canon(&f);
+    if c.as_str() >= ADDRESS_BOUND_HEX {
+        return Err(format!("destination {t} is not a valid contract address (≥ 2^251)"));
+    }
+    if c.as_str() < MIN_DESTINATION_HEX {
+        return Err(format!(
+            "destination {t} is far too small to be a real account address — is it truncated?"
+        ));
+    }
+    Ok(f)
+}
+
+/// The token list decides which contracts receive `transfer` calls and which
+/// one pays fees, so it must be well-formed: unique, parseable addresses and
+/// exactly one fee token, which must be STRK.
+pub fn validate_tokens(tokens: &[SweepToken]) -> Result<(), String> {
+    if tokens.is_empty() {
+        return Err("the token list is empty".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for t in tokens {
+        let c = canon(&felt_of(&t.address, &format!("token {} address", t.symbol))?);
+        if !seen.insert(c) {
+            return Err(format!("token {} ({}) is listed twice", t.symbol, t.address));
+        }
+    }
+    let fee: Vec<&SweepToken> = tokens.iter().filter(|t| t.is_fee_token).collect();
+    let strk = canon(&felt_of(crate::dispatch::STRK_TOKEN_ADDRESS, "STRK")?);
+    match fee.as_slice() {
+        [t] if canon(&felt_of(&t.address, "fee token")?) == strk => Ok(()),
+        [t] => Err(format!("the fee token must be STRK ({strk}), not {} ({})", t.symbol, t.address)),
+        _ => Err(format!("exactly one fee token (STRK) must be marked; found {}", fee.len())),
+    }
+}
+
+/// Digest of a plan's decisions. Balances are deliberately left out — a sweep
+/// moves whatever is there at execution time — but anything that changes
+/// *what the sweep does* (where funds go, which accounts are deployed, topped
+/// up, skipped, or touched at all) changes the fingerprint.
+fn fingerprint(plan: &SweepPlan, tokens: &[SweepToken]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut line = |s: String| {
+        h.update(s.as_bytes());
+        h.update(b"\n");
+    };
+    line(format!("v1|{}|{}|{}", plan.destination, plan.network, plan.funding_source));
+    for t in tokens {
+        line(format!("token|{}|{}", canon(&felt_of(&t.address, "token").unwrap_or(Felt::ZERO)), t.is_fee_token));
+    }
+    for a in &plan.accounts {
+        line(format!(
+            "acct|{}|{}|{}|{}|{}|{}",
+            a.address,
+            a.will_sweep(),
+            a.is_destination,
+            a.needs_deploy,
+            a.needs_gas != "0",
+            a.blockers.len()
+        ));
+    }
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Human-readable amount for a raw token quantity, for prompts and reports.
@@ -262,6 +381,7 @@ async fn read_balances(
             balances.push(TokenBalance {
                 symbol: t.symbol.clone(),
                 token: t.address.clone(),
+                decimals: t.decimals,
                 amount: amount.to_string(),
             });
         }
@@ -366,25 +486,29 @@ pub async fn plan(
     funding_source: &str,
     network: &str,
 ) -> Result<SweepPlan, String> {
-    let dest = felt_of(destination, "destination address")?;
-    if dest == Felt::ZERO {
-        return Err("destination address must not be zero".into());
-    }
+    let dest = validate_destination(destination)?;
+    validate_tokens(tokens)?;
     let dest_c = canon(&dest);
     let funding_c = canon(&felt_of(funding_source, "funding source address")?);
 
     let mut warnings = Vec::new();
-    if !tokens.iter().any(|t| t.is_fee_token) {
-        warnings.push(
-            "no fee token is marked in the token list, so gas top-ups and deploys cannot be priced"
-                .into(),
-        );
+    let own_dest = accounts
+        .iter()
+        .any(|a| felt_of(&a.acct.address, "account").map(|f| canon(&f) == dest_c).unwrap_or(false));
+    if !own_dest
+        && !node.is_deployed(&dest).await.map_err(|e| format!("destination: {e}"))?
+    {
+        warnings.push(format!(
+            "the destination {dest_c} has no contract deployed on {network}. Tokens sent there are \
+             only recoverable if you hold the key that deploys it — double-check the address."
+        ));
     }
 
     let mut plans = Vec::new();
-    let mut totals: BTreeMap<String, (String, u128)> = BTreeMap::new();
+    let mut totals: BTreeMap<String, (String, u8, u128)> = BTreeMap::new();
     let mut funding_required = 0u128;
     let mut funding_available = 0u128;
+    let mut left_behind = 0u128;
 
     for input in accounts {
         let acct = &input.acct;
@@ -407,7 +531,24 @@ pub async fn plan(
 
         let mut blockers = Vec::new();
         let mut needs_gas = 0u128;
+        let mut required_gas = 0u128;
+        let mut fee_reserve = 0u128;
         let needs_deploy = !deployed && !balances.is_empty() && !is_dest;
+
+        // The deploy is derived from the seed; the address we fund and drain
+        // comes from the registry. If they disagree, deploying would create a
+        // different contract and the top-up would be stranded.
+        let derived = canon(&input.deployment.address);
+        if derived != addr_c {
+            blockers.push(format!(
+                "the derived deploy address {derived} does not match this account — not touching it"
+            ));
+        }
+        if balances.iter().any(|b| b.amount == u128::MAX.to_string()) {
+            blockers.push(
+                "a balance exceeds 2^128 and cannot be swept by this tool — move it manually".into(),
+            );
+        }
 
         if !balances.is_empty() && !is_dest {
             let mut required = 0u128;
@@ -429,16 +570,20 @@ pub async fn plan(
             // fee is estimated again after the deploy lands.
             if deployed {
                 match price_transfer(node, &addr, &dest, tokens, &balances, gas).await {
-                    Ok(f) => required = required.saturating_add(f),
+                    Ok(f) => {
+                        required = required.saturating_add(f);
+                        fee_reserve = with_margin(f);
+                    }
                     Err(e) => blockers.push(format!("cannot price the transfer: {e}")),
                 }
             } else {
+                fee_reserve = with_margin(required);
                 required = required.saturating_mul(2);
             }
 
-            let required = with_margin(required);
-            if required > gas {
-                needs_gas = required - gas;
+            required_gas = with_margin(required);
+            if required_gas > gas {
+                needs_gas = required_gas - gas;
                 if !is_funding {
                     funding_required = funding_required.saturating_add(needs_gas);
                 }
@@ -453,11 +598,14 @@ pub async fn plan(
                 .push("the funding source cannot top itself up — send it more of the fee token".into());
         }
 
-        if !is_dest {
+        if !is_dest && blockers.is_empty() {
             for b in &balances {
-                let e = totals.entry(b.token.clone()).or_insert_with(|| (b.symbol.clone(), 0));
-                e.1 = e.1.saturating_add(b.amount.parse::<u128>().unwrap_or(0));
+                let e = totals
+                    .entry(b.token.clone())
+                    .or_insert_with(|| (b.symbol.clone(), b.decimals, 0));
+                e.2 = e.2.saturating_add(b.amount.parse::<u128>().unwrap_or(0));
             }
+            left_behind = left_behind.saturating_add(fee_reserve);
         }
 
         plans.push(AccountPlan {
@@ -472,6 +620,8 @@ pub async fn plan(
             gas: gas.to_string(),
             needs_deploy,
             needs_gas: needs_gas.to_string(),
+            required_gas: required_gas.to_string(),
+            fee_reserve: fee_reserve.to_string(),
             blockers,
         });
     }
@@ -495,23 +645,36 @@ pub async fn plan(
             .push("the destination is one of this wallet's own accounts; it will not be swept".into());
     }
 
-    Ok(SweepPlan {
+    if left_behind > 0 {
+        warnings.push(format!(
+            "up to {} STRK stays behind as fee reserves in the swept accounts (each keeps enough \
+             to pay for its own drain), so the destination receives a little less than the totals",
+            format_amount(&left_behind.to_string(), 18)
+        ));
+    }
+
+    let mut plan = SweepPlan {
         destination: dest_c,
         network: network.to_string(),
         accounts: plans,
         totals: totals
             .into_iter()
-            .map(|(token, (symbol, amount))| TokenBalance {
+            .map(|(token, (symbol, decimals, amount))| TokenBalance {
                 symbol,
                 token,
+                decimals,
                 amount: amount.to_string(),
             })
             .collect(),
         funding_source: funding_c,
         funding_available: funding_available.to_string(),
         funding_required: funding_required.to_string(),
+        left_behind: left_behind.to_string(),
+        fingerprint: String::new(),
         warnings,
-    })
+    };
+    plan.fingerprint = fingerprint(&plan, tokens);
+    Ok(plan)
 }
 
 /// Estimated cost of moving `balances` out of a deployed account.
@@ -559,6 +722,12 @@ pub fn execution_order(plan: &SweepPlan) -> Vec<&AccountPlan> {
 /// needed, then drained to `plan.destination`. Accounts with blockers are
 /// skipped rather than attempted. One account failing does not stop the rest —
 /// each is independent, and stopping early would strand accounts already funded.
+///
+/// Refuses before touching anything unless `plan` (freshly computed by the
+/// caller) still has the fingerprint the user confirmed and the chain is
+/// allowed. The caller must also ensure only one sweep runs at a time (two
+/// would race on nonces and balances); the desktop holds a lock for it.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     node: &dyn StarknetRpc,
     session: &Mutex<WalletSession>,
@@ -566,9 +735,22 @@ pub async fn execute(
     tokens: &[SweepToken],
     plan: &SweepPlan,
     chain: ChainId,
+    confirmation: &Confirmation,
     on_event: &(dyn Fn(SweepEvent) + Send + Sync),
 ) -> Result<SweepReport, String> {
-    let dest = felt_of(&plan.destination, "destination address")?;
+    if chain == ChainId::Mainnet && !confirmation.allow_mainnet {
+        return Err("the sweep is not enabled on mainnet until it has had its security review \
+                    (issue #14). Run it on Sepolia."
+            .into());
+    }
+    if plan.fingerprint != confirmation.fingerprint {
+        return Err("the chain changed since you reviewed the plan (an account's deploy, top-up or \
+                    skip decision is different now). Nothing was sent — check the plan again and \
+                    re-confirm."
+            .into());
+    }
+    validate_tokens(tokens)?;
+    let dest = validate_destination(&plan.destination)?;
     let funding = accounts
         .iter()
         .find(|a| canon(&felt_of(&a.acct.address, "account").unwrap_or(Felt::ZERO)) == plan.funding_source)
@@ -591,6 +773,7 @@ pub async fn execute(
                 status: "skipped".into(),
                 transactions: Vec::new(),
                 moved: Vec::new(),
+                left_behind: Vec::new(),
                 detail: Some(why),
             });
             continue;
@@ -601,23 +784,37 @@ pub async fn execute(
             None => continue,
         };
 
-        match sweep_one(node, session, input, ap, funding.as_ref(), tokens, &dest, chain, on_event)
+        // Transactions are collected as they are sent, so a failure part-way
+        // (say, top-up landed but deploy failed) still reports what went out.
+        let mut txs = Vec::new();
+        match sweep_one(node, session, input, ap, funding.as_ref(), tokens, &dest, chain, &mut txs, on_event)
             .await
         {
-            Ok(outcome) => {
-                swept += 1;
+            Ok(mut outcome) => {
+                if outcome.status == "swept" {
+                    swept += 1;
+                } else {
+                    skipped += 1;
+                }
+                outcome.transactions = txs;
                 outcomes.push(outcome);
             }
             Err(why) => {
                 on_event(SweepEvent::Failed { address: ap.address.clone(), why: why.clone() });
                 failed += 1;
+                let detail = if txs.is_empty() {
+                    why
+                } else {
+                    format!("{why} — {} transaction(s) were already sent for this account", txs.len())
+                };
                 outcomes.push(AccountOutcome {
                     address: ap.address.clone(),
                     label: ap.label.clone(),
                     status: "failed".into(),
-                    transactions: Vec::new(),
+                    transactions: txs,
                     moved: Vec::new(),
-                    detail: Some(why),
+                    left_behind: Vec::new(),
+                    detail: Some(detail),
                 });
             }
         }
@@ -645,11 +842,30 @@ async fn sweep_one(
     tokens: &[SweepToken],
     dest: &Felt,
     chain: ChainId,
+    txs: &mut Vec<String>,
     on_event: &(dyn Fn(SweepEvent) + Send + Sync),
 ) -> Result<AccountOutcome, String> {
     let acct = &input.acct;
     let addr = felt_of(&acct.address, "account address")?;
-    let mut txs: Vec<String> = Vec::new();
+    if input.deployment.address != addr {
+        return Err("the derived deploy address does not match this account".into());
+    }
+    // Top-ups for this account may not exceed a multiple of what the plan said
+    // it needs, whatever the node now claims fees cost.
+    let planned: u128 = ap.required_gas.parse().unwrap_or(0);
+    let cap = planned.saturating_mul(TOP_UP_CAP_MULTIPLE);
+    let mut topped_up = 0u128;
+    let mut check_cap = |amount: u128| -> Result<(), String> {
+        topped_up = topped_up.saturating_add(amount);
+        if topped_up > cap {
+            Err(format!(
+                "the node now prices this account's fees at more than {TOP_UP_CAP_MULTIPLE}× the \
+                 plan (top-ups {topped_up} > cap {cap}); refusing to fund it. Re-check the plan."
+            ))
+        } else {
+            Ok(())
+        }
+    };
     let step = |s: &str| {
         on_event(SweepEvent::Step {
             address: acct.address.clone(),
@@ -671,6 +887,7 @@ async fn sweep_one(
         let (_, gas) = read_balances(node, &addr, tokens).await?;
         if gas < need {
             let top_up = need - gas;
+            check_cap(top_up)?;
             step("funding the deploy");
             let tx =
                 fund(node, session, funding, &addr, top_up, tokens, chain, on_event).await?;
@@ -680,9 +897,13 @@ async fn sweep_one(
         step("deploying");
         let signed = {
             let s = session.lock().await;
+            // DEPLOY_ACCOUNT's nonce is always 0 by protocol (not a crypto nonce).
             s.sign_deploy_account_for(acct, chain, &invoke_params(Felt::ZERO, &bounds))
                 .map_err(|e| format!("signing the deploy failed: {e}"))?
         };
+        if signed.address != addr {
+            return Err("the signed deploy is for a different address — not broadcasting it".into());
+        }
         let hash = node
             .add_deploy_account(
                 &signed.class_hash,
@@ -711,8 +932,9 @@ async fn sweep_one(
             address: acct.address.clone(),
             label: acct.label.clone(),
             status: "skipped".into(),
-            transactions: txs,
+            transactions: Vec::new(),
             moved: Vec::new(),
+            left_behind: Vec::new(),
             detail: Some("nothing left to move".into()),
         });
     }
@@ -725,6 +947,7 @@ async fn sweep_one(
 
     if gas < reserve {
         let top_up = reserve - gas;
+        check_cap(top_up)?;
         step("funding the transfer");
         let tx = fund(node, session, funding, &addr, top_up, tokens, chain, on_event).await?;
         txs.push(tx);
@@ -737,30 +960,42 @@ async fn sweep_one(
     // Balances changed if we just topped up, so re-read before building the
     // final calls — otherwise the fee-token transfer would use a stale amount.
     let (balances, gas_now) = read_balances(node, &addr, tokens).await?;
-    let fee_amount = gas_now.saturating_sub(reserve);
+    let mut fee_amount = gas_now.saturating_sub(reserve);
+    let dust = |reserve: u128| AccountOutcome {
+        address: acct.address.clone(),
+        label: acct.label.clone(),
+        status: "skipped".into(),
+        transactions: Vec::new(),
+        moved: Vec::new(),
+        left_behind: Vec::new(),
+        detail: Some(format!(
+            "dust: balance {gas_now} does not cover its own transfer fee of about {reserve}"
+        )),
+    };
 
-    let calls = transfer_calls(dest, tokens, &balances, Some(fee_amount))?;
+    let mut calls = transfer_calls(dest, tokens, &balances, Some(fee_amount))?;
     if calls.is_empty() {
-        return Ok(AccountOutcome {
-            address: acct.address.clone(),
-            label: acct.label.clone(),
-            status: "skipped".into(),
-            transactions: txs,
-            moved: Vec::new(),
-            detail: Some(format!(
-                "balance {gas_now} does not cover its own transfer fee of about {reserve}"
-            )),
-        });
+        return Ok(dust(reserve));
     }
 
     // ---- 4. Sign and broadcast the drain. ----------------------------------
     step("sweeping");
-    let encoded = wallet_core::encode_calls(&calls);
     let nonce = node.get_nonce(&addr).await.map_err(|e| e.to_string())?;
     let bounds = node
-        .estimate_invoke(&addr, &encoded, &nonce)
+        .estimate_invoke(&addr, &wallet_core::encode_calls(&calls), &nonce)
         .await
         .map_err(|e| format!("transfer estimate failed: {e}"))?;
+    // The fee is charged from what stays behind, so what stays behind must
+    // cover the most these bounds can cost. If the final estimate came in
+    // above the reserve, keep more back (the amount barely changes the gas).
+    if max_fee(&bounds) > reserve {
+        reserve = max_fee(&bounds);
+        fee_amount = gas_now.saturating_sub(reserve);
+        calls = transfer_calls(dest, tokens, &balances, Some(fee_amount))?;
+        if calls.is_empty() {
+            return Ok(dust(reserve));
+        }
+    }
     let signed = {
         let s = session.lock().await;
         s.sign_invoke_for(acct, &calls, chain, &invoke_params(nonce, &bounds))
@@ -788,17 +1023,30 @@ async fn sweep_one(
             (amount > 0).then(|| TokenBalance {
                 symbol: b.symbol.clone(),
                 token: b.token.clone(),
+                decimals: b.decimals,
                 amount: amount.to_string(),
             })
         })
+        .collect();
+    let fee_token = tokens.iter().find(|t| t.is_fee_token);
+    let left_behind = fee_token
+        .filter(|_| gas_now > fee_amount)
+        .map(|t| TokenBalance {
+            symbol: t.symbol.clone(),
+            token: t.address.clone(),
+            decimals: t.decimals,
+            amount: (gas_now - fee_amount).to_string(),
+        })
+        .into_iter()
         .collect();
 
     Ok(AccountOutcome {
         address: acct.address.clone(),
         label: acct.label.clone(),
         status: "swept".into(),
-        transactions: txs,
+        transactions: Vec::new(),
         moved,
+        left_behind,
         detail: None,
     })
 }
