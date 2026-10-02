@@ -19,7 +19,6 @@ pub mod node;
 pub mod server;
 pub mod session;
 pub mod store;
-pub mod sweep;
 pub mod backoff;
 pub mod usage;
 
@@ -33,13 +32,8 @@ pub use jsonrpc::{Request, Response, RpcErrorObject};
 pub use log::{now_unix_ms, LogEntry, RequestLog};
 pub use node::{
     declare_v3_tx_json, invoke_v3_tx_json, FeeBounds, HttpStarknetRpc, NodeError, StarknetRpc,
-    TxState,
 };
 pub use server::{bind_loopback, router, transport_guard, write_port_lock};
 pub use backoff::PassphraseBackoff;
 pub use session::{reveal_for_session, reveal_mnemonic, VaultContents, WalletSession};
 pub use store::VaultStore;
-pub use sweep::{
-    AccountOutcome, AccountPlan, SweepAccount, SweepEvent, SweepPlan, SweepReport, SweepToken,
-    TokenBalance,
-};
