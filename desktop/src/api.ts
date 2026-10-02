@@ -8,6 +8,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export interface Status {
   locked: boolean;
   needs_onboarding: boolean;
+  /** A vault exists but this build cannot open its version (see #16). */
+  vault_unsupported: boolean;
   network: string;
   version: string;
   service_url: string;
@@ -122,6 +124,8 @@ export const api = {
   import: (phrase: string) => invoke<void>("import", { phrase }),
   finalizeSetup: (passphrase: string) => invoke<void>("finalize_setup", { passphrase }),
   unlock: (passphrase: string) => invoke<void>("unlock", { passphrase }),
+  /** Move an unopenable vault aside (renames, never deletes); returns its path. */
+  archiveUnsupportedVault: () => invoke<string>("archive_unsupported_vault"),
   lock: () => invoke<void>("lock"),
   setNetwork: (network: "mainnet" | "testnet") => invoke<void>("set_network", { network }),
   getSettings: () => invoke<Settings>("get_settings"),

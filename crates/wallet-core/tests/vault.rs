@@ -4,7 +4,7 @@
 //! Uses the public BIP-39 test vector only; no real secrets.
 
 use wallet_core::accounts::{AccountRef, Registry};
-use wallet_core::{Domain, EncryptedVault};
+use wallet_core::{CoreError, Domain, EncryptedVault};
 
 const TEST_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -114,4 +114,42 @@ fn seed_and_registry_seal_cycle() {
 
     // A different agent client sees nothing.
     assert_eq!(restored.registry.scoped_for(Some("other")).count(), 0);
+}
+
+/// A vault from an older format must be reported as *unsupported*, not as a bad
+/// passphrase — even when the passphrase is correct.
+///
+/// This is the distinction the desktop unlock screen collapsed: it mapped every
+/// failure to "incorrect passphrase or corrupt vault", so after the #16 version
+/// bump a perfectly intact v1 vault told the user it might be corrupt. That is
+/// both false and dangerous, since the obvious response is to delete it.
+#[test]
+fn an_older_vault_version_is_unsupported_not_a_bad_passphrase() {
+    let sealed = EncryptedVault::seal("passphrase", b"payload").unwrap();
+    assert!(sealed.is_supported_version());
+    assert_eq!(sealed.version, EncryptedVault::supported_version());
+
+    // Same vault, older format marker.
+    let mut older = sealed.clone();
+    older.version = sealed.version - 1;
+
+    assert!(!older.is_supported_version());
+    assert!(
+        matches!(
+            older.open("passphrase"),
+            Err(CoreError::UnsupportedVaultVersion(v)) if v == sealed.version - 1
+        ),
+        "the right passphrase on an old vault must still say 'unsupported version'",
+    );
+}
+
+/// And the inverse: a wrong passphrase on a current vault is still a passphrase
+/// error, so the two cases stay distinguishable in both directions.
+#[test]
+fn a_wrong_passphrase_on_a_current_vault_is_still_a_passphrase_error() {
+    let sealed = EncryptedVault::seal("passphrase", b"payload").unwrap();
+    assert!(matches!(
+        sealed.open("wrong"),
+        Err(CoreError::BadPassphraseOrCorrupt)
+    ));
 }
