@@ -50,7 +50,7 @@ pub fn public_key(
     passphrase: Option<&str>,
 ) -> Result<Felt> {
     let sk = private_key(mnemonic, domain, index, passphrase)?;
-    Ok(stark_public_key(&sk))
+    stark_public_key(&sk).map_err(|_| CoreError::Derivation)
 }
 
 /// Counterfactual address for `(domain, index)` under `contract` on `chain`.
