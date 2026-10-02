@@ -2,7 +2,7 @@
   "_provenance": {
     "purpose": "Cross-wallet conformance: seed -> public key -> account address. strkd asserts against this in tests/conformance.rs; bramble can adopt the same file.",
     "generated_by": "cargo run --example conformance_vectors (wallet-core)",
-    "verified_against": "starknet.js hash.calculateContractAddressFromHash(salt, class_hash, [public_key], 0) — exactly the call bramble makes. All vectors agreed when generated.",
+    "verified_against": "conformance/verify.mjs (pinned starknet.js + @scure/bip32 + @scure/bip39), run in CI: re-derives every public key from the mnemonic (BIP-32 path -> EIP-2645 grindKey), every address via hash.calculateContractAddressFromHash (exactly the call bramble makes), every SNIP-12 digest via typedData.getMessageHash and every invoke hash via hash.calculateInvokeTransactionHash, independently of krusty.",
     "warning": "Regenerating is not verifying. If a value here changes, re-check it against an independent implementation before committing, or this file just asserts strkd against itself.",
     "seed": "Published BIP-39 test vector. Never a real seed — see spec §14.",
     "issue": "https://github.com/starknet-innovation/strkd/issues/17"
@@ -68,6 +68,214 @@
       "path": "m/44'/9004'/1095192148'/0/3",
       "public_key": "0x07b56854ac714f26b757c5df746691bb9a00fdc45c449b4b3efc610d4144570e",
       "address": "0x0760f30628b27a3a42a8e7374e01c814ebdb3d29ba5750be6a89bdab5a4c6eda"
+    }
+  ],
+  "typed_data_vectors": [
+    {
+      "account_address": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+      "typed_data": {
+        "types": {
+          "StarknetDomain": [
+            {
+              "name": "name",
+              "type": "shortstring"
+            },
+            {
+              "name": "version",
+              "type": "shortstring"
+            },
+            {
+              "name": "chainId",
+              "type": "shortstring"
+            },
+            {
+              "name": "revision",
+              "type": "shortstring"
+            }
+          ],
+          "Message": [
+            {
+              "name": "contents",
+              "type": "felt"
+            }
+          ]
+        },
+        "primaryType": "Message",
+        "domain": {
+          "name": "strkd",
+          "version": "1",
+          "chainId": "SN_SEPOLIA",
+          "revision": "1"
+        },
+        "message": {
+          "contents": "0x1"
+        }
+      },
+      "message_hash": "0x02e3d857f3f9e5d3c23b3268017e1c1ea65baba457b0ec82ec2e63e8de7d4869"
+    },
+    {
+      "account_address": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+      "typed_data": {
+        "types": {
+          "StarknetDomain": [
+            {
+              "name": "name",
+              "type": "shortstring"
+            },
+            {
+              "name": "version",
+              "type": "shortstring"
+            },
+            {
+              "name": "chainId",
+              "type": "shortstring"
+            },
+            {
+              "name": "revision",
+              "type": "shortstring"
+            }
+          ],
+          "Approval": [
+            {
+              "name": "proposal",
+              "type": "Proposal"
+            },
+            {
+              "name": "approver",
+              "type": "ContractAddress"
+            },
+            {
+              "name": "weight",
+              "type": "u128"
+            },
+            {
+              "name": "final",
+              "type": "bool"
+            },
+            {
+              "name": "tags",
+              "type": "felt*"
+            },
+            {
+              "name": "note",
+              "type": "shortstring"
+            }
+          ],
+          "Proposal": [
+            {
+              "name": "id",
+              "type": "felt"
+            },
+            {
+              "name": "target",
+              "type": "ContractAddress"
+            },
+            {
+              "name": "deadline",
+              "type": "timestamp"
+            },
+            {
+              "name": "delta",
+              "type": "i128"
+            }
+          ]
+        },
+        "primaryType": "Approval",
+        "domain": {
+          "name": "committee",
+          "version": "2",
+          "chainId": "SN_MAIN",
+          "revision": "1"
+        },
+        "message": {
+          "proposal": {
+            "id": "0x2a",
+            "target": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
+            "deadline": "1700000000",
+            "delta": "-5"
+          },
+          "approver": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+          "weight": "1000000",
+          "final": true,
+          "tags": [
+            "0x1",
+            "0x2",
+            "0x3"
+          ],
+          "note": "approve"
+        }
+      },
+      "message_hash": "0x03e38c65f6d5055f69f8c6879b58e8619541d1e6858333da9d5a9d2243923f3c"
+    }
+  ],
+  "known_divergences": [
+    "SNIP-12 rev 1 `string` (ByteArray): krusty's digest differs from starknet.js typedData.getMessageHash, so a strkd signature over a message with a `string` field fails is_valid_signature.",
+    "SNIP-12 rev 1 `selector`: krusty rejects the type entirely."
+  ],
+  "invoke_v3_vectors": [
+    {
+      "chain_id": "SN_SEPOLIA",
+      "sender_address": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+      "calldata": [
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+        "0x0083afd3f4caedc6eebf44246fe54e38c95e3179a5ec9ea81740eca5b482d12e",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+        "0x024680b5c991308b71103b02c2b17507e30ce70fc639fa9ef4de873c634f8270",
+        "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      ],
+      "nonce": "0x7",
+      "tip": "0x3",
+      "resource_bounds": {
+        "l1_gas": {
+          "max_amount": "0x1000",
+          "max_price_per_unit": "0x2540be400"
+        },
+        "l2_gas": {
+          "max_amount": "0x5f5e100",
+          "max_price_per_unit": "0x3b9aca00"
+        },
+        "l1_data_gas": {
+          "max_amount": "0x200",
+          "max_price_per_unit": "0x174876e800"
+        }
+      },
+      "nonce_data_availability_mode": "L1",
+      "fee_data_availability_mode": "L1",
+      "transaction_hash": "0x0586763b2045ce54fb1700e0ab1e24a62eccb063e1f2f460073812d5fba24988"
+    },
+    {
+      "chain_id": "SN_MAIN",
+      "sender_address": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
+      "calldata": [
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+        "0x0083afd3f4caedc6eebf44246fe54e38c95e3179a5ec9ea81740eca5b482d12e",
+        "0x0000000000000000000000000000000000000000000000000000000000000003",
+        "0x024680b5c991308b71103b02c2b17507e30ce70fc639fa9ef4de873c634f8270",
+        "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      ],
+      "nonce": "0x7",
+      "tip": "0x3",
+      "resource_bounds": {
+        "l1_gas": {
+          "max_amount": "0x1000",
+          "max_price_per_unit": "0x2540be400"
+        },
+        "l2_gas": {
+          "max_amount": "0x5f5e100",
+          "max_price_per_unit": "0x3b9aca00"
+        },
+        "l1_data_gas": {
+          "max_amount": "0x200",
+          "max_price_per_unit": "0x174876e800"
+        }
+      },
+      "nonce_data_availability_mode": "L1",
+      "fee_data_availability_mode": "L1",
+      "transaction_hash": "0x04aa9b737070c4c2e2d60a37e94d983bb0dd2d76030161912a6457ae53cb9630"
     }
   ]
 }
