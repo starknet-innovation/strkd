@@ -204,3 +204,34 @@ Icons are generated from `app-icon.png` via `npm run tauri icon app-icon.png`.
 - BIP-39 passphrase (distinct from the vault passphrase) is not surfaced in
   onboarding yet.
 - No `companion_unlock` over RPC — unlock is UI-only (by design for now).
+
+## Design tokens
+
+`src/styles.css` carries bramble's design system, ported from
+`packages/presentation/ui-kit/src/theme/`: the `SPACE` / `RADIUS` / `FONT` /
+`TYPE` / `WEIGHT` / `TRACKING` / `MOTION` / `CONTROL` scales as CSS custom
+properties, plus both skins — `midnight` (the default, as in bramble) and
+`daylight`, opt-in via `data-theme="light"` on `<html>`.
+
+The system is deliberately **achromatic**: hierarchy comes from contrast,
+weight, space and motion, with colour reserved for positive / danger / degraded
+semantics. Do not reintroduce a brand hue for emphasis — avoiding one is the
+point of bramble's language. The accent is near-white in midnight and near-black
+in daylight, so ink on an accent surface must come from `--bramble-accent-text`,
+never a literal.
+
+The legacy `--bg` / `--panel` / `--line` / `--text` / `--muted` / `--accent` /
+`--ok` / `--err` variables are kept as aliases onto skin tokens, so existing
+rules keep working and a skin swap moves everything at once.
+
+The button vocabulary mirrors bramble's `controls.ts`: variants `primary` /
+`secondary` / `ghost`, a `small` size, and `danger` as a **tone** that combines
+with a variant rather than a fourth variant. The base `button` rule *is* the
+secondary treatment, so a button without a variant class is still on-system.
+The templates themselves cannot be shared — bramble renders escaped HTML
+strings, this is React — so this is the same contract reimplemented.
+
+Reduced motion is honoured by zeroing the duration tokens.
+
+See [issues #18 and #19](https://github.com/starknet-innovation/strkd/issues/18)
+and [`bramble-convergence.md`](../project/bramble-convergence.md) §5.5.

@@ -69,7 +69,7 @@ function Row({ p }: { p: AccountPlan }) {
           <div className="muted">keeps ≤ {fmt(p.fee_reserve, 18)} STRK for its own fee</div>
         )}
         {blocked && (
-          <div style={{ color: "var(--err)", fontSize: 11 }}>{p.blockers.join("; ")}</div>
+          <div style={{ color: "var(--bramble-danger)", fontSize: "var(--type-micro)" }}>{p.blockers.join("; ")}</div>
         )}
       </td>
     </tr>
@@ -151,18 +151,18 @@ export function Sweep({ status }: { status: Status | null }) {
 
       <div
         style={{
-          border: "1px solid var(--err)",
-          borderRadius: 6,
-          padding: "8px 10px",
-          margin: "10px 0",
-          fontSize: 12,
+          border: "1px solid var(--bramble-danger)",
+          borderRadius: "var(--radius-sm)",
+          padding: "var(--space-sm) var(--space-md)",
+          margin: "var(--space-md) 0",
+          fontSize: "var(--type-caption)",
         }}
       >
         <strong>This cannot be undone.</strong> Funds are sent to the address below and deploys
         are permanent. Check the destination character by character — a typo sends everything to
         an address nobody controls.
         {isMainnet && (
-          <div style={{ marginTop: 6, color: "var(--err)" }}>
+          <div style={{ marginTop: "var(--space-xs)", color: "var(--bramble-danger)" }}>
             <strong>You are on mainnet.</strong> This moves real funds.
           </div>
         )}
@@ -172,7 +172,8 @@ export function Sweep({ status }: { status: Status | null }) {
         Destination address
       </label>
       <input
-        style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+        className="input"
+        style={{ fontFamily: "var(--font-mono)" }}
         placeholder="0x…"
         value={destination}
         onChange={(e) => setDestination(e.target.value)}
@@ -185,7 +186,7 @@ export function Sweep({ status }: { status: Status | null }) {
         </button>
       </div>
 
-      {err && <p style={{ color: "var(--err)" }}>{err}</p>}
+      {err && <p style={{ color: "var(--bramble-danger)" }}>{err}</p>}
 
       {plan && (
         <>
@@ -194,7 +195,7 @@ export function Sweep({ status }: { status: Status | null }) {
           </h3>
 
           {plan.warnings.map((w) => (
-            <p key={w} style={{ color: "var(--err)", fontSize: 12 }}>
+            <p key={w} style={{ color: "var(--bramble-danger)", fontSize: "var(--type-caption)" }}>
               ⚠ {w}
             </p>
           ))}
@@ -239,13 +240,15 @@ export function Sweep({ status }: { status: Status | null }) {
                 Enter the destination address again to confirm
               </label>
               <input
-                style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+                className="input"
+                style={{ fontFamily: "var(--font-mono)" }}
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
                 placeholder="0x…"
                 spellCheck={false}
               />
               <button
+                className="primary danger"
                 style={{ marginLeft: 8 }}
                 onClick={doExecute}
                 disabled={!confirmed || busy !== ""}
@@ -306,7 +309,7 @@ export function Sweep({ status }: { status: Status | null }) {
                       </div>
                     )}
                   </td>
-                  <td style={{ fontSize: 11, fontFamily: "ui-monospace, monospace" }}>
+                  <td style={{ fontSize: "var(--type-micro)", fontFamily: "var(--font-mono)" }}>
                     {o.transactions.map((t) => (
                       <div key={t}>{short(t)}</div>
                     ))}
