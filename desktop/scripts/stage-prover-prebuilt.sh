@@ -91,7 +91,9 @@ TARBALL="snip36-${PLATFORM}.tar.gz"
 curl -fsSL -o "$BINDIR/$TARBALL" \
   "https://github.com/${SNIP36_REPO}/releases/download/${SNIP36_RELEASE}/${TARBALL}"
 expect_sha256 "$BINDIR/$TARBALL" "$CLI_SHA" "$TARBALL"
-tar xzf "$BINDIR/$TARBALL" -C "$BINDIR" snip36
+# Extract everything: members are stored as ./snip36, which GNU tar won't
+# match by the bare name (BSD tar does). We only copy snip36 out below.
+tar xzf "$BINDIR/$TARBALL" -C "$BINDIR"
 [ -x "$BINDIR/snip36" ] || { echo "error: snip36 not found in $TARBALL" >&2; exit 1; }
 
 # Fresh bundle dir, but keep the tracked README that documents it.
