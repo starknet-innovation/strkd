@@ -280,9 +280,10 @@ button.primary {
   font-weight: var(--weight-semibold);
 }
 
-/* Explicit alias for the base treatment, so intent can be stated in markup. */
-button.secondary:hover:not(:disabled),
-button:hover:not(:disabled) {
+/* Explicit alias for the base treatment, so intent can be stated in markup.
+   Zero specificity (:where) so the base hover never overrides a tone or state
+   class: a danger button keeps its red border, an active subtab its accent. */
+button:where(:hover:not(:disabled)) {
   border-color: var(--bramble-muted);
 }
 
@@ -450,6 +451,13 @@ button.small,
   40% { transform: translateX(4px); }
   60% { transform: translateX(-3px); }
   80% { transform: translateX(3px); }
+}
+/* Keyframe animations don't read the motion tokens; stop this one outright.
+   Must follow the .wiggle rule above (same specificity, later wins). */
+@media (prefers-reduced-motion: reduce) {
+  .wiggle {
+    animation: none;
+  }
 }
 
 .row {

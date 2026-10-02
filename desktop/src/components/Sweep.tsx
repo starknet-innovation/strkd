@@ -241,7 +241,7 @@ export function Sweep({ status }: { status: Status | null }) {
               </label>
               <input
                 className="input"
-                style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
+                style={{ fontFamily: "var(--font-mono)" }}
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
                 placeholder="0x…"
