@@ -256,9 +256,17 @@ normal invoke." },
         ],
 
         "deferred": {
-            "note": "These exist in the Starknet wallet spec but return -32601 here for now.",
-            "methods": ["wallet_addStarknetChain", "wallet_strk20PrepareInvoke",
-                        "wallet_strk20InvokeTransaction", "wallet_strk20Balances"]
+            "note": "In the Starknet wallet spec but not built yet; returns -32601. \
+wallet_addStarknetChain needs a chain id beyond Sepolia/Mainnet.",
+            "methods": ["wallet_addStarknetChain"]
+        },
+
+        "out_of_scope": {
+            "note": "In the Starknet wallet spec but deliberately not implemented; returns -32601. \
+strkd's backend cannot express the STRK20 privacy surface, and shipping partial semantics \
+under the standard names would mean the same call meant different things in different wallets.",
+            "methods": ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction",
+                        "wallet_strk20Balances"]
         },
 
         "errors": {

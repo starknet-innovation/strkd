@@ -490,6 +490,19 @@ async fn deferred_methods_report_not_implemented() {
     )
     .await;
     assert_eq!(err_code(&resp), -32601);
+    assert!(resp.error.unwrap().message.contains("later phase"));
+}
+
+#[tokio::test]
+async fn parked_privacy_methods_say_out_of_scope_not_later() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction", "wallet_strk20Balances"] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(err_code(&resp), -32601, "{method}");
+        let msg = resp.error.unwrap().message;
+        assert!(msg.contains("out of scope") && !msg.contains("later phase"), "{method}: {msg}");
+    }
 }
 
 /// A well-formed sign-only invoke request for the user account.

@@ -41,10 +41,29 @@ GUI-only, needs runtime + permission verification.
 - **Windows** — `0600` file perms + tray are unix/macOS-focused; revisit for
   Windows packaging.
 
-## Phase 3
+## Privacy — parked
 
-- **Tongo / STRK20 privacy methods** — `wallet_strk20PrepareInvoke`,
-  `wallet_strk20InvokeTransaction`, `wallet_strk20Balances` via `krusty-kms-sdk`.
+**Out of scope, not merely deferred.** See
+[issue #20](https://github.com/starknet-innovation/strkd/issues/20) and
+[`bramble-convergence.md`](./bramble-convergence.md) §5.6.
+
+An implementation exists on `feat/strk20-tongo-phase3` (PR #11, unmerged):
+`wallet_strk20PrepareInvoke` and `wallet_strk20InvokeTransaction` over Tongo via
+`krusty-kms-sdk`. It is not being merged, because Tongo cannot express the
+standard STRK20 surface — it is a per-token encrypted balance where the spec
+models a note-based pool, so `invoke`, `subaccount_invoke` and `OPEN` amounts
+are parsed and rejected and `wallet_strk20SubaccountCommitment` stays `-32601`.
+
+Bramble implements that surface properly against the canonical mainnet pool
+through the official Starknet Privacy SDK. Two independent privacy systems are
+not interoperable in any case: different protocols, different contracts, value
+shielded in one is unreachable from the other. Shipping strkd's partial version
+on the **standard method names** would additionally mean the same call meant
+different things in the two wallets.
+
+If privacy returns, the options are adopting the official SDK (browser
+TypeScript against a Rust wallet — a real architectural decision) or keeping
+Tongo under `companion_*` names so the standard surface stays free.
 
 ## Verification owed
 

@@ -103,7 +103,9 @@ shared default for everyone.
 
 Still **deferred** (return `-32601`): `addStarknetChain` (arbitrary custom chains
 need a generalized `ChainId` beyond Sepolia/Mainnet) and the `strk20*` privacy
-methods (Phase 3).
+methods, which are **parked** rather than pending — see
+[`backlog.md`](../project/backlog.md) and
+[issue #20](https://github.com/starknet-innovation/strkd/issues/20).
 
 ## Node (broadcast & fee estimation)
 
