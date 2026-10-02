@@ -37,7 +37,7 @@ Lives in [`docs/project/`](./project/).
 - [`project/workflow.md`](./project/workflow.md) — prescriptive process: how to
   log progress, pick up work, and the security gates.
 - [`project/backlog.md`](./project/backlog.md) — deferred work (e.g. fund sweep,
-  Phase 3) with context to pick it up later.
+  parked privacy) with context to pick it up later.
 
 ## Quick routes
 

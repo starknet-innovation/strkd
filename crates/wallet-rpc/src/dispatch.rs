@@ -319,12 +319,15 @@ struct Handled {
 ///   call meant different things in strkd and bramble. The names stay free for
 ///   a real implementation.
 fn is_deferred(method: &str) -> bool {
+    method == "wallet_addStarknetChain" || is_out_of_scope(method)
+}
+
+/// The parked privacy surface (strkd#20): unlike `wallet_addStarknetChain`,
+/// these are not coming in a later phase, and the error says so.
+fn is_out_of_scope(method: &str) -> bool {
     matches!(
         method,
-        "wallet_addStarknetChain"
-            | "wallet_strk20InvokeTransaction"
-            | "wallet_strk20PrepareInvoke"
-            | "wallet_strk20Balances"
+        "wallet_strk20InvokeTransaction" | "wallet_strk20PrepareInvoke" | "wallet_strk20Balances"
     )
 }
 
@@ -447,9 +450,11 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 
     if is_deferred(method) {
         return Handled {
-            result: Err(WalletRpcError::NotImplemented(format!(
-                "{method} is planned for a later phase"
-            ))),
+            result: Err(WalletRpcError::NotImplemented(if is_out_of_scope(method) {
+                format!("{method} is out of scope: strkd does not implement the STRK20 privacy surface (strkd#20)")
+            } else {
+                format!("{method} is planned for a later phase")
+            })),
             decision: "n/a".into(),
             client: Some(client_label),
         };
