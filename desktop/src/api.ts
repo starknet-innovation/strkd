@@ -8,6 +8,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export interface Status {
   locked: boolean;
   needs_onboarding: boolean;
+  /** A vault exists but this build cannot open its version (see #16). */
+  vault_unsupported: boolean;
   network: string;
   version: string;
   service_url: string;
@@ -122,6 +124,8 @@ export const api = {
   import: (phrase: string) => invoke<void>("import", { phrase }),
   finalizeSetup: (passphrase: string) => invoke<void>("finalize_setup", { passphrase }),
   unlock: (passphrase: string) => invoke<void>("unlock", { passphrase }),
+  /** Move an unopenable vault aside (renames, never deletes); returns its path. */
+  archiveUnsupportedVault: () => invoke<string>("archive_unsupported_vault"),
   lock: () => invoke<void>("lock"),
   setNetwork: (network: "mainnet" | "testnet") => invoke<void>("set_network", { network }),
   getSettings: () => invoke<Settings>("get_settings"),
@@ -140,6 +144,11 @@ export const api = {
   respondApproval: (id: number, approved: boolean) =>
     invoke<void>("respond_approval", { id, approved }),
 
+  // Recovery-phrase reveal. IPC only — the loopback service has no equivalent
+  // and must never get one. Re-authenticates against the on-disk vault, so a
+  // wrong passphrase fails at the AEAD tag rather than a comparison.
+  revealSeed: (passphrase: string) => invoke<string>("reveal_seed", { passphrase }),
+
   // On-device proving companion (IPC-only; agents prove via companion_prove on
   // the loopback service). Settings carry an API key, so they never leave IPC.
   proverStatus: () => invoke<ProverStatus>("prover_status"),
@@ -151,7 +160,102 @@ export const api = {
   clearStorage: () => invoke<number>("clear_storage"),
   listProofs: () => invoke<ProofSummary[]>("list_proofs"),
   proofDetail: (jobId: string) => invoke<ProofRecord | null>("proof_detail", { jobId }),
+
+  // Temporary asset recovery (issue #14). `sweepPlan` is read-only; only
+  // `sweepExecute` moves anything, and it is irreversible.
+  sweepDefaultTokens: () => invoke<SweepToken[]>("sweep_default_tokens"),
+  sweepPlan: (destination: string, tokens?: SweepToken[]) =>
+    invoke<SweepPlan>("sweep_plan", { destination, tokens }),
+  // `fingerprint` is the confirmed plan's: the backend re-plans and refuses if
+  // what it would do has changed since.
+  sweepExecute: (destination: string, fingerprint: string, tokens?: SweepToken[]) =>
+    invoke<SweepReport>("sweep_execute", { destination, fingerprint, tokens }),
 };
+
+/// Progress from a running sweep. Returns an unlisten fn.
+export function onSweepProgress(cb: (e: SweepEvent) => void): Promise<UnlistenFn> {
+  return listen<SweepEvent>("sweep-progress", (e) => cb(e.payload));
+}
+
+
+// --- Temporary: ERC-20 sweep (issue #14). Remove with the Sweep panel after
+// the derivation cutover in issue #16. ---
+
+export interface SweepToken {
+  address: string;
+  symbol: string;
+  decimals: number;
+  is_fee_token: boolean;
+}
+
+export interface TokenBalance {
+  symbol: string;
+  token: string;
+  decimals: number;
+  /** Raw amount in the token's smallest unit (string: u128 exceeds JS precision). */
+  amount: string;
+}
+
+export interface AccountPlan {
+  address: string;
+  label: string;
+  domain: string;
+  index: number;
+  deployed: boolean;
+  is_funding_source: boolean;
+  is_destination: boolean;
+  balances: TokenBalance[];
+  gas: string;
+  needs_deploy: boolean;
+  needs_gas: string;
+  required_gas: string;
+  /** Fee token kept back in this account to pay for its own drain (upper bound). */
+  fee_reserve: string;
+  blockers: string[];
+}
+
+export interface SweepPlan {
+  destination: string;
+  network: string;
+  accounts: AccountPlan[];
+  totals: TokenBalance[];
+  funding_source: string;
+  funding_available: string;
+  funding_required: string;
+  /** Fee token that stays behind as reserves (upper bound). */
+  left_behind: string;
+  /** Pass back to sweepExecute: the backend refuses if the plan has changed. */
+  fingerprint: string;
+  warnings: string[];
+}
+
+export interface AccountOutcome {
+  address: string;
+  label: string;
+  status: "swept" | "skipped" | "failed";
+  transactions: string[];
+  moved: TokenBalance[];
+  left_behind: TokenBalance[];
+  detail?: string | null;
+}
+
+export interface SweepReport {
+  destination: string;
+  network: string;
+  outcomes: AccountOutcome[];
+  swept: number;
+  skipped: number;
+  failed: number;
+}
+
+export type SweepEvent =
+  | { kind: "started"; accounts: number }
+  | { kind: "step"; address: string; label: string; step: string }
+  | { kind: "sent"; address: string; what: string; tx: string }
+  | { kind: "waiting"; tx: string }
+  | { kind: "skipped"; address: string; why: string }
+  | { kind: "failed"; address: string; why: string }
+  | { kind: "done"; swept: number; skipped: number; failed: number };
 
 /// Subscribe to approval prompts pushed from the service. Returns an unlisten fn.
 export function onApprovalRequest(cb: (req: ApprovalRequest) => void): Promise<UnlistenFn> {

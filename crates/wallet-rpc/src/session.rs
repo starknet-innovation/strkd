@@ -14,7 +14,8 @@
 use serde::{Deserialize, Serialize};
 use wallet_core::{
     address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_invoke_v3,
-    sign_typed_data, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain, EncryptedVault,
+    sign_typed_data, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
+    EncryptedVault,
     Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature,
 };
 use zeroize::Zeroizing;
@@ -39,6 +40,62 @@ struct Unlocked {
 pub struct WalletSession {
     chain: ChainId,
     unlocked: Option<Unlocked>,
+}
+
+/// Decrypt the on-disk vault with a **freshly supplied** passphrase and return
+/// the recovery phrase.
+///
+/// ## Why this is a free function and not a `WalletSession` method
+///
+/// The unlocked session already holds the mnemonic, so a method could hand it
+/// back without proving anything. That would make "reveal" a function of *being
+/// unlocked*, and the wallet auto-unlocks for the length of a session. Going
+/// back to the vault instead makes re-authentication **cryptographic**: the
+/// passphrase is only right if AES-GCM authenticates the ciphertext. There is no
+/// comparison to get wrong and no timing side-channel in a string equality.
+///
+/// ## Why this is not reachable over RPC
+///
+/// It is deliberately absent from [`crate::dispatch`] and from the usage doc.
+/// strkd's entire premise is that the loopback service never returns key
+/// material — spec §5.1 and §10 — and that service is reachable by any local
+/// process, including the AI agents it exists to serve. This function is for the
+/// desktop app's own IPC surface only, behind a screen the user drives.
+/// **Do not add a `wallet_*` or `companion_*` method that calls it.**
+///
+/// The caller is responsible for not logging, persisting, or transmitting the
+/// result. The desktop command logs that a reveal happened, never what it
+/// returned.
+pub fn reveal_mnemonic(
+    vault: &EncryptedVault,
+    passphrase: &str,
+) -> Result<Zeroizing<String>, WalletRpcError> {
+    // Wrong passphrase fails here, at the AEAD tag — no separate check needed.
+    // AES-GCM can't tell a wrong key from a damaged file, so neither can we.
+    let plaintext = vault.open(passphrase).map_err(|_| {
+        WalletRpcError::InvalidRequest("wrong passphrase (or the vault file is damaged)".into())
+    })?;
+    let contents: VaultContents = serde_json::from_slice(&plaintext)
+        .map_err(|_| WalletRpcError::Unknown("vault contents are unreadable".into()))?;
+    // Moves the String's buffer into Zeroizing rather than copying it, so the
+    // only heap copy is the one that gets wiped on drop. `plaintext` is already
+    // Zeroizing.
+    Ok(Zeroizing::new(contents.mnemonic))
+}
+
+/// The desktop's reveal policy: refused while `session` is locked — reveal sits
+/// behind an unlocked app, so an unattended lock screen never offers it — and
+/// otherwise [`reveal_mnemonic`] with the freshly supplied passphrase (being
+/// unlocked is necessary, never sufficient). Same RPC caveat: IPC-only.
+pub fn reveal_for_session(
+    session: &WalletSession,
+    vault: &EncryptedVault,
+    passphrase: &str,
+) -> Result<Zeroizing<String>, WalletRpcError> {
+    if session.is_locked() {
+        return Err(WalletRpcError::Locked);
+    }
+    reveal_mnemonic(vault, passphrase)
 }
 
 impl WalletSession {
@@ -139,8 +196,15 @@ impl WalletSession {
         account: &AccountRef,
     ) -> Result<DeploymentData, WalletRpcError> {
         let u = self.require_unlocked()?;
-        deployment_data(&u.mnemonic, account.domain, account.index, None, self.chain)
-            .map_err(WalletRpcError::from)
+        deployment_data(
+            &u.mnemonic,
+            account.domain,
+            account.index,
+            None,
+            self.chain,
+            account.contract,
+        )
+        .map_err(WalletRpcError::from)
     }
 
     /// Sign SNIP-12 typed data with the given account's key.
@@ -184,6 +248,7 @@ impl WalletSession {
             calls,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -211,6 +276,7 @@ impl WalletSession {
             compiled_class_hash,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -231,6 +297,7 @@ impl WalletSession {
             None,
             chain,
             params,
+            account.contract,
         )
         .map_err(WalletRpcError::from)
     }
@@ -244,13 +311,16 @@ impl WalletSession {
         let chain = self.chain;
         let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
         let index = u.registry.next_index(Domain::Agent);
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::Agent, index, None, chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr =
+            wallet_core::account_address(&u.mnemonic, Domain::Agent, index, None, chain, contract)
+                .map_err(WalletRpcError::from)?;
         let account = AccountRef {
             domain: Domain::Agent,
             index,
             address: address_hex(&addr),
             label: label.into(),
+            contract,
             owner_client_id: Some(client_id.to_string()),
         };
         u.registry.add(account.clone());
@@ -264,13 +334,22 @@ impl WalletSession {
     /// own accounts, never spend from an arbitrary one.
     pub fn manager_account(&self, index: u32) -> Result<AccountRef, WalletRpcError> {
         let u = self.require_unlocked()?;
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::User, index, None, self.chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr = wallet_core::account_address(
+            &u.mnemonic,
+            Domain::User,
+            index,
+            None,
+            self.chain,
+            contract,
+        )
+        .map_err(WalletRpcError::from)?;
         Ok(AccountRef {
             domain: Domain::User,
             index,
             address: address_hex(&addr),
             label: "manager".into(),
+            contract,
             owner_client_id: None,
         })
     }
@@ -284,13 +363,16 @@ impl WalletSession {
         let chain = self.chain;
         let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
         let index = u.registry.next_index(Domain::User);
-        let addr = wallet_core::oz_address(&u.mnemonic, Domain::User, index, None, chain)
-            .map_err(WalletRpcError::from)?;
+        let contract = AccountContract::default();
+        let addr =
+            wallet_core::account_address(&u.mnemonic, Domain::User, index, None, chain, contract)
+                .map_err(WalletRpcError::from)?;
         let account = AccountRef {
             domain: Domain::User,
             index,
             address: address_hex(&addr),
             label: label.into(),
+            contract,
             owner_client_id: None,
         };
         u.registry.add(account.clone());

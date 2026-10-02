@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use wallet_core::{
-    address_hex, oz_address, public_key, AccountRef, ChainId, Domain, Felt, Registry,
-    ResourceBounds,
+    address_hex, declare_v3_hash, oz_address, public_key, AccountRef, ChainId, Domain, Felt,
+    InvokeV3Params, Registry, ResourceBounds,
 };
 use wallet_rpc::{
     dispatch, AutoApprover, ChannelApprover, Decision, FeeBounds, NodeError, Request, Response,
@@ -113,6 +113,9 @@ impl StarknetRpc for MockNode {
     ) -> Result<Felt, NodeError> {
         Ok(self.hash)
     }
+    async fn tx_state(&self, _tx_hash: &Felt) -> Result<wallet_rpc::TxState, NodeError> {
+        Ok(wallet_rpc::TxState::Accepted)
+    }
 }
 
 /// State with a mock node attached (enables auto nonce/fee + broadcast). The
@@ -186,6 +189,7 @@ fn user_registry() -> (Registry, String) {
         index: 0,
         address: address.clone(),
         label: "Main".into(),
+        contract: Default::default(),
         owner_client_id: None,
     });
     (reg, address)
@@ -410,13 +414,16 @@ async fn typed_data_hash_is_the_signed_digest_and_verifies_under_account_key() {
         "signature must verify against the reported SNIP-12 digest under the account key",
     );
 
-    // Guard the pin against SNIP-12 regressions: this exact digest was
-    // cross-checked against starknet.py TypedData.message_hash (== starknet.js
-    // and on-chain is_valid_signature). If the krusty pin regressed (keccak
-    // prefix, or shortstring not going through parse_felt), this would change.
+    // Guard the pin against SNIP-12 regressions. The digest binds the account
+    // address, so it moved when #16 changed the OZ salt and the account axis —
+    // the value below was re-derived for the new address and cross-checked
+    // against starknet.js `typedData.getMessageHash`, which agrees exactly. The
+    // hashing itself is unchanged. If the krusty pin regressed (keccak prefix,
+    // or shortstring not going through parse_felt), this would change *without*
+    // the address changing.
     assert_eq!(
         hres["hash"].as_str().unwrap(),
-        "0x68b4250d022dce3e45e64683935b0e0f8bf95e3dbf17eb9839e255578ddc061",
+        "0x2e3d857f3f9e5d3c23b3268017e1c1ea65baba457b0ec82ec2e63e8de7d4869",
         "SNIP-12 rev-1 digest changed — check the krusty-kms pin",
     );
 }
@@ -483,6 +490,48 @@ async fn deferred_methods_report_not_implemented() {
     )
     .await;
     assert_eq!(err_code(&resp), -32601);
+    assert!(resp.error.unwrap().message.contains("later phase"));
+}
+
+#[tokio::test]
+async fn parked_privacy_methods_say_out_of_scope_not_later() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction", "wallet_strk20Balances"] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(err_code(&resp), -32601, "{method}");
+        let msg = resp.error.unwrap().message;
+        assert!(msg.contains("out of scope") && !msg.contains("later phase"), "{method}: {msg}");
+    }
+}
+
+/// The loopback service must never expose seed reveal. It is IPC-only by
+/// design (see `wallet_rpc::reveal_mnemonic`): this service is reachable by any
+/// local process, including the AI agents strkd exists to serve, and spec §5.1
+/// is that it never returns key material.
+///
+/// This test exists so that adding such a method is a deliberate act that
+/// breaks a test naming the reason, rather than a plausible-looking addition.
+#[tokio::test]
+async fn the_service_exposes_no_way_to_reveal_the_seed() {
+    let state = state_with(Decision::Approve, false);
+    let token = pair(&state, "app").await;
+    for method in [
+        "companion_revealSeed",
+        "companion_exportSeed",
+        "companion_revealMnemonic",
+        "wallet_exportSeed",
+        "companion_getMnemonic",
+        "companion_exportPrivateKey",
+    ] {
+        let resp = call(&state, Some(&token), method, json!({})).await;
+        assert_eq!(
+            err_code(&resp),
+            -32601,
+            "{method} must not exist on the loopback service",
+        );
+        assert!(resp.result.is_none(), "{method} returned a result");
+    }
 }
 
 /// A well-formed sign-only invoke request for the user account.
@@ -586,12 +635,24 @@ async fn deploy_account_submit_with_node_broadcasts() {
     assert_eq!(r["transaction_hash"], json!("0xdeed"));
 }
 
+/// The minimal Counter class compiled with scarb 2.18.0 (same artifact the
+/// wallet-core class-hash tests pin); its hash is the value starknet.js
+/// `computeSierraContractClassHash` derives, which is what a node derives too.
+const COUNTER_CLASS: &str =
+    include_str!("../../wallet-core/tests/fixtures/minimal_counter.contract_class.json");
+const COUNTER_CLASS_HASH: &str =
+    "0x50b7a36b2af957551f6b829a690666c0f212a324dbc8ccff325e38a1e0843a5";
+
+fn counter_class() -> Value {
+    serde_json::from_str(COUNTER_CLASS).unwrap()
+}
+
 #[tokio::test]
-async fn add_declare_sign_only_returns_signed_declare() {
+async fn add_declare_sign_only_returns_a_broadcastable_transaction() {
     let state = state_with(Decision::Approve, false);
     let (_, address) = user_registry();
     let token = pair(&state, "app").await;
-    // Sign-only: only class_hash + compiled_class_hash + bounds needed (no class).
+    // Hash-only signing: class_hash + compiled_class_hash + bounds, no class.
     let p = json!({
         "account_address": address,
         "class_hash": "0x1234",
@@ -607,8 +668,144 @@ async fn add_declare_sign_only_returns_signed_declare() {
     let r = resp.result.expect("signed declare");
     assert_eq!(r["submitted"], json!(false));
     assert_eq!(r["class_hash"], json!("0x1234"));
-    assert_eq!(r["signed_transaction"]["type"], json!("DECLARE"));
     assert_eq!(r["signature"].as_array().unwrap().len(), 2);
+
+    // strkd #9: the sign-only transaction must be COMPLETE — every field the
+    // RPC's BROADCASTED_DECLARE_TXN_V3 requires, signature included — not the
+    // handful of fields the caller happened to pass in.
+    let tx = &r["signed_transaction"];
+    assert_eq!(tx["type"], json!("DECLARE"));
+    assert_eq!(tx["version"], json!("0x3"));
+    assert_eq!(
+        Felt::from_hex(tx["sender_address"].as_str().unwrap()).unwrap(),
+        Felt::from_hex(&address).unwrap()
+    );
+    assert_eq!(tx["compiled_class_hash"], json!("0x5678"));
+    assert_eq!(tx["nonce"], json!("0x0"));
+    assert_eq!(tx["signature"], r["signature"]);
+    assert_eq!(tx["tip"], json!("0x0"));
+    assert_eq!(tx["paymaster_data"], json!([]));
+    assert_eq!(tx["account_deployment_data"], json!([]));
+    assert_eq!(tx["nonce_data_availability_mode"], json!("L1"));
+    assert_eq!(tx["fee_data_availability_mode"], json!("L1"));
+    assert_eq!(tx["resource_bounds"]["l2_gas"]["max_amount"], json!("0xf4240"));
+    // No class was supplied, so none is echoed (the caller splices theirs in).
+    assert!(tx.get("contract_class").is_none());
+}
+
+#[tokio::test]
+async fn add_declare_signs_the_hash_the_account_will_validate() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let p = json!({
+        "account_address": address,
+        "contract_class": counter_class(),
+        "compiled_class_hash": "0x5678",
+        "nonce": "0x7",
+        "resource_bounds": {
+            "l1_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x1"},
+            "l2_gas": {"max_amount": "0xf4240", "max_price_per_unit": "0x2"},
+            "l1_data_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x3"}
+        }
+    });
+    let resp = call(&state, Some(&token), "wallet_addDeclareTransaction", p).await;
+    let r = resp.result.expect("signed declare");
+
+    // The class hash is DERIVED from the class (the node does the same), and the
+    // echoed transaction carries the canonical RPC CONTRACT_CLASS.
+    assert_eq!(r["class_hash"], json!(COUNTER_CLASS_HASH));
+    let tx = &r["signed_transaction"];
+    assert!(tx["contract_class"]["abi"].is_string());
+    assert!(tx["contract_class"].get("sierra_program_debug_info").is_none());
+
+    // The reported tx hash is the canonical DECLARE_V3 hash over that class
+    // hash, and the account's own key validates the signature over it — the
+    // on-chain __validate_declare__ check, done locally with a test seed
+    // (strkd #9: this is what was failing as "invalid signature" on Sepolia).
+    let expected = declare_v3_hash(
+        &Felt::from_hex(&address).unwrap(),
+        &Felt::from_hex(COUNTER_CLASS_HASH).unwrap(),
+        &Felt::from_hex("0x5678").unwrap(),
+        ChainId::Sepolia,
+        &InvokeV3Params {
+            nonce: Felt::from(7u64),
+            l1_gas: ResourceBounds { max_amount: 0x3e8, max_price_per_unit: 0x1 },
+            l2_gas: ResourceBounds { max_amount: 0xf4240, max_price_per_unit: 0x2 },
+            l1_data_gas: ResourceBounds { max_amount: 0x3e8, max_price_per_unit: 0x3 },
+            ..Default::default()
+        },
+    );
+    let reported = Felt::from_hex(r["transaction_hash"].as_str().unwrap()).unwrap();
+    assert_eq!(reported, expected);
+
+    let sig = r["signature"].as_array().unwrap();
+    let (rr, ss) = (
+        Felt::from_hex(sig[0].as_str().unwrap()).unwrap(),
+        Felt::from_hex(sig[1].as_str().unwrap()).unwrap(),
+    );
+    let pk = public_key(TEST_MNEMONIC, Domain::User, 0, None).unwrap();
+    assert!(
+        starknet_crypto::verify(&pk, &reported, &rr, &ss).unwrap(),
+        "signature must verify against the declare hash under the account key",
+    );
+}
+
+#[tokio::test]
+async fn add_declare_rejects_a_class_hash_that_contradicts_the_class() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "wallet_addDeclareTransaction",
+        json!({
+            "account_address": address,
+            "class_hash": "0xdead",
+            "contract_class": counter_class(),
+            "compiled_class_hash": "0x5678",
+            "nonce": "0x0",
+            "resource_bounds": {
+                "l1_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x1"},
+                "l2_gas": {"max_amount": "0xf4240", "max_price_per_unit": "0x1"},
+                "l1_data_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x1"}
+            }
+        }),
+    )
+    .await;
+    // Refused up front with both hashes named, rather than signing something
+    // the node would reject as an invalid signature.
+    assert_eq!(err_code(&resp), 114);
+    let msg = resp.error.unwrap().message;
+    assert!(msg.contains("0xdead"), "{msg}");
+    assert!(msg.contains(COUNTER_CLASS_HASH), "{msg}");
+}
+
+#[tokio::test]
+async fn add_declare_agreeing_class_hash_is_accepted() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "wallet_addDeclareTransaction",
+        json!({
+            "account_address": address,
+            "class_hash": COUNTER_CLASS_HASH,
+            "contract_class": counter_class(),
+            "compiled_class_hash": "0x5678",
+            "nonce": "0x0",
+            "resource_bounds": {
+                "l1_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x1"},
+                "l2_gas": {"max_amount": "0xf4240", "max_price_per_unit": "0x1"},
+                "l1_data_gas": {"max_amount": "0x3e8", "max_price_per_unit": "0x1"}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(resp.result.expect("signed declare")["class_hash"], json!(COUNTER_CLASS_HASH));
 }
 
 #[tokio::test]
@@ -619,21 +816,19 @@ async fn add_declare_submit_with_node_broadcasts() {
     // submit:true needs contract_class; node auto-estimates + broadcasts.
     let p = json!({
         "account_address": address,
-        "class_hash": "0x1234",
         "compiled_class_hash": "0x5678",
-        "contract_class": { "sierra_program": ["0x1"], "contract_class_version": "0.1.0",
-                            "entry_points_by_type": {}, "abi": "[]" },
+        "contract_class": counter_class(),
         "submit": true
     });
     let resp = call(&state, Some(&token), "wallet_addDeclareTransaction", p).await;
     let r = resp.result.expect("broadcast declare");
     assert_eq!(r["submitted"], json!(true));
     assert_eq!(r["transaction_hash"], json!("0xdec1a"));
-    assert_eq!(r["class_hash"], json!("0x1234"));
+    assert_eq!(r["class_hash"], json!(COUNTER_CLASS_HASH));
 }
 
 #[tokio::test]
-async fn add_declare_missing_class_hash_is_114() {
+async fn add_declare_without_class_or_class_hash_is_114() {
     let state = state_with(Decision::Approve, false);
     let (_, address) = user_registry();
     let token = pair(&state, "app").await;
@@ -645,6 +840,30 @@ async fn add_declare_missing_class_hash_is_114() {
     )
     .await;
     assert_eq!(err_code(&resp), 114);
+    assert!(resp.error.unwrap().message.contains("class_hash"));
+}
+
+#[tokio::test]
+async fn add_declare_malformed_contract_class_is_114_with_a_reason() {
+    let state = state_with(Decision::Approve, false);
+    let (_, address) = user_registry();
+    let token = pair(&state, "app").await;
+    let resp = call(
+        &state,
+        Some(&token),
+        "wallet_addDeclareTransaction",
+        json!({
+            "account_address": address,
+            "compiled_class_hash": "0x5678",
+            // The compressed gateway form, not the RPC CONTRACT_CLASS object.
+            "contract_class": {"sierra_program": "H4sIAAAAAAAA", "abi": "[]"},
+            "nonce": "0x0"
+        }),
+    )
+    .await;
+    assert_eq!(err_code(&resp), 114);
+    let msg = resp.error.unwrap().message;
+    assert!(msg.contains("contract_class") && msg.contains("compressed"), "{msg}");
 }
 
 #[tokio::test]
@@ -1261,6 +1480,24 @@ async fn funding_errors_clearly_when_manager_not_deployed() {
     assert_eq!(err_code(&resp), -32006);
     let msg = resp.error.unwrap().message;
     assert!(msg.contains("not deployed"), "message should explain the cause: {msg}");
+}
+
+#[tokio::test]
+async fn a_funding_source_index_on_the_agent_branch_is_refused() {
+    // User account n sits at account index n, so an unbounded index reached the
+    // agent branch: 0x41474E54 derived agent #0's key, 0xC1474E54 wrapped onto
+    // it via the hardened bit, and a u64 truncated onto it. None may sign.
+    let state = state_with_node_opts(Decision::Approve, "0x3", "0xfeed", vec![], true);
+    let (token, _) = agent_with_account(&state).await;
+    for idx in [json!(0x4147_4E54u64), json!(0xC147_4E54u64), json!(0x1_4147_4E54u64), json!("1")] {
+        let mut p = funding_params("1000");
+        p["funding_source_index"] = idx.clone();
+        let resp = call(&state, Some(&token), "companion_requestFunding", p).await;
+        assert_eq!(err_code(&resp), 114, "{idx} must be refused as an invalid request");
+    }
+    // Control: the default index is accepted (so the refusals above are the bound).
+    let resp = call(&state, Some(&token), "companion_requestFunding", funding_params("1000")).await;
+    assert!(resp.error.as_ref().map(|e| e.code != 114).unwrap_or(true), "{:?}", resp.error);
 }
 
 #[tokio::test]

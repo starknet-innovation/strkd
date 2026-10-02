@@ -27,7 +27,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 ### 1.2 Non-goals (v1)
 - ❌ Hardware-wallet / external-signer support.
 - ❌ Multi-device vault sync (vault stays local).
-- ❌ Key export / seed re-reveal UI after setup.
+- ❌ **Private-key** export (per-account keys are never shown or returned). Recovery-phrase reveal *is* supported as of [#28](https://github.com/starknet-innovation/strkd/issues/28) — see [§6.5](#65-recovery-phrase-reveal) — but only in the app's own window, behind a fresh passphrase check, and never over the service.
 - ❌ Browser-dApp (`get-starknet`) injection — callers are local native processes only.
 - ❌ Transaction **simulation / effects preview** in the prompt (decode + fee only; see [§8](#8-confirmation-ux)). Note: fee *estimation* is in scope; full simulation is not.
 - ✅ Auto-approval via **time-bounded permission grants** (see §5.8). (Per-call
@@ -47,7 +47,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | RPC method scope | **Full `wallet_rpc.json`** + companion extensions, delivered in phases |
 | Submit vs sign | **Both.** Default = **sign-only** (return payload + computed hash); caller opts in with `submit: true` to broadcast |
 | Node & fees | When submitting (or estimating), wallet uses a **configured RPC endpoint per network** and **auto-estimates** fees |
-| Account contract | **OpenZeppelin** accounts (counterfactual address from derived pubkey) |
+| Account contract | **OpenZeppelin** accounts (counterfactual address from derived pubkey), behind an account-contract seam so further classes can be added |
 | Networks | **Sepolia + Mainnet**. Agents pick the chain **per request** (optional `chainId` on the operational methods) — explicit and race-free across concurrent clients. `wallet_switchStarknetChain` is **deprecated for agents** (it mutates one shared default for all clients); it remains for EIP-1193 compatibility and as the omitted-`chainId` fallback, which the human sets in Settings |
 | Confirmation scope | Prompt on **signing / state-changing** methods; read-only auto-served to paired callers |
 | Tx display | **Decode calls + max fee + network + caller**; no full simulation |
@@ -118,7 +118,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | Shell / packaging | Tauri 2.x | Native macOS tray; small binary; webview frontend |
 | Core language | Rust | Same language as `krusty-kms` → keys never cross an FFI/language boundary |
 | Crypto | `krusty-kms` (+ `krusty-kms-common`) | BIP-39/44 derivation, STARK signing, OZ address calc, invoke-V3 hash |
-| Tongo / STRK20 (Phase 3) | `krusty-kms-sdk` | Confidential proof generation |
+| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` | Confidential proof generation — not shipped |
 | Node RPC | `krusty-kms-client` or `starknet-rs` | Fee estimation + optional broadcast |
 | Frontend | Web (framework TBD — Svelte/React) | Renders prompts + log; no key access |
 | Vault encryption | `argon2` (Argon2id) + AES-256-GCM (`aes-gcm`) | Authenticated encryption |
@@ -222,19 +222,27 @@ All accounts derive from one BIP-39 seed via `krusty-kms`. krusty takes **struct
 
 Accounts are partitioned into two **non-overlapping branches**:
 
-| Domain | Who creates | Path | krusty call | Rationale |
+| Domain | Who creates | Account *n* | krusty call | Rationale |
 |---|---|---|---|---|
-| **User** | Human, in-app | `m/44'/9004'/0'/0/i` | `account_index = 0`, `coin_type = STARKNET_COIN_TYPE (9004)`, vary `index = i` | Matches Argent's base path → **portable**: re-importing the mnemonic into Argent/Braavos surfaces the same accounts. |
-| **Agent** | Agent, via RPC | `m/44'/9004'/0x41'/0/j` | `account_index = 0x41` (reserved "A"), vary `index = j` | A reserved hardened `account_index` fully isolates the keyspace; mainstream wallets only scan `account'=0'`, so agent accounts never collide with or appear in user wallets. |
+| **User** | Human, in-app | `m/44'/9004'/n'/0/0` | vary `account_index = n`, `address_index = 0`, `coin_type = STARKNET_COIN_TYPE (9004)` | Matches **bramble's recovery scan**, which enumerates `accountIndex` 0–19 with the address index fixed → the same seed surfaces the same accounts in both wallets. |
+| **Agent** | Agent, via RPC | `m/44'/9004'/AGNT'/0/n` | `account_index = 0x41474E54` (reserved), vary `address_index = n` | The whole branch sits under one reserved hardened `account_index`, off the axis user accounts occupy, so agent accounts can never collide with or appear as user accounts. |
 
-- **Reserved constant:** `AGENT_ACCOUNT_INDEX = 0x41`. Document it as reserved-for-agents; never reuse it for user accounts.
+- **Reserved constant:** `AGENT_ACCOUNT_INDEX = 0x41474E54` — `"AGNT"` in ASCII, 1,095,192,148, inside BIP-32's hardened ceiling `0x7FFFFFFF`. Never reuse it for user accounts.
+- **Why the two branches walk different axes.** BIP-44 offers a hardened *account* index and an *address* index, and wallets differ over which one "add another account" advances. User accounts follow bramble so a seed import agrees; agent accounts use the other axis under a reserved account index so one constant covers the branch.
+- **This changed in [#16](https://github.com/starknet-innovation/strkd/issues/16).** User accounts previously walked the address index under `account' = 0`, and the agent branch was `0x41`. Under the new axis `0x41` (65) is reachable by ordinary use — the 66th account — so the reservation moved. Every address changed; there is no migration (assets were swept out first, [#14](https://github.com/starknet-innovation/strkd/issues/14)), and the vault version is bumped to refuse pre-change vaults rather than open them against the wrong accounts.
+- **The reservation is a convention, not a chain rule.** Another wallet given a manual index could still derive there. Bramble is asked to exclude it explicitly in `mc-wallet#336`.
 - **Grinding/curve:** EIP-2645 SHA-256 rejection sampling to the STARK order, BIP-32 secp256k1 master (`HMAC-SHA512("Bitcoin seed", …)`) — all internal to krusty.
 
-> **Portability is a claim that must be tested, not assumed.** Argent's recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`); krusty uses standard BIP-39→BIP-32. Both should agree, but before asserting portability we **must round-trip**: derive a user account here, import the same mnemonic into Argent (and Braavos), and confirm identical addresses. Braavos's exact base was not verified from a primary source. See [Risks](#14-risks--open-questions).
+> **Portability is a claim that must be tested, not assumed.** The concrete target is now **bramble**, which shares strkd's crypto (both derive through `krusty-kms` with the same coin type, so the keys are bit-identical) and whose address formula strkd now matches — `user_account_zero_matches_brambles_address_formula` pins account 0 against a value cross-checked with starknet.js. What remains unverified is the **full round-trip through a running bramble**, and portability to Argent/Braavos, whose recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`) rather than BIP-39→BIP-32 directly. See [Risks](#14-risks--open-questions) and [`portability-test-plan.md`](./portability-test-plan.md).
 
 ### 6.2 Account contract
-- Accounts are **OpenZeppelin** account contracts.
-- Address computed **counterfactually**: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&public_key, SaltPolicy::PublicKey)` → `OzDeploymentDescriptor { address, class_hash, salt, constructor_calldata, deployer_address }`.
+- Accounts are **OpenZeppelin** account contracts, resolved through the
+  `AccountContract` seam ([#15](https://github.com/starknet-innovation/strkd/issues/15)),
+  which owns the class hash, constructor calldata, salt policy, and **how a
+  signature is serialized for `__validate__`**. Adding a class means adding a
+  variant, not revisiting the signing path.
+- Address computed **counterfactually**: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&public_key, SaltPolicy::Zero)` → `OzDeploymentDescriptor { address, class_hash, salt, constructor_calldata, deployer_address }`.
+- **Salt is zero**, matching bramble. It is security-neutral for OZ: the constructor takes `[public_key]`, so the key is bound into the address whatever the salt, and `DEPLOY_ACCOUNT` (deployer `0`) requires the account's own signature — an undeployed address cannot be squatted. A class whose constructor does *not* commit to the owner must not use a zero salt. Note this is **not** krusty's default — krusty defaults both its OZ address entry points to the public key — so zero is an explicit override on strkd's part, matching bramble, which pins `"0x0"` explicitly to protect addresses it has already deployed on mainnet.
 - OZ **class hash is resolved from krusty's embedded per-network manifest** (`OzAccountClassConfig::latest(chain_id)`), not a hardcoded constant — so it tracks the manifest per network.
 - Deployment data is exposed via `wallet_deploymentData`; deployment broadcasting follows the same submit/sign rules as any transaction ([§7.4](#74-broadcast-modes-sign-only-default-submit-opt-in)).
 
@@ -248,7 +256,34 @@ On first run, the user chooses:
 - **Generate:** `generate_mnemonic` → display once (12/24 words) with a verification step → encrypt into the vault. Set passphrase.
 - **Import:** paste an existing phrase → `validate_mnemonic` → encrypt into the vault. Set passphrase.
 
-No re-reveal/export of the mnemonic after setup (non-goal).
+### 6.5 Recovery-phrase reveal
+
+**Reversal of an earlier non-goal ([#28](https://github.com/starknet-innovation/strkd/issues/28)).**
+This spec previously ruled out any re-reveal. That made strkd a one-way door for a seed it had
+generated: a user who lost their written backup could neither move to another device nor to
+bramble, which does offer a reveal flow. Worse, it interacts badly with vault-version changes —
+a vault strkd refuses to open is a seed nobody can recover.
+
+Settings offers **Show recovery phrase**, subject to all of:
+
+- **Re-authentication is cryptographic, not a comparison.** The reveal decrypts the *on-disk vault*
+  with the passphrase supplied at that moment; a wrong one fails at the AES-GCM tag. Deliberately
+  not read from the unlocked session — the app stays unlocked for a whole session, and that must
+  not be the same thing as consenting to show the seed.
+- **Unlocked is necessary but not sufficient.** Refused from the lock screen.
+- **IPC only.** There is no `wallet_*` or `companion_*` equivalent and there must never be: the
+  loopback service is reachable by any local process, including the AI agents strkd exists to
+  serve, and [§5.1](#51-security-boundary) is that it never returns key material. A test
+  (`the_service_exposes_no_way_to_reveal_the_seed`) fails if such a method is added.
+- **Never logged.** The reveal is recorded in the request log as an event (`ui_revealSeed`, with
+  its outcome); the phrase itself is never written to the log, disk, or any other sink.
+- **Shown, not copied.** Blurred until clicked, cleared on hide, on leaving the tab, and after a
+  two-minute timeout. There is no copy button: the system clipboard is readable by every other
+  process on the machine, which is precisely the threat model here.
+
+**Per-account private keys remain a non-goal.** Bramble's equivalent screen reveals both; strkd
+reveals only the phrase, which is the smaller surface and the one that actually enables recovery
+and portability.
 
 ---
 
@@ -278,15 +313,18 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 | `wallet_signTypedData` | 1 | **yes** | Sign SNIP-12 typed data → `SIGNATURE` |
 | `wallet_addInvokeTransaction` | 1/2 | **yes** | Sign-only (P1) → broadcast opt-in (P2); see [§7.4](#74-broadcast-modes-sign-only-default-submit-opt-in). Optional `proof_facts`/`proof` for **SNIP-36** proof-carrying invokes |
 | `wallet_switchStarknetChain` | 2 | **yes** | Switch Sepolia ⇄ Mainnet |
-| `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; returns class hash + tx hash |
+| `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; `class_hash` **derived** from `contract_class` ([§7.4.1](#741-declare-the-class-hash-is-derived-not-trusted)); returns class hash + tx hash |
 | `wallet_watchAsset` | 2 | **yes** | Add token to display |
 | `wallet_addStarknetChain` | 2 | **yes** | Add a custom network |
-| `wallet_strk20PrepareInvoke` | 3 | **yes**² | Build STRK20 (Tongo) call + proof, no submit |
-| `wallet_strk20InvokeTransaction` | 3 | **yes** | STRK20 privacy action |
-| `wallet_strk20Balances` | 3 | no | Query private balances |
+| `wallet_strk20PrepareInvoke` | parked³ | — | Out of scope: returns `-32601` |
+| `wallet_strk20InvokeTransaction` | parked³ | — | Out of scope: returns `-32601` |
+| `wallet_strk20Balances` | parked³ | — | Out of scope: returns `-32601` |
 
 ¹ First connection requires pairing approval; thereafter auto-served to the paired caller (within scope).
 ² Proof generation may be heavy; prompt + progress indication.
+³ Privacy is parked, not pending (strkd#20). strkd's Tongo backend cannot express the
+  spec's note-based pool, so the standard names stay free rather than carrying partial
+  semantics. The Tongo work is preserved, unmerged, in PR #11.
 
 ### 7.3 Companion extension methods (`companion_*`)
 Non-standard, namespaced to avoid clashing with `wallet_*`.
@@ -365,9 +403,40 @@ chain the methods are sign-only and require caller-supplied `nonce` +
 against a Sepolia v0.10 node for nonce/deploy-status/estimate (the broadcast hop
 still needs a funded-account submit to confirm).
 `wallet_switchStarknetChain` (Sepolia ⇄ Mainnet, switching the active node too)
-`wallet_watchAsset`, and `wallet_addDeclareTransaction` (sign-only needs just the
-class hashes; estimate/submit need the full `contract_class`) are implemented.
-Still pending: `addStarknetChain` (needs a generalized `ChainId`).
+`wallet_watchAsset`, and `wallet_addDeclareTransaction` (§7.4.1) are
+implemented. Still pending: `addStarknetChain` (needs a generalized `ChainId`).
+
+#### 7.4.1 Declare: the class hash is derived, not trusted
+
+A node does not take the caller's word for a declare's `class_hash`. It
+**recomputes** it from the `contract_class` in the broadcast, and that value
+goes into the transaction hash the account's `__validate_declare__` checks the
+signature against. So a wallet that signs a caller-supplied `class_hash` which
+does not match the class actually broadcast emits a signature the node rejects
+— surfacing as `Account: invalid signature` (RPC 55, or execution error 41)
+with nothing wrong in the wallet's own transaction hashing (strkd #9).
+
+The wallet therefore derives the class hash itself, from the exact class it
+broadcasts (`wallet_core::SierraClass::class_hash`, the `CONTRACT_CLASS_V0.1.0`
+Poseidon layout):
+
+- `contract_class` given → `class_hash` is **derived**, and the parameter is
+  optional. Accepts scarb's `*.contract_class.json` verbatim (ABI as an array,
+  debug info ignored) as well as the RPC `CONTRACT_CLASS` object.
+- Both given → cross-checked; a mismatch is **`114`** naming both hashes,
+  rather than a signature that fails on-chain.
+- `class_hash` alone → signed on trust (offline/hash-only flows): without the
+  class there is nothing to check it against.
+
+The ABI is hashed as the **exact string** the class carries, byte for byte, so
+the same ABI serialised two ways is two different classes. A string ABI is
+never re-serialised; an ABI supplied as an array is serialised the way the
+compiler hashes it (Python `json.dumps` separators, key order preserved).
+
+Sign-only returns a **complete** `BROADCASTED_DECLARE_TXN_V3` in
+`signed_transaction` — every field the RPC requires, signature and (when
+supplied) class included — so it can be POSTed as `declare_transaction`
+unchanged, matching what `addInvokeTransaction` already returns.
 
 ### 7.5 Error codes
 Use the spec's codes verbatim:
@@ -474,8 +543,8 @@ With `"submit": true` in params, the result is `{ "transaction_hash": "0x06f2...
 ## 12. Testing & Validation
 
 - **Crypto correctness:** known-answer tests for derivation (both domains), OZ address calc, and invoke-V3 hash against `krusty-kms` references; verify signatures validate on-chain (Sepolia) for an OZ account.
-- **Portability round-trip (must pass before claiming it):** derive a user account here → import the same mnemonic into **Argent** and **Braavos** → assert identical addresses. Confirm **agent** branch (`account_index = 0x41`) never appears in those wallets.
-- **Domain isolation:** prove user (`0'`) and agent (`0x41'`) branches never collide.
+- **Portability round-trip (must pass before claiming it):** derive a user account here → import the same mnemonic into **bramble** (and Argent/Braavos) → assert identical addresses. Confirm the **agent** branch (`account_index = 0x41474E54`) never appears in those wallets.
+- **Domain isolation:** prove the user (`n'/0/0`) and agent (`0x41474E54'/0/n`) branches never collide.
 - **Vault:** round-trip encrypt/decrypt; tamper detection; wrong-passphrase handling; scan to confirm no plaintext key material on disk.
 - **Memory hygiene:** assert seed/keys zeroized on lock (where testable).
 - **Service contract:** conformance tests against `wallet_rpc.json` per method; error-code coverage; `silent_mode` paths; sign-only vs submit results.
@@ -494,7 +563,7 @@ Full spec is the target; deliver in phases.
 - **Phase 0 — Skeleton:** Tauri menu-bar app, vault (gen/import + passphrase + lock/unlock), single user account, `krusty-kms` wired in (`generate_mnemonic`, `derive_keypair_with_coin_type`, OZ address). No service.
 - **Phase 1 — Core service (minimal usable wallet):** loopback JSON-RPC + pairing + per-request approval + log; methods `supportedWalletApi/Specs`, `getPermissions`, `requestAccounts`, `requestChainId`, `deploymentData`, `signTypedData`, `addInvokeTransaction` **sign-only** with node-backed **fee estimation**. Multi-account (user domain) + agent domain + `companion_createAgentAccount` + scoping.
 - **Phase 2 — Broadcast & remaining standard methods:** `submit: true` broadcasting via configured node; `switchStarknetChain` (Sepolia ⇄ Mainnet); `addDeclareTransaction`, `watchAsset`, `addStarknetChain`. Log viewer polish.
-- **Phase 3 — Privacy (Tongo / STRK20):** `strk20PrepareInvoke`, `strk20InvokeTransaction`, `strk20Balances` via `krusty-kms-sdk`.
+- **Phase 3 — Privacy (Tongo / STRK20):** **parked** (strkd#20). The standard `strk20*` names return `-32601`; the Tongo work stays unmerged in PR #11.
 - **Hardening (parallel/after):** portability round-trip tests; UDS + peer-cred transport option; security audit; validate experimental crypto before Mainnet.
 
 ---
@@ -511,7 +580,7 @@ Full spec is the target; deliver in phases.
 - 🟡 **Mainnet + experimental code** is a deliberate risk per the network decision; revisit.
 
 **Resolved (was open)**
-- ✅ **Derivation paths** — user `m/44'/9004'/0'/0/i`; agent `m/44'/9004'/0x41'/0/j`; via `derive_keypair_with_coin_type`. (Portability still pending the round-trip test above.)
+- ✅ **Derivation paths** — user `m/44'/9004'/n'/0/0`; agent `m/44'/9004'/0x41474E54'/0/n`; via `derive_keypair_with_coin_type`. (Live round-trip through bramble still pending — see the test plan.)
 - ✅ **krusty-kms API surface** — mapped in [Appendix A](#appendix-a--method--krusty-kms-capability-map).
 - ✅ **`wallet_requestAccounts` scoping** — agent callers scoped to their own accounts.
 - ✅ **Auto-lock activity** — any RPC request or unlock resets the timer (busy granted agents stay unlocked); status-polling does not. Revised from "user-only" because grants enable unattended agents. See §5.3.
@@ -519,7 +588,7 @@ Full spec is the target; deliver in phases.
 
 **Remaining open (confirm at implementation)**
 1. **`StarkSignature` field names** and whether `compute_typed_data_message_hash` takes a structured SNIP-12 object vs pre-decomposed felts — verify against source at the pinned commit.
-2. **Tongo SDK signatures** (`transfer`/`withdraw`/`rollover`/`ragequit`) — only `fund` was observed; confirm before Phase 3.
+2. **Tongo SDK signatures** (`transfer`/`withdraw`/`rollover`/`ragequit`) — only `fund` was observed; confirm if privacy is un-parked (#20).
 3. **OZ class-hash manifest** currency per network (`OzAccountClassConfig::latest`) — confirm it carries the class hashes you want on Sepolia + Mainnet.
 
 ---
@@ -535,10 +604,10 @@ Full spec is the target; deliver in phases.
 | Public key | `stark_public_key(...)` |
 | Sign message hash | `sign_stark_hash(priv, msg_hash) -> StarkSignature` |
 | Sign typed data (SNIP-12) | `compute_typed_data_message_hash(...)` → `sign_stark_hash(...)` |
-| OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::PublicKey)` → `OzDeploymentDescriptor` |
+| OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::Zero)` → `OzDeploymentDescriptor` |
 | Invoke-V3 tx hash | `compute_invoke_v3_hash(sender, calldata, chain_id, nonce, account_deployment_data, tip, l1_gas, l2_gas, l1_data_gas, paymaster_data, nonce_da_mode, fee_da_mode)` |
 | Invoke-V3 with proof (Tongo) | `compute_invoke_v3_hash_with_proof_facts(..., proof_facts)` |
-| Tongo / STRK20 (Phase 3) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
+| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
 
 Constants: `STARKNET_COIN_TYPE = 9004`, `TONGO_COIN_TYPE = 5454`. Types: `ResourceBounds { max_amount: u64, max_price_per_unit: u128 }`, `DaMode { L1, L2 }`, `SaltPolicy { PublicKey, Zero, Explicit(Felt) }`.
 

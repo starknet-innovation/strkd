@@ -112,6 +112,13 @@ impl From<wallet_core::CoreError> for WalletRpcError {
             BadPassphraseOrCorrupt => {
                 WalletRpcError::InvalidRequest("incorrect passphrase or corrupt vault".into())
             }
+            // A malformed caller-supplied contract class is the caller's error
+            // (114), and the detail carries no key material.
+            InvalidContractClass(m) => {
+                WalletRpcError::InvalidRequest(format!("contract_class: {m}"))
+            }
+            // A caller-supplied account number out of its branch's range.
+            e @ IndexOutOfRange { .. } => WalletRpcError::InvalidRequest(e.to_string()),
             // Everything else is an internal crypto/serialization failure that
             // must not surface key detail.
             _ => WalletRpcError::Unknown("core operation failed".into()),

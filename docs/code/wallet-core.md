@@ -20,7 +20,8 @@ registry. All cryptography is delegated to `krusty-kms`; vault encryption uses
 |---|---|
 | `lib.rs` | Public surface + re-exports; `generate_mnemonic`, `validate_mnemonic`, `address_hex`. |
 | `domain.rs` | The two derivation branches and their path/index constants. |
-| `keys.rs` | Derivation, public key, OZ address, signing, SNIP-12 typed-data. |
+| `account_contract.rs` | The account-contract seam: class hash, constructor calldata, salt policy, signature serialization. |
+| `keys.rs` | Derivation, public key, account address, signing, SNIP-12 typed-data. |
 | `tx.rs` | Entry-point selectors, multicall calldata encoding, invoke-V3 hash + signing. |
 | `vault.rs` | Passphrase-encrypted vault (Argon2id → AES-256-GCM). |
 | `accounts.rs` | Account registry + per-caller scoping. |
@@ -44,23 +45,36 @@ Re-exported foreign types so callers needn't depend on krusty directly:
 ```rust
 enum Domain { User, Agent }
 
-const STARKNET_COIN_TYPE: u32 = 9004;
-const USER_ACCOUNT_INDEX:  u32 = 0;      // portable branch (mirrors Argent base)
-const AGENT_ACCOUNT_INDEX: u32 = 0x41;   // reserved, segregated branch
+const STARKNET_COIN_TYPE:  u32 = 9004;
+const USER_ACCOUNT_INDEX:  u32 = 0;            // user account n is at account index n
+const AGENT_ACCOUNT_INDEX: u32 = 0x41474E54;   // "AGNT" — reserved, segregated branch
+const MAX_HARDENED_INDEX:  u32 = 0x7FFFFFFF;
 
 impl Domain {
-    const fn account_index(self) -> u32;
-    const fn coin_type(self) -> u32;     // always 9004
-    fn path(self, index: u32) -> String; // e.g. "m/44'/9004'/0'/0/3"
+    const fn path_indices(self, n: u32) -> (u32, u32); // (account_index, address_index)
+    const fn coin_type(self) -> u32;                   // always 9004
+    fn path(self, n: u32) -> String;                   // e.g. "m/44'/9004'/3'/0/0"
 }
 ```
 
-- **User** → `m/44'/9004'/0'/0/i`. Matches Argent's base path, so user accounts
-  are intended to be portable into Argent/Braavos (claim pending the
-  [portability test plan](../../spec/portability-test-plan.md)).
-- **Agent** → `m/44'/9004'/0x41'/0/j`. A reserved hardened account index;
-  mainstream wallets only scan `account' = 0'`, so agent accounts stay isolated.
-  **`0x41` must never be reused for user accounts.**
+- **User** → `m/44'/9004'/n'/0/0`. User accounts walk the **account** index,
+  which is what bramble's recovery scan enumerates (`accountIndex` 0–19 with the
+  address index fixed), so the same seed surfaces the same accounts in both
+  wallets.
+- **Agent** → `m/44'/9004'/0x41474E54'/0/n`. The whole branch sits under one
+  reserved hardened account index and walks the **address** index instead,
+  keeping it off the axis user accounts occupy. **`0x41474E54` must never be
+  reused for a user account.**
+
+The two branches deliberately use different BIP-44 axes. That is what lets one
+reserved constant isolate the entire agent branch while user accounts stay
+enumerable by any wallet that scans account indices.
+
+> Changed by [#16](https://github.com/starknet-innovation/strkd/issues/16). User
+> accounts previously walked the address index under `account' = 0` and the agent
+> branch was `0x41`; under the new axis, 65 is reachable as the 66th user
+> account, so the reservation moved out of range. Every address changed — see
+> `vault.rs`, whose version bump refuses pre-change vaults.
 
 ### `keys` — derivation & signing
 
@@ -77,8 +91,11 @@ fn sign_hash(mnemonic: &str, domain: Domain, index: u32,
 
 - The private key is derived on demand, used, and dropped immediately; it is
   never returned or logged.
-- `oz_address` uses `SaltPolicy::PublicKey` and the OZ class hash from krusty's
-  per-network manifest.
+- `oz_address` uses `SaltPolicy::Zero` (since #16, matching bramble) and the OZ
+  class hash from krusty's per-network manifest.
+- Account numbers are bounded per branch (`Domain::check_index`): a user number
+  must stay below the reserved agent index `0x41474E54`, or it would derive an
+  agent key.
 - `sign_hash` signs a caller-supplied hash (a tx hash or a SNIP-12 typed-data
   hash). Stark ECDSA is RFC-6979 deterministic, so signing the same hash with
   the same key is reproducible — tests rely on this.
@@ -144,7 +161,7 @@ fn sign_invoke_v3(mnemonic, domain, index, passphrase, sender, calls, chain, par
 ### `accounts` — registry & scoping
 
 ```rust
-struct AccountRef { domain, index, address, label, owner_client_id: Option<String> }
+struct AccountRef { domain, index, address, label, contract: AccountContract, owner_client_id: Option<String> }
 struct Registry { accounts: Vec<AccountRef> }
 
 impl Registry {
@@ -159,12 +176,80 @@ impl Registry {
 - `scoped_for` implements the spec §6.3 rule: an **agent client** (`Some(id)`)
   sees only the agent accounts it owns; a **user/app caller** (`None`) sees user
   accounts. This is what `wallet_requestAccounts` will return per caller.
+- `contract` is `#[serde(default)]`, so registries written before the seam
+  existed load as `OpenZeppelin` — which is what they are. The wire name is part
+  of the vault format.
+
+### `account_contract` — the account-contract seam
+
+```rust
+enum AccountContract { OpenZeppelin }
+
+impl AccountContract {
+    fn salt_policy(self) -> SaltPolicy;
+    fn class_hash(self, chain: ChainId) -> Result<Felt>;
+    fn constructor_calldata(self, public_key: &Felt) -> Result<Vec<Felt>>;
+    fn deployment(self, public_key: &Felt, chain: ChainId) -> Result<DeploymentData>;
+    fn serialize_signature(self, sig: &StarkSignature) -> Vec<Felt>;
+}
+```
+
+Everything that differs between account classes lives here. A wallet supporting
+more than one class has to vary four things together — class hash, constructor
+calldata, salt, and **how a signature is serialized for `__validate__`**.
+Getting three right and the fourth wrong produces an account whose address is
+correct and whose every transaction is rejected.
+
+There is one variant today. The seam exists because the signature split is the
+expensive one to retrofit: it threads through signing, broadcasting, and the
+sign-only responses. Every broadcast and every `"signature"` field must go
+through `serialize_signature`; reaching for `(r, s)` directly is correct only
+for OpenZeppelin.
+
+`SignedInvoke` / `SignedDeclare` / `SignedDeployAccount` therefore carry both
+`signature` (account-encoded — what to broadcast) and `r`/`s` (raw ECDSA — for
+cryptographic checks).
+
+See [issue #15](https://github.com/starknet-innovation/strkd/issues/15) and
+[`docs/project/bramble-convergence.md`](../project/bramble-convergence.md) §5.2.
 
 ### `error`
 
 `CoreError` variants are intentionally coarse and never embed krusty error
 detail, so key material can't leak into logs. `From<KmsError>` collapses to
 `CoreError::Crypto`.
+
+## Conformance vectors
+
+`tests/conformance.rs` replays `tests/fixtures/conformance-vectors.json`: for
+the published BIP-39 test seed, the derivation path, public key and account
+address of the first few accounts in each branch.
+
+This is the gate that keeps strkd and bramble on one account model. They are
+separate implementations of the same protocol, and both crypto defects this
+project has hit — the SNIP-12 digest (#7) and the declare class hash (#9) — were
+drift found in production rather than by a test.
+
+The vectors are generated by strkd (`cargo run --example conformance_vectors`)
+and **verified independently in CI** by `conformance/verify.mjs` (`npm ci && npm
+run verify` in `conformance/`). It recomputes every value with pinned non-krusty
+libraries:
+- seed → public key: @scure/bip39 + @scure/bip32, then starknet.js `grindKey`
+- address: `hash.calculateContractAddressFromHash`, exactly the call bramble makes
+- SNIP-12 rev 1 digests: `typedData.getMessageHash`
+- invoke V3 hashes: `hash.calculateInvokeTransactionHash`
+
+Regenerating is not verifying: run the script after any change.
+
+**Known divergences** (recorded in the fixture, not pinned as vectors): krusty's
+SNIP-12 digest for the `string` type disagrees with starknet.js, so a signature
+over a message with a `string` field fails `is_valid_signature`. krusty also
+rejects the `selector` type outright.
+
+Bramble has no seed→address fixtures to import — its krusty adapter tests mock
+the WASM module — so this file is written to be adopted *by* bramble rather than
+copied from it. Until it runs on both sides it catches strkd drifting from the
+agreed model, not the reverse.
 
 ## Tests
 

@@ -221,11 +221,11 @@ concepts.proving.",
               "note": "ONE-STEP sign + on-device prove for SNIP-36: signs the VIRTUAL tx (\"Tx A\" — a normal v3 invoke calling your contract's virtual function, e.g. create_proof(public, private)) and hands the signed tx straight to the local prover, so the secret never leaves the machine and you skip the manual addInvoke(sign-only)→companion_prove round-trip. Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving). resource_bounds is REQUIRED — the virtual tx holds private calldata, so strkd refuses to fee-estimate it online (that would leak the inputs to the RPC); set bounds manually (~2× gas). nonce must equal the account nonce at the reference block. Returns a job id — poll companion_proveStatus; on success take result.proof / proof_facts / l2_to_l1_messages, decode the message into the verifier call, and BROADCAST the verifier invoke (\"Tx B\", e.g. verify_result(public_message)) via wallet_addInvokeTransaction { proof_facts, proof, submit:true }. strkd does not build Tx B — its calldata is app-specific. Approval-gated (signs a real tx, though it's proven locally and never broadcast)." },
 
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
-              "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "[r, s]",
-              "note": "account_address must be one of yours. SNIP-12 REVISION 1 (Poseidon; StarkNet-Message prefix = short-string 'StarkNet Message'). The digest signed is exactly starknet.js typedData.getMessageHash(typed_data, account_address), so the account's on-chain is_valid_signature accepts [r, s] — that's the standard SNIP-12 committee/multisig approval pattern. To confirm the hash before/after signing, call companion_typedDataHash (no signing, no prompt)." },
+              "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "signature felts, encoded for the account's contract ([r, s] for OpenZeppelin, the only class strkd deploys today)",
+              "note": "account_address must be one of yours. SNIP-12 REVISION 1 (Poseidon; StarkNet-Message prefix = short-string 'StarkNet Message'). The digest signed is exactly starknet.js typedData.getMessageHash(typed_data, account_address), so the account's on-chain is_valid_signature accepts the returned signature — that's the standard SNIP-12 committee/multisig approval pattern. To confirm the hash before/after signing, call companion_typedDataHash (no signing, no prompt)." },
             { "method": "companion_typedDataHash", "auth": true, "prompts": false,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "{ hash, revision: \"1\" }",
-              "note": "Pure, key-free: returns the SNIP-12 rev-1 message hash wallet_signTypedData would sign (== starknet.js typedData.getMessageHash). Use it to verify strkd's hashing matches yours and to know exactly which felt a returned [r, s] covers for is_valid_signature. Works while locked; no approval." },
+              "note": "Pure, key-free: returns the SNIP-12 rev-1 message hash wallet_signTypedData would sign (== starknet.js typedData.getMessageHash). Use it to verify strkd's hashing matches yours and to know exactly which felt a returned signature covers for is_valid_signature. Works while locked; no approval." },
             { "method": "wallet_addInvokeTransaction", "auth": true, "prompts": true,
               "params": "{ account_address, calls, submit?, nonce?, resource_bounds?, proof_facts?, proof?, chainId? }",
               "call_shape": "calls = [{ contract_address, entry_point_selector, calldata: [felt…] }]. \
@@ -243,9 +243,9 @@ companion_estimateFee is also unsafe here. Estimate bounds manually (~2× curren
 Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
 normal invoke." },
             { "method": "wallet_addDeclareTransaction", "auth": true, "prompts": true,
-              "params": "{ account_address, class_hash, compiled_class_hash, contract_class?, submit?, nonce?, resource_bounds?, chainId? }",
+              "params": "{ account_address, compiled_class_hash, contract_class?, class_hash?, submit?, nonce?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, class_hash, submitted } (+ signature/signed_transaction when not submitted)",
-              "note": "Signing needs only class_hash + compiled_class_hash. Estimation and submit:true also need the full Sierra contract_class. Sign-only by default — broadcast the returned tx together with your contract_class." },
+              "note": "PASS contract_class — the whole compiled Sierra class (scarb's *.contract_class.json works as-is, ABI array and debug info included; so does the RPC CONTRACT_CLASS object). class_hash is then DERIVED from it and you can omit it. That matters: the node re-derives the class hash from the class you broadcast and the account validates the signature against the tx hash built from THAT value, so a class_hash that disagrees with the class produces 'Account: invalid signature' on-chain. Pass both and the wallet cross-checks them and refuses (114, naming both hashes) instead of signing a doomed declare. class_hash alone (no class) still signs, on trust, for offline flows. Estimation and submit:true need contract_class. Sign-only returns a COMPLETE BROADCASTED_DECLARE_TXN_V3 in signed_transaction, class included — POST it as declare_transaction unchanged." },
 
             { "method": "wallet_switchStarknetChain", "auth": true, "prompts": true, "deprecated": true,
               "params": "{ chainId (felt: SN_SEPOLIA / SN_MAIN encoded) }", "returns": "true",
@@ -256,9 +256,17 @@ normal invoke." },
         ],
 
         "deferred": {
-            "note": "These exist in the Starknet wallet spec but return -32601 here for now.",
-            "methods": ["wallet_addStarknetChain", "wallet_strk20PrepareInvoke",
-                        "wallet_strk20InvokeTransaction", "wallet_strk20Balances"]
+            "note": "In the Starknet wallet spec but not built yet; returns -32601. \
+wallet_addStarknetChain needs a chain id beyond Sepolia/Mainnet.",
+            "methods": ["wallet_addStarknetChain"]
+        },
+
+        "out_of_scope": {
+            "note": "In the Starknet wallet spec but deliberately not implemented; returns -32601. \
+strkd's backend cannot express the STRK20 privacy surface, and shipping partial semantics \
+under the standard names would mean the same call meant different things in different wallets.",
+            "methods": ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction",
+                        "wallet_strk20Balances"]
         },
 
         "errors": {

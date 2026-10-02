@@ -23,7 +23,21 @@ automated tests (see the Node caveat in
 **Phase 2 is effectively complete** for the in-scope methods (broadcast, fees,
 switchChain, watchAsset, declare; `addStarknetChain` intentionally skipped). The
 open item is the **funded-account live submit** to confirm the broadcast/declare
-wire format end-to-end. After that: **Phase 3** (Tongo / STRK20 privacy methods).
+wire format end-to-end. After that: the **bramble convergence** work
+([plan](./bramble-convergence.md)). Privacy is **parked**, not next — see
+[#20](https://github.com/starknet-innovation/strkd/issues/20).
+
+**Declare fixed 2026-09-09 (#9).** Declares failed on-chain with `Account:
+invalid signature` because the wallet signed the caller's `class_hash`, while
+the node derives that hash from the broadcast `contract_class` and validates
+against the tx hash built from *its* value. The wallet now derives the class
+hash itself (`wallet_core::class_hash`), cross-checks a supplied one (mismatch →
+`114`, both hashes named), and returns a complete `BROADCASTED_DECLARE_TXN_V3`
+sign-only instead of five fields. Verified against live Sepolia with
+`cargo run -p wallet-rpc --example live_declare_check` (read-only): the derived
+class hash matches the node's for a live class, the node returns a real estimate
+for our declare object, and with validation on plus a bogus signature it fails
+at `__validate_declare__` alone. See spec §7.4.1.
 
 Start from [`desktop.md`](../code/desktop.md) (for 1) or spec
 [§7.4 Broadcast modes](../../spec/wallet-companion-spec.md#74-broadcast-modes-sign-only-default-submit-opt-in) (for 2).
@@ -143,7 +157,10 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - **Phase 2 verification** — node wire format **live-verified** for
   nonce/deploy-status/estimate (Sepolia v0.10, 2026-06-09); the **broadcast hop**
   (`add_invoke`/`add_deploy_account`) still needs a funded-account submit.
-- **Phase 3** — Tongo / STRK20 methods (`strk20*`) via `krusty-kms-sdk`.
+- **Privacy (`strk20*`)** — **parked**, not pending. An implementation exists on
+  `feat/strk20-tongo-phase3` (PR #11, unmerged); Tongo cannot express the
+  standard surface. See [#20](https://github.com/starknet-innovation/strkd/issues/20)
+  and [`bramble-convergence.md`](./bramble-convergence.md) §5.6.
 - **Invoke end-to-end** — prove the computed invoke tx hash is accepted by a
   Sepolia node / matches a golden vector (belongs with the security-reviewed
   test plan).
@@ -180,4 +197,4 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - `StarkSignature` field usage / `compute_typed_data_message_hash` input shape
   (needed for `signTypedData`).
 - OZ class-hash manifest currency per network.
-- Tongo SDK method signatures (Phase 3).
+- Tongo SDK method signatures (only if privacy is un-parked, #20).

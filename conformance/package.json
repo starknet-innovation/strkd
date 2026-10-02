@@ -1,0 +1,14 @@
+{
+  "name": "strkd-conformance",
+  "private": true,
+  "description": "Independent re-derivation of crates/wallet-core/tests/fixtures/conformance-vectors.json (issue #17).",
+  "type": "module",
+  "scripts": {
+    "verify": "node verify.mjs"
+  },
+  "dependencies": {
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0",
+    "starknet": "10.8.0"
+  }
+}

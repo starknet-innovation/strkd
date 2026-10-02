@@ -35,6 +35,25 @@ pub enum NodeError {
     Decode(String),
 }
 
+/// Finality + execution state of a broadcast transaction.
+///
+/// Needed to sequence dependent transactions: a freshly funded account cannot
+/// pay for its own deploy until the funding transfer is in a block, and it
+/// cannot send until the deploy is. See [`crate::sweep`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxState {
+    /// Not yet in a block — either the node hasn't seen it or it's `RECEIVED`.
+    /// A hash the node doesn't know yet also lands here: broadcast and lookup
+    /// can race, and treating "unknown" as failed would abort a healthy sweep.
+    Pending,
+    /// In a block and executed successfully.
+    Accepted,
+    /// In a block but reverted, or rejected outright. Carries the node's reason
+    /// when it gives one — a reverted fee transfer must stop the sweep rather
+    /// than let the next step fail more confusingly.
+    Failed(String),
+}
+
 impl std::fmt::Display for NodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -123,6 +142,20 @@ pub trait StarknetRpc: Send + Sync {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError>;
+
+    /// Finality + execution state of a broadcast transaction, for sequencing
+    /// dependent transactions.
+    async fn tx_state(&self, tx_hash: &Felt) -> Result<TxState, NodeError>;
+}
+
+/// TXN_HASH_NOT_FOUND: JSON-RPC error code 29. `m` is the serialized error
+/// object; match its code, not any "29" substring (a hash or message can
+/// contain one).
+fn is_tx_not_found(m: &str) -> bool {
+    serde_json::from_str::<Value>(m)
+        .ok()
+        .and_then(|v| v.get("code").and_then(|c| c.as_i64()))
+        == Some(29)
 }
 
 fn fh(f: &Felt) -> String {
@@ -312,43 +345,6 @@ impl HttpStarknetRpc {
         })
     }
 
-    /// DECLARE v3 tx JSON. `contract_class` is the caller-supplied Sierra class
-    /// object (the node derives the class hash from it).
-    fn declare_tx_json(
-        sender: &Felt,
-        compiled_class_hash: &Felt,
-        contract_class: &Value,
-        signature: &[Felt],
-        nonce: &Felt,
-        bounds: &FeeBounds,
-    ) -> Value {
-        let rb = |b: &ResourceBounds| {
-            json!({
-                "max_amount": u128_to_hex(b.max_amount as u128),
-                "max_price_per_unit": u128_to_hex(b.max_price_per_unit),
-            })
-        };
-        json!({
-            "type": "DECLARE",
-            "version": "0x3",
-            "sender_address": fh(sender),
-            "compiled_class_hash": fh(compiled_class_hash),
-            "contract_class": contract_class,
-            "signature": signature.iter().map(fh).collect::<Vec<_>>(),
-            "nonce": fh(nonce),
-            "resource_bounds": {
-                "l1_gas": rb(&bounds.l1_gas),
-                "l2_gas": rb(&bounds.l2_gas),
-                "l1_data_gas": rb(&bounds.l1_data_gas),
-            },
-            "tip": "0x0",
-            "paymaster_data": [],
-            "account_deployment_data": [],
-            "nonce_data_availability_mode": "L1",
-            "fee_data_availability_mode": "L1",
-        })
-    }
-
     fn bounds_from_estimate(&self, est: &Value) -> Result<FeeBounds, NodeError> {
         let bound = |amount_key: &str, price_key: &str| -> Result<ResourceBounds, NodeError> {
             Ok(ResourceBounds {
@@ -515,7 +511,8 @@ impl StarknetRpc for HttpStarknetRpc {
         contract_class: &Value,
         nonce: &Felt,
     ) -> Result<FeeBounds, NodeError> {
-        let tx = Self::declare_tx_json(sender, compiled_class_hash, contract_class, &[], nonce, &ZERO_BOUNDS);
+        let tx =
+            declare_v3_tx_json(sender, compiled_class_hash, Some(contract_class), &[], nonce, &ZERO_BOUNDS);
         let r = self
             .call(
                 "starknet_estimateFee",
@@ -537,10 +534,98 @@ impl StarknetRpc for HttpStarknetRpc {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError> {
-        let tx = Self::declare_tx_json(sender, compiled_class_hash, contract_class, signature, nonce, bounds);
+        let tx = declare_v3_tx_json(
+            sender,
+            compiled_class_hash,
+            Some(contract_class),
+            signature,
+            nonce,
+            bounds,
+        );
         let r = self
             .call("starknet_addDeclareTransaction", json!({ "declare_transaction": tx }))
             .await?;
         Self::parse_felt(&r["transaction_hash"], "transaction_hash")
     }
+
+    async fn tx_state(&self, tx_hash: &Felt) -> Result<TxState, NodeError> {
+        let r = match self
+            .call("starknet_getTransactionStatus", json!({ "transaction_hash": fh(tx_hash) }))
+            .await
+        {
+            Ok(v) => v,
+            // TXN_HASH_NOT_FOUND (spec error 29): the node hasn't seen it yet.
+            // Broadcast and the first status poll routinely race, so this is
+            // "not yet", not "failed".
+            Err(NodeError::Rpc(m)) if is_tx_not_found(&m) => return Ok(TxState::Pending),
+            Err(e) => return Err(e),
+        };
+
+        let finality = r.get("finality_status").and_then(|v| v.as_str()).unwrap_or("");
+        // execution_status is absent while the tx is only RECEIVED.
+        let execution = r.get("execution_status").and_then(|v| v.as_str()).unwrap_or("");
+
+        if finality == "REJECTED" {
+            let why = r
+                .get("failure_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("rejected by the sequencer");
+            return Ok(TxState::Failed(why.to_string()));
+        }
+        if execution == "REVERTED" {
+            let why = r
+                .get("failure_reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("reverted on-chain");
+            return Ok(TxState::Failed(why.to_string()));
+        }
+        match finality {
+            "ACCEPTED_ON_L2" | "ACCEPTED_ON_L1" => Ok(TxState::Accepted),
+            _ => Ok(TxState::Pending),
+        }
+    }
+}
+
+/// A complete, canonical-hex RPC `BROADCASTED_DECLARE_TXN_V3` object. Shared by
+/// estimate, broadcast and the sign-only response so callers get a
+/// **ready-to-broadcast** transaction. `contract_class` is the canonical RPC
+/// `CONTRACT_CLASS` (see `wallet_core::SierraClass::to_rpc_json`) — the node
+/// derives the class hash from it — and is omitted from the object when `None`
+/// (sign-only without the class; the caller splices theirs in).
+pub fn declare_v3_tx_json(
+    sender: &Felt,
+    compiled_class_hash: &Felt,
+    contract_class: Option<&Value>,
+    signature: &[Felt],
+    nonce: &Felt,
+    bounds: &FeeBounds,
+) -> Value {
+    let rb = |b: &ResourceBounds| {
+        json!({
+            "max_amount": u128_to_hex(b.max_amount as u128),
+            "max_price_per_unit": u128_to_hex(b.max_price_per_unit),
+        })
+    };
+    let mut tx = json!({
+        "type": "DECLARE",
+        "version": "0x3",
+        "sender_address": fh(sender),
+        "compiled_class_hash": fh(compiled_class_hash),
+        "signature": signature.iter().map(fh).collect::<Vec<_>>(),
+        "nonce": fh(nonce),
+        "resource_bounds": {
+            "l1_gas": rb(&bounds.l1_gas),
+            "l2_gas": rb(&bounds.l2_gas),
+            "l1_data_gas": rb(&bounds.l1_data_gas),
+        },
+        "tip": "0x0",
+        "paymaster_data": [],
+        "account_deployment_data": [],
+        "nonce_data_availability_mode": "L1",
+        "fee_data_availability_mode": "L1",
+    });
+    if let Some(cc) = contract_class {
+        tx["contract_class"] = cc.clone();
+    }
+    tx
 }
