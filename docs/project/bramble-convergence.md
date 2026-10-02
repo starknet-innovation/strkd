@@ -1,6 +1,6 @@
 # Bramble Convergence — Plan
 
-**Status:** Decisions settled 2026-09-10; implementation in review (PRs #22–#28, stacked on #22). The sweep (#22) must run before #24 ships.
+**Status:** Executed. Merged 2026-10-02 (#13, #22–#28); the sweep was run before the derivation change shipped, then removed (#31). Remaining: krusty provenance (decision F, #21).
 **Relates to:** [`spec/wallet-companion-spec.md`](../../spec/wallet-companion-spec.md) §6 (account model), §14 (risks),
 [`spec/portability-test-plan.md`](../../spec/portability-test-plan.md), [`backlog.md`](./backlog.md)
 

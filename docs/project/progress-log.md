@@ -8,6 +8,31 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-10-02 — Temporary sweep removed (#31)
+
+**Did**
+- Deleted the ERC-20 sweep (#14 / PR #22): `wallet-rpc`'s `sweep` module and
+  tests, the desktop commands, the Sweep tab and its API types, and the
+  sweep-only `StarknetRpc::tx_state` / `TxState`. `balance_of` and
+  `estimate_deploy_account` stay, since the balance display and deploy flow use them.
+
+**Decisions**
+- The maintainer ran the sweep before #24 shipped, which was its whole purpose.
+  After the cutover it would derive the *new* addresses and consolidate current
+  accounts: a different operation from the one it was built and reviewed for.
+  It was also the riskiest control in the wallet.
+- Removed before 0.2.0 was published, so no 0.2.0 desktop build ships it. The
+  CLI never contained it (it doesn't link the wallet crates).
+
+**Verify**
+- `git grep -i sweep -- crates desktop/src desktop/src-tauri/src` returns
+  nothing; `cargo test --locked --workspace` is green.
+
+**Next / Resume**
+- Re-cut `desktop-v0.2.0` from main.
+
+---
+
 ## 2026-10-02 — Breaking: bramble address conventions (#16) and the index bound
 
 **Did**

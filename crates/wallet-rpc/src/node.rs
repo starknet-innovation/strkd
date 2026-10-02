@@ -35,25 +35,6 @@ pub enum NodeError {
     Decode(String),
 }
 
-/// Finality + execution state of a broadcast transaction.
-///
-/// Needed to sequence dependent transactions: a freshly funded account cannot
-/// pay for its own deploy until the funding transfer is in a block, and it
-/// cannot send until the deploy is. See [`crate::sweep`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TxState {
-    /// Not yet in a block — either the node hasn't seen it or it's `RECEIVED`.
-    /// A hash the node doesn't know yet also lands here: broadcast and lookup
-    /// can race, and treating "unknown" as failed would abort a healthy sweep.
-    Pending,
-    /// In a block and executed successfully.
-    Accepted,
-    /// In a block but reverted, or rejected outright. Carries the node's reason
-    /// when it gives one — a reverted fee transfer must stop the sweep rather
-    /// than let the next step fail more confusingly.
-    Failed(String),
-}
-
 impl std::fmt::Display for NodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -142,20 +123,6 @@ pub trait StarknetRpc: Send + Sync {
         nonce: &Felt,
         bounds: &FeeBounds,
     ) -> Result<Felt, NodeError>;
-
-    /// Finality + execution state of a broadcast transaction, for sequencing
-    /// dependent transactions.
-    async fn tx_state(&self, tx_hash: &Felt) -> Result<TxState, NodeError>;
-}
-
-/// TXN_HASH_NOT_FOUND: JSON-RPC error code 29. `m` is the serialized error
-/// object; match its code, not any "29" substring (a hash or message can
-/// contain one).
-fn is_tx_not_found(m: &str) -> bool {
-    serde_json::from_str::<Value>(m)
-        .ok()
-        .and_then(|v| v.get("code").and_then(|c| c.as_i64()))
-        == Some(29)
 }
 
 fn fh(f: &Felt) -> String {
@@ -546,43 +513,6 @@ impl StarknetRpc for HttpStarknetRpc {
             .call("starknet_addDeclareTransaction", json!({ "declare_transaction": tx }))
             .await?;
         Self::parse_felt(&r["transaction_hash"], "transaction_hash")
-    }
-
-    async fn tx_state(&self, tx_hash: &Felt) -> Result<TxState, NodeError> {
-        let r = match self
-            .call("starknet_getTransactionStatus", json!({ "transaction_hash": fh(tx_hash) }))
-            .await
-        {
-            Ok(v) => v,
-            // TXN_HASH_NOT_FOUND (spec error 29): the node hasn't seen it yet.
-            // Broadcast and the first status poll routinely race, so this is
-            // "not yet", not "failed".
-            Err(NodeError::Rpc(m)) if is_tx_not_found(&m) => return Ok(TxState::Pending),
-            Err(e) => return Err(e),
-        };
-
-        let finality = r.get("finality_status").and_then(|v| v.as_str()).unwrap_or("");
-        // execution_status is absent while the tx is only RECEIVED.
-        let execution = r.get("execution_status").and_then(|v| v.as_str()).unwrap_or("");
-
-        if finality == "REJECTED" {
-            let why = r
-                .get("failure_reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("rejected by the sequencer");
-            return Ok(TxState::Failed(why.to_string()));
-        }
-        if execution == "REVERTED" {
-            let why = r
-                .get("failure_reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("reverted on-chain");
-            return Ok(TxState::Failed(why.to_string()));
-        }
-        match finality {
-            "ACCEPTED_ON_L2" | "ACCEPTED_ON_L1" => Ok(TxState::Accepted),
-            _ => Ok(TxState::Pending),
-        }
     }
 }
 
