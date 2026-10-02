@@ -148,6 +148,16 @@ pub trait StarknetRpc: Send + Sync {
     async fn tx_state(&self, tx_hash: &Felt) -> Result<TxState, NodeError>;
 }
 
+/// TXN_HASH_NOT_FOUND: JSON-RPC error code 29. `m` is the serialized error
+/// object; match its code, not any "29" substring (a hash or message can
+/// contain one).
+fn is_tx_not_found(m: &str) -> bool {
+    serde_json::from_str::<Value>(m)
+        .ok()
+        .and_then(|v| v.get("code").and_then(|c| c.as_i64()))
+        == Some(29)
+}
+
 fn fh(f: &Felt) -> String {
     format!("0x{:x}", f)
 }
@@ -547,9 +557,7 @@ impl StarknetRpc for HttpStarknetRpc {
             // TXN_HASH_NOT_FOUND (spec error 29): the node hasn't seen it yet.
             // Broadcast and the first status poll routinely race, so this is
             // "not yet", not "failed".
-            Err(NodeError::Rpc(m)) if m.contains("29") || m.to_lowercase().contains("not found") => {
-                return Ok(TxState::Pending)
-            }
+            Err(NodeError::Rpc(m)) if is_tx_not_found(&m) => return Ok(TxState::Pending),
             Err(e) => return Err(e),
         };
 

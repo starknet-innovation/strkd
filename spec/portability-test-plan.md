@@ -44,7 +44,7 @@ Address from public key: `OpenZeppelinAccount::latest(chain_id).deployment_descr
 ## 4. Test cases
 
 ### T1 — User-branch public-key portability (Argent)
-**Goal:** prove the companion derives the *same key* Argent does for `m/44'/9004'/0'/0/i`.
+**Goal:** prove the companion derives the *same key* another wallet does for user account `i`, which strkd now derives at `m/44'/9004'/i'/0/0` (account index `i`, address index 0 — bramble's recovery-scan axis, since #16). Note that Argent's own scan may walk a different axis; record which one it uses.
 1. On the test machine, generate a **test-only** mnemonic using official, offline tooling.
 2. In the companion, derive user accounts `i = 0..4`; record the **public keys**.
 3. Using Argent's open-source recover tooling (`argentlabs/argent-starknet-recover`) with the same mnemonic, derive the public keys for the same indices.
@@ -70,9 +70,10 @@ Repeat T1/T2 against **Braavos**. Braavos's seed step is unconfirmed, so treat a
 
 ### T4 — Agent-branch non-collision
 **Goal:** prove agent accounts never appear in mainstream wallets and never collide with user accounts.
-1. In the companion, derive agent accounts `j = 0..4` (`account_index = 0x41`); record public keys/addresses.
-2. Confirm Argent and Braavos, scanning the same mnemonic, **do not** surface any of these accounts (they only scan `account' = 0'`).
-3. **Assert:** agent public keys are disjoint from the full user-branch set; no agent address appears in either wallet's account list.
+1. In the companion, derive agent accounts `j = 0..4` (`m/44'/9004'/0x41474E54'/0/j` — account index `0x41474E54`, "AGNT"; it was `0x41` before #16); record public keys/addresses.
+2. Confirm bramble, Argent and Braavos, scanning the same mnemonic, **do not** surface any of these accounts (bramble scans account indices 0–19; the agent index is 1,095,192,148).
+3. Confirm the companion **refuses** a user account number at or above `0x41474E54` (it would derive on the agent branch): `Domain::User.check_index` must error.
+4. **Assert:** agent public keys are disjoint from the full user-branch set; no agent address appears in any wallet's account list.
 
 ### T5 — krusty-kms internal consistency (known-answer)
 **Goal:** lock the derivation against regressions without depending on a live wallet.

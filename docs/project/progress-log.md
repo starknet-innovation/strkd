@@ -8,6 +8,39 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-10-02 — Breaking: bramble address conventions (#16) and the index bound
+
+**Did**
+- Adopted bramble's conventions in one release (#24): OZ salt `0x0`; user
+  account *n* at `m/44'/9004'/n'/0/0`; agent account *j* at
+  `m/44'/9004'/0x41474E54'/0/j`. **Every address changes.** The vault version
+  is now 2, and v1 vaults are refused with a clear message (the old file is kept
+  as `vault.bin.v1.<ms>.bak`, never deleted).
+- Review fix: account numbers are bounded per branch (`Domain::check_index`,
+  enforced inside derivation). With users on the account axis, an unbounded
+  user index reached the agent branch, and `companion_requestFunding`'s
+  `funding_source_index` let one agent get a transfer signed by another agent's
+  account. The approval prompt now names the funding source too.
+
+**Decisions**
+- No migration (decision J). Assets are recovered beforehand with the temporary
+  sweep (#14, PR #22), which must run **before** this ships.
+- The salt rationale is cost, not a krusty defect: krusty#138 was withdrawn
+  (see plan §3.1).
+
+**Verify**
+- `cargo test --workspace` (green), plus the `conformance` fixture (#25).
+
+**Next / Resume**
+- Run the sweep on Sepolia, then mainnet after its security review; then ship
+  #24 and #25 together.
+
+**Notes / caveats**
+- Any wallet or tool that pinned strkd addresses or paths from before this
+  entry is now wrong. `spec/portability-test-plan.md` T1/T4 are updated.
+
+---
+
 ## 2026-06-11 — Deploy/funding correctness + Accounts UX (balances, wiggle, pending) + user-action logging
 
 Triggered by a maintainer deploy session: clicking Deploy too early failed with a

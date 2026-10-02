@@ -26,6 +26,15 @@ function fmt(raw: string, decimals: number): string {
   }
 }
 
+/** Same address regardless of case or leading zeros. */
+function sameAddress(a: string, b: string): boolean {
+  try {
+    return BigInt(a.trim()) === BigInt(b.trim());
+  } catch {
+    return false;
+  }
+}
+
 function short(addr: string): string {
   return addr.length > 16 ? `${addr.slice(0, 10)}…${addr.slice(-6)}` : addr;
 }
@@ -47,7 +56,7 @@ function Row({ p }: { p: AccountPlan }) {
         ) : (
           p.balances.map((b) => (
             <div key={b.token}>
-              {fmt(b.amount, 18)} {b.symbol}
+              {fmt(b.amount, b.decimals)} {b.symbol}
             </div>
           ))
         )}
@@ -56,6 +65,9 @@ function Row({ p }: { p: AccountPlan }) {
         {!p.deployed && <div>not deployed</div>}
         {p.needs_deploy && <div className="muted">will be deployed</div>}
         {p.needs_gas !== "0" && <div className="muted">needs {fmt(p.needs_gas, 18)} STRK gas</div>}
+        {p.fee_reserve !== "0" && (
+          <div className="muted">keeps ≤ {fmt(p.fee_reserve, 18)} STRK for its own fee</div>
+        )}
         {blocked && (
           <div style={{ color: "var(--bramble-danger)", fontSize: "var(--type-micro)" }}>{p.blockers.join("; ")}</div>
         )}
@@ -112,7 +124,8 @@ export function Sweep({ status }: { status: Status | null }) {
     setProgress([]);
     setBusy("running");
     try {
-      setReport(await api.sweepExecute(destination.trim()));
+      if (!plan) return;
+      setReport(await api.sweepExecute(destination.trim(), plan.fingerprint));
       setPlan(null);
       setConfirmText("");
     } catch (e) {
@@ -123,7 +136,9 @@ export function Sweep({ status }: { status: Status | null }) {
   };
 
   const sweepable = plan?.accounts.filter((a) => a.balances.length > 0 && !a.is_destination) ?? [];
-  const confirmed = confirmText.trim().toUpperCase() === "SWEEP";
+  // Confirm by entering the destination a second time: typing a fixed word
+  // proves nothing about the address, and a typo here sends everything away.
+  const confirmed = !!plan && sameAddress(confirmText, plan.destination);
 
   return (
     <div className="panel">
@@ -204,7 +219,13 @@ export function Sweep({ status }: { status: Status | null }) {
             <strong>Total to move:</strong>{" "}
             {plan.totals.length === 0
               ? "nothing"
-              : plan.totals.map((t) => `${fmt(t.amount, 18)} ${t.symbol}`).join(" · ")}
+              : plan.totals.map((t) => `${fmt(t.amount, t.decimals)} ${t.symbol}`).join(" · ")}
+            {plan.left_behind !== "0" && (
+              <span className="muted">
+                {" "}
+                (less up to {fmt(plan.left_behind, 18)} STRK kept back for fees)
+              </span>
+            )}
           </p>
           <p className="muted" style={{ fontSize: 12 }}>
             Destination <code>{plan.destination}</code>
@@ -216,14 +237,14 @@ export function Sweep({ status }: { status: Status | null }) {
           {plan.totals.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <label className="muted" style={{ fontSize: 12 }}>
-                Type SWEEP to confirm
+                Enter the destination address again to confirm
               </label>
               <input
                 className="input"
-                style={{ width: 160 }}
+                style={{ width: "100%", fontFamily: "ui-monospace, monospace" }}
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
-                placeholder="SWEEP"
+                placeholder="0x…"
                 spellCheck={false}
               />
               <button
@@ -232,7 +253,7 @@ export function Sweep({ status }: { status: Status | null }) {
                 onClick={doExecute}
                 disabled={!confirmed || busy !== ""}
               >
-                {busy === "running" ? "Sweeping…" : `Sweep to ${short(plan.destination)}`}
+                {busy === "running" ? "Sweeping…" : `Sweep to ${plan.destination}`}
               </button>
             </div>
           )}
@@ -274,7 +295,12 @@ export function Sweep({ status }: { status: Status | null }) {
                     <div>{o.status}</div>
                     {o.moved.map((m) => (
                       <div key={m.token} className="muted" style={{ fontSize: 11 }}>
-                        {fmt(m.amount, 18)} {m.symbol}
+                        {fmt(m.amount, m.decimals)} {m.symbol}
+                      </div>
+                    ))}
+                    {o.left_behind.map((m) => (
+                      <div key={`left-${m.token}`} className="muted" style={{ fontSize: 11 }}>
+                        left behind ≤ {fmt(m.amount, m.decimals)} {m.symbol}
                       </div>
                     ))}
                     {o.detail && (

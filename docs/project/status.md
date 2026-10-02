@@ -197,4 +197,4 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - `StarkSignature` field usage / `compute_typed_data_message_hash` input shape
   (needed for `signTypedData`).
 - OZ class-hash manifest currency per network.
-- Tongo SDK method signatures (Phase 3).
+- Tongo SDK method signatures (only if privacy is un-parked, #20).
