@@ -27,7 +27,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 ### 1.2 Non-goals (v1)
 - ❌ Hardware-wallet / external-signer support.
 - ❌ Multi-device vault sync (vault stays local).
-- ❌ Key export / seed re-reveal UI after setup.
+- ❌ **Private-key** export (per-account keys are never shown or returned). Recovery-phrase reveal *is* supported as of [#28](https://github.com/starknet-innovation/strkd/issues/28) — see [§6.5](#65-recovery-phrase-reveal) — but only in the app's own window, behind a fresh passphrase check, and never over the service.
 - ❌ Browser-dApp (`get-starknet`) injection — callers are local native processes only.
 - ❌ Transaction **simulation / effects preview** in the prompt (decode + fee only; see [§8](#8-confirmation-ux)). Note: fee *estimation* is in scope; full simulation is not.
 - ✅ Auto-approval via **time-bounded permission grants** (see §5.8). (Per-call
@@ -256,7 +256,34 @@ On first run, the user chooses:
 - **Generate:** `generate_mnemonic` → display once (12/24 words) with a verification step → encrypt into the vault. Set passphrase.
 - **Import:** paste an existing phrase → `validate_mnemonic` → encrypt into the vault. Set passphrase.
 
-No re-reveal/export of the mnemonic after setup (non-goal).
+### 6.5 Recovery-phrase reveal
+
+**Reversal of an earlier non-goal ([#28](https://github.com/starknet-innovation/strkd/issues/28)).**
+This spec previously ruled out any re-reveal. That made strkd a one-way door for a seed it had
+generated: a user who lost their written backup could neither move to another device nor to
+bramble, which does offer a reveal flow. Worse, it interacts badly with vault-version changes —
+a vault strkd refuses to open is a seed nobody can recover.
+
+Settings offers **Show recovery phrase**, subject to all of:
+
+- **Re-authentication is cryptographic, not a comparison.** The reveal decrypts the *on-disk vault*
+  with the passphrase supplied at that moment; a wrong one fails at the AES-GCM tag. Deliberately
+  not read from the unlocked session — the app stays unlocked for a whole session, and that must
+  not be the same thing as consenting to show the seed.
+- **Unlocked is necessary but not sufficient.** Refused from the lock screen.
+- **IPC only.** There is no `wallet_*` or `companion_*` equivalent and there must never be: the
+  loopback service is reachable by any local process, including the AI agents strkd exists to
+  serve, and [§5.1](#51-security-boundary) is that it never returns key material. A test
+  (`the_service_exposes_no_way_to_reveal_the_seed`) fails if such a method is added.
+- **Never logged.** The reveal is recorded in the request log as an event (`ui_revealSeed`, with
+  its outcome); the phrase itself is never written to the log, disk, or any other sink.
+- **Shown, not copied.** Blurred until clicked, cleared on hide, on leaving the tab, and after a
+  two-minute timeout. There is no copy button: the system clipboard is readable by every other
+  process on the machine, which is precisely the threat model here.
+
+**Per-account private keys remain a non-goal.** Bramble's equivalent screen reveals both; strkd
+reveals only the phrase, which is the smaller surface and the one that actually enables recovery
+and portability.
 
 ---
 
