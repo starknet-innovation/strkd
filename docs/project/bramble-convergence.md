@@ -1,6 +1,6 @@
 # Bramble Convergence — Plan
 
-**Status:** Decisions settled 2026-09-10; execution not started
+**Status:** Decisions settled 2026-09-10; implementation in review (PRs #22–#28, stacked on #22). The sweep (#22) must run before #24 ships.
 **Relates to:** [`spec/wallet-companion-spec.md`](../../spec/wallet-companion-spec.md) §6 (account model), §14 (risks),
 [`spec/portability-test-plan.md`](../../spec/portability-test-plan.md), [`backlog.md`](./backlog.md)
 
@@ -188,6 +188,8 @@ things in the two wallets. Parking avoids that without discarding the work.
 
 ### 6.1 krusty — release provenance (blocks decision F)
 
+Filed as [krusty-kms#137](https://github.com/starknet-innovation/krusty-kms/issues/137) (open).
+
 `publish-npm.yml` triggers on pushes to `main`, not tags. Neither npm `0.10.0` nor `0.11.0` records
 a `gitHead`, and the git tags do not correspond to the publishes: tag `v0.10.0` points at commit
 `5ae1d98`, dated 2026-09-02, five days *after* npm 0.10.0 was published, and carries an Argent
@@ -222,7 +224,8 @@ Add `0x41474E54` as a reserved account index on bramble's side so the agent-bran
 enforced rather than assumed. Bramble scans `accountIndex` 0–19 by default but permits manual
 indices up to `0x7FFFFFFF`, so nothing currently prevents a collision.
 
-This is the only bramble-side code change in the plan.
+This is the only bramble-side code change in the plan. Filed as `mc-wallet#336`. strkd enforces
+its own side since #24's review: a user account number at or above `0x41474E54` is refused.
 
 ## 7. Issue map
 
