@@ -102,6 +102,38 @@ decoded from the prover's L2→L1 message and is application-specific, so a gene
 wallet can't assemble it. The caller takes `result.{proof,proof_facts,l2_to_l1_messages}`
 and broadcasts Tx B via `wallet_addInvokeTransaction { proof_facts, proof, submit:true }`.
 
+## Proof size limit
+
+One SNIP-36 transaction can be proved only if its execution trace fits the
+verifier the network accepts. For the bundled stack (snip36 v1.2.x, proving-utils
+`v0.14.3-rust-bump`, `PROOF1`) that is **at most 2^20 rows in any single AIR
+component**: the prover precomputes twiddles for a `2^(20+3)` domain
+(`CAIRO_TRACE_LOG_SIZE = 20`, `CAIRO_LOG_BLOWUP_FACTOR = 3`), and a larger
+component panics with `Not enough twiddles!`. It is a protocol constant, not a
+machine limit — more RAM or a retry does not help.
+
+- Rule of thumb ≈ 1M Cairo steps (the sequencer's own sizing guidance), but the
+  bound is per component: `ec_op` and `keccak` are outside the recursive
+  verifier's component set and are emulated in Cairo by the privacy bootloader,
+  so ECDSA/keccak-heavy code hits it well before 1M steps (issue #29: ~100 ECDSA
+  verifies per tx).
+- Splitting across calls *inside* one tx doesn't help — they share one trace.
+  Split across separate transactions, each proved on its own.
+- `classify_prover_error` maps the panic to `transaction too large to prove: …`
+  naming the limit. The measured `n_steps` can't be reported: the runner logs it
+  to stdout, which the snip36 CLI pipes and never reads.
+
+**Block-sized proofs (Starknet v0.14.4).** v0.14.4 adds a "large proof" path
+(proving PR #183, `privacy_recursive_prove_large`, a leaf prover for traces of
+2^25–2^29 rows) for any single-tx virtual block that would fit in a block
+gas-wise, up to 1.1B L2 gas (`execute_max_sierra_gas` = 1.11B in the 0.14.4
+versioned constants). It emits `PROOF2`, and the stock `starknet_transaction_prover`
+service does not call it (still small-proof only, even on `main-v0.14.4`).
+As of 2026-10-01 no live gateway accepts `PROOF2`: Sepolia (0.14.4 blocks) returns
+`PROOF_VERSION_NOT_ALLOWED` for it and accepts `PROOF1`; mainnet is on 0.14.3
+(0.14.4 slated for 2026-10-05, pending governance, with the 0.14.4 deploy config
+turning `PROOF1` off). Until a gateway accepts `PROOF2`, the cap above is the max.
+
 ## Native prover bundling
 
 The native backend needs the SNIP-36 / stwo prover stack on disk (286–403 MB).
