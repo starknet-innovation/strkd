@@ -91,8 +91,11 @@ fn sign_hash(mnemonic: &str, domain: Domain, index: u32,
 
 - The private key is derived on demand, used, and dropped immediately; it is
   never returned or logged.
-- `oz_address` uses `SaltPolicy::PublicKey` and the OZ class hash from krusty's
-  per-network manifest.
+- `oz_address` uses `SaltPolicy::Zero` (since #16, matching bramble) and the OZ
+  class hash from krusty's per-network manifest.
+- Account numbers are bounded per branch (`Domain::check_index`): a user number
+  must stay below the reserved agent index `0x41474E54`, or it would derive an
+  agent key.
 - `sign_hash` signs a caller-supplied hash (a tx hash or a SNIP-12 typed-data
   hash). Stark ECDSA is RFC-6979 deterministic, so signing the same hash with
   the same key is reproducible — tests rely on this.

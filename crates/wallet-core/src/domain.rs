@@ -36,8 +36,16 @@
 //! The reservation is a convention, not something the chain enforces: another
 //! wallet given a manual index could still derive here. Bramble is being asked
 //! to exclude it explicitly (`mc-wallet#336`).
+//!
+//! **strkd enforces it.** Because user account *n* sits at account index *n*, an
+//! unbounded user index *would* reach the agent branch (and, at `0x80000000` or
+//! above, wrap: the hardened bit is ORed in, so `0xC1474E54` derives the same
+//! key as `0x41474E54`). [`Domain::check_index`] bounds both branches, and every
+//! derivation goes through it.
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::CoreError;
 
 /// Starknet SLIP-44 coin type (9004), re-exported from krusty for a single
 /// source of truth.
@@ -55,6 +63,14 @@ pub const USER_ACCOUNT_INDEX: u32 = 0;
 
 /// BIP-32's ceiling on a hardened index. Anything reserved must be below it.
 pub const MAX_HARDENED_INDEX: u32 = 0x7FFF_FFFF;
+
+/// Exclusive upper bound on a user account number: user account *n* is account
+/// index *n*, so it must stay below the reserved agent index.
+pub const USER_INDEX_LIMIT: u32 = AGENT_ACCOUNT_INDEX;
+
+/// Exclusive upper bound on an agent account number (a non-hardened address
+/// index: at `2^31` and above it would read as hardened).
+pub const AGENT_INDEX_LIMIT: u32 = 0x8000_0000;
 
 /// Which derivation branch an account belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,6 +91,21 @@ impl Domain {
         match self {
             Domain::User => (n, 0),
             Domain::Agent => (AGENT_ACCOUNT_INDEX, n),
+        }
+    }
+
+    /// Refuse an account number outside this branch's range. A user number at or
+    /// above [`USER_INDEX_LIMIT`] would derive an agent (or another user's)
+    /// key; this is what keeps the branches apart, so derivation calls it.
+    pub fn check_index(self, n: u32) -> Result<(), CoreError> {
+        let limit = match self {
+            Domain::User => USER_INDEX_LIMIT,
+            Domain::Agent => AGENT_INDEX_LIMIT,
+        };
+        if n < limit {
+            Ok(())
+        } else {
+            Err(CoreError::IndexOutOfRange { domain: self, index: n })
         }
     }
 
@@ -101,6 +132,17 @@ mod tests {
         // the wrong path rather than fail, so this must never build.
         const _: () = assert!(AGENT_ACCOUNT_INDEX < MAX_HARDENED_INDEX);
         assert_eq!(AGENT_ACCOUNT_INDEX, u32::from_be_bytes(*b"AGNT"));
+    }
+
+    #[test]
+    fn indices_that_would_reach_another_branch_are_refused() {
+        // Each of these derived an agent key (or wrapped onto user 0) before.
+        for n in [AGENT_ACCOUNT_INDEX, 0xC147_4E54, 0x8000_0000, u32::MAX] {
+            assert!(Domain::User.check_index(n).is_err(), "user {n:#x}");
+        }
+        assert!(Domain::Agent.check_index(0x8000_0000).is_err());
+        assert!(Domain::User.check_index(AGENT_ACCOUNT_INDEX - 1).is_ok());
+        assert!(Domain::User.check_index(0).is_ok() && Domain::Agent.check_index(0).is_ok());
     }
 
     #[test]
