@@ -42,10 +42,12 @@ fn main() {
 
     // SNIP-12 rev 1 digests (the #7 defect lived here): a minimal message and
     // one that exercises the common basic types and a nested struct.
+    // `string` and `selector` were wrong/unsupported before the krusty#111 pin
+    // (strkd#32), so they are pinned here explicitly.
     //
-    // Deliberately absent: `string` (krusty's digest disagrees with starknet.js)
-    // and `selector` (krusty rejects it). Both are known divergences, recorded
-    // under `known_divergences` in the fixture, not vectors to agree on.
+    // `i128` is written as a JSON number: krusty's encoder (starknet-rust-core
+    // 0.19.1) rejects it as a string, and rejects non-negative values entirely.
+    // That is a known divergence, recorded in the fixture, not a vector.
     let signer = account_address(TEST_MNEMONIC, Domain::User, 0, None, chain, contract).unwrap();
     let typed = [
         serde_json::json!({
@@ -76,7 +78,9 @@ fn main() {
                     {"name": "weight", "type": "u128"},
                     {"name": "final", "type": "bool"},
                     {"name": "tags", "type": "felt*"},
-                    {"name": "note", "type": "shortstring"}
+                    {"name": "note", "type": "shortstring"},
+                    {"name": "memo", "type": "string"},
+                    {"name": "entrypoint", "type": "selector"}
                 ],
                 "Proposal": [
                     {"name": "id", "type": "felt"},
@@ -92,13 +96,15 @@ fn main() {
                     "id": "0x2a",
                     "target": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
                     "deadline": "1700000000",
-                    "delta": "-5"
+                    "delta": -5
                 },
                 "approver": address_hex(&signer),
                 "weight": "1000000",
                 "final": true,
                 "tags": ["0x1", "0x2", "0x3"],
-                "note": "approve"
+                "note": "approve",
+                "memo": "A ByteArray memo, long enough to span more than one 31-byte word.",
+                "entrypoint": "transfer"
             }
         }),
     ];
@@ -171,9 +177,9 @@ independent implementation before committing, or this file just asserts strkd ag
         "vectors": entries,
         "typed_data_vectors": typed_vectors,
         "known_divergences": [
-            "SNIP-12 rev 1 `string` (ByteArray): krusty's digest differs from starknet.js typedData.getMessageHash, \
-so a strkd signature over a message with a `string` field fails is_valid_signature.",
-            "SNIP-12 rev 1 `selector`: krusty rejects the type entirely."
+            "SNIP-12 rev 1 `i128`: krusty (via starknet-rust-core 0.19.1) accepts only a negative JSON number; \
+it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. strkd refuses \
+to sign such messages (fails closed); when it does sign, the digest matches."
         ],
         "invoke_v3_vectors": invoke_vectors,
     });

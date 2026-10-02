@@ -159,6 +159,14 @@
             {
               "name": "note",
               "type": "shortstring"
+            },
+            {
+              "name": "memo",
+              "type": "string"
+            },
+            {
+              "name": "entrypoint",
+              "type": "selector"
             }
           ],
           "Proposal": [
@@ -192,7 +200,7 @@
             "id": "0x2a",
             "target": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
             "deadline": "1700000000",
-            "delta": "-5"
+            "delta": -5
           },
           "approver": "0x0497e8446398aa1c30e6533382cedc0bca6df29f059fdbb227d9b727c04b7b4f",
           "weight": "1000000",
@@ -202,15 +210,16 @@
             "0x2",
             "0x3"
           ],
-          "note": "approve"
+          "note": "approve",
+          "memo": "A ByteArray memo, long enough to span more than one 31-byte word.",
+          "entrypoint": "transfer"
         }
       },
-      "message_hash": "0x03e38c65f6d5055f69f8c6879b58e8619541d1e6858333da9d5a9d2243923f3c"
+      "message_hash": "0x004f1a7ccf16e7e401350819278a495b70de04c46f2cf48c1f51f5b54af33719"
     }
   ],
   "known_divergences": [
-    "SNIP-12 rev 1 `string` (ByteArray): krusty's digest differs from starknet.js typedData.getMessageHash, so a strkd signature over a message with a `string` field fails is_valid_signature.",
-    "SNIP-12 rev 1 `selector`: krusty rejects the type entirely."
+    "SNIP-12 rev 1 `i128`: krusty (via starknet-rust-core 0.19.1) accepts only a negative JSON number; it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. strkd refuses to sign such messages (fails closed); when it does sign, the digest matches."
   ],
   "invoke_v3_vectors": [
     {
