@@ -102,3 +102,20 @@ fn reveal_does_not_depend_on_session_state() {
     // No session in scope at all; the vault and passphrase are the whole input.
     assert_eq!(&*reveal_mnemonic(&vault, "pass").unwrap() as &str, TEST_MNEMONIC);
 }
+
+/// The desktop path: a locked session refuses even the right passphrase, and an
+/// unlocked one still needs it.
+#[test]
+fn reveal_for_session_refuses_while_locked() {
+    use wallet_rpc::{reveal_for_session, WalletRpcError};
+
+    let unlocked =
+        WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "pass", Registry::default());
+    let vault = unlocked.reseal().unwrap();
+
+    let locked = WalletSession::new_locked(ChainId::Sepolia);
+    assert!(matches!(reveal_for_session(&locked, &vault, "pass"), Err(WalletRpcError::Locked)));
+
+    assert!(reveal_for_session(&unlocked, &vault, "wrong").is_err());
+    assert_eq!(&*reveal_for_session(&unlocked, &vault, "pass").unwrap() as &str, TEST_MNEMONIC);
+}

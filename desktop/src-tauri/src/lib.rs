@@ -679,17 +679,10 @@ fn sweep_default_tokens() -> Vec<SweepToken> {
 /// is logged; the phrase never is.
 #[tauri::command]
 async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Result<String, String> {
-    let network = {
-        let session = state.server.session.lock().await;
-        // Refuse from the lock screen: reveal belongs behind an unlocked app, so
-        // an unattended machine does not offer it.
-        if session.is_locked() {
-            let msg = "unlock the wallet first".to_string();
-            log_ui_action(&state, "ui_revealSeed", chain_name(session.chain()), &format!("error: {msg}"), Some(-32001), None).await;
-            return Err(msg);
-        }
-        chain_name(session.chain()).to_string()
-    };
+    // Wiped when this command returns. (Tauri deserialized it from the IPC
+    // message, so earlier copies exist outside our control.)
+    let passphrase = Zeroizing::new(passphrase);
+    let network = chain_name(state.server.session.lock().await.chain()).to_string();
 
     let vault = match state.vault_store.load() {
         Ok(Some(v)) => v,
@@ -705,16 +698,26 @@ async fn reveal_seed(state: State<'_, DesktopState>, passphrase: String) -> Resu
         }
     };
 
-    match wallet_rpc::reveal_mnemonic(&vault, &passphrase) {
+    // Refused from the lock screen, and otherwise re-authenticated against the
+    // vault — see `wallet_rpc::reveal_for_session`.
+    let revealed = {
+        let session = state.server.session.lock().await;
+        wallet_rpc::reveal_for_session(&session, &vault, &passphrase)
+    };
+    match revealed {
         Ok(phrase) => {
             // Logged as an event only. `result_json` stays None — the phrase must
             // never reach the request log, which the Activity tab renders.
             log_ui_action(&state, "ui_revealSeed", &network, "ok", None, None).await;
+            // The IPC reply needs a plain String; the Zeroizing original is wiped
+            // here, but Tauri's serialized copy is not. That is the limit of
+            // returning a secret over IPC at all.
             Ok(phrase.to_string())
         }
         Err(e) => {
-            let msg = e.to_string();
-            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(114), None).await;
+            let code = if matches!(e, wallet_rpc::WalletRpcError::Locked) { -32001 } else { 114 };
+            let msg = if code == -32001 { "unlock the wallet first".to_string() } else { e.to_string() };
+            log_ui_action(&state, "ui_revealSeed", &network, &format!("error: {msg}"), Some(code), None).await;
             Err(msg)
         }
     }

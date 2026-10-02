@@ -70,15 +70,31 @@ pub fn reveal_mnemonic(
     passphrase: &str,
 ) -> Result<Zeroizing<String>, WalletRpcError> {
     // Wrong passphrase fails here, at the AEAD tag — no separate check needed.
-    let plaintext = vault
-        .open(passphrase)
-        .map_err(|_| WalletRpcError::InvalidRequest("wrong passphrase".into()))?;
+    // AES-GCM can't tell a wrong key from a damaged file, so neither can we.
+    let plaintext = vault.open(passphrase).map_err(|_| {
+        WalletRpcError::InvalidRequest("wrong passphrase (or the vault file is damaged)".into())
+    })?;
     let contents: VaultContents = serde_json::from_slice(&plaintext)
         .map_err(|_| WalletRpcError::Unknown("vault contents are unreadable".into()))?;
     // Moves the String's buffer into Zeroizing rather than copying it, so the
     // only heap copy is the one that gets wiped on drop. `plaintext` is already
     // Zeroizing.
     Ok(Zeroizing::new(contents.mnemonic))
+}
+
+/// The desktop's reveal policy: refused while `session` is locked — reveal sits
+/// behind an unlocked app, so an unattended lock screen never offers it — and
+/// otherwise [`reveal_mnemonic`] with the freshly supplied passphrase (being
+/// unlocked is necessary, never sufficient). Same RPC caveat: IPC-only.
+pub fn reveal_for_session(
+    session: &WalletSession,
+    vault: &EncryptedVault,
+    passphrase: &str,
+) -> Result<Zeroizing<String>, WalletRpcError> {
+    if session.is_locked() {
+        return Err(WalletRpcError::Locked);
+    }
+    reveal_mnemonic(vault, passphrase)
 }
 
 impl WalletSession {
