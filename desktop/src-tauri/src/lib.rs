@@ -471,7 +471,7 @@ async fn deploy_account(
             &signed.class_hash,
             &signed.constructor_calldata,
             &signed.salt,
-            &[signed.r, signed.s],
+            &signed.signature,
             &bounds,
         )
         .await
