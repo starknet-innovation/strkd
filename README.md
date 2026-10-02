@@ -119,8 +119,13 @@ curl -LsSf https://github.com/starknet-innovation/strkd/releases/latest/download
 ```
 
 It installs to `~/.cargo/bin`. Per-target archives (`strkd-aarch64-apple-darwin.tar.xz`
-and friends, for Apple silicon + Intel macOS and x86_64 + arm64 Linux) plus
-SHA256 checksums are attached to the same release.
+and friends, for Apple silicon + Intel macOS and x86_64 + arm64 Linux) are
+attached to the same release, each with a `.sha256`, plus a signed build
+provenance attestation. To verify a download before running it:
+
+```bash
+gh attestation verify strkd-aarch64-apple-darwin.tar.xz -R starknet-innovation/strkd
+```
 
 Homebrew is **not wired up yet**: it needs the `starknet-innovation/homebrew-tap`
 repo to exist and a `HOMEBREW_TAP_TOKEN` secret. The root `Cargo.toml` dist block
@@ -144,12 +149,33 @@ git tag desktop-v0.1.0 && git push origin desktop-v0.1.0  # desktop app
 The desktop build stages the pinned prover from prebuilt release artifacts
 (`desktop/scripts/prover-pin.env` is the single source of truth for the version)
 and gates on `snip36 doctor` before building the app, so a broken proving stack
-fails the release rather than shipping.
+fails the release rather than shipping. Every staged prover file is also checked
+against SHA-256 hashes pinned in that file, independent of the prover release's
+own checksums.
+
+What every release guarantees:
+- **Drafts only.** Nothing is public until a maintainer publishes it, and
+  `releases/latest/download/…` keeps serving the previous published release
+  until then.
+- **Verifiable downloads.** Checksums (CLI: per-file `.sha256` + `sha256.sum`;
+  desktop: `SHA256SUMS`) and a signed provenance attestation for every file.
+- **Pinned toolchain.** Every GitHub Action is pinned to a commit SHA, and
+  cargo-dist is installed from a hash-pinned tarball, never `curl | sh`.
+- **Reproducible dependencies.** `Cargo.lock` (root and `desktop/src-tauri`) is
+  committed, and CI and both release workflows fail on a stale lockfile.
+- **Least privilege.** Workflow tokens are read-only except in the one job that
+  creates the release. Manual desktop releases run from `main` only.
+- **Unsigned desktop apps, and the release notes say so.** The `.dmg`/`.app`
+  are not code-signed or notarized yet: macOS users must right-click → Open, and
+  should verify the download first.
+
+Before publishing a draft, check the attached files and notes, then press
+*Publish* on the release page.
 
 **Maintainers.** CLI dist *policy* lives in `[workspace.metadata.dist]` (root
 `Cargo.toml`). `release.yml` was generated from it and carries one deliberate
-local edit — a narrowed tag glob, so `desktop-v*` tags don't trigger the CLI
-release. Because `allow-dirty = ["ci"]` is set, `dist generate` leaves that file
+local edits, listed in its banner: the release-safety changes above, and a
+narrowed tag glob, so `desktop-v*` tags don't trigger the CLI release. Because `allow-dirty = ["ci"]` is set, `dist generate` leaves that file
 alone rather than reverting the edit, which also means upstream dist CI changes
 are not picked up automatically; the banner at the top of the workflow explains
 how to resync deliberately.

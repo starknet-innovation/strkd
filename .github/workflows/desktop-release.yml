@@ -14,8 +14,15 @@ name: Desktop Release
 # x86_64. No Windows or Intel-mac build (no prebuilt prover there). Adding
 # linux-arm64 is a one-line matrix add.
 #
-# Trigger: push a `desktop-v*` tag, or run manually (workflow_dispatch). The
-# release is created as a DRAFT — a human reviews and publishes it.
+# Trigger: push a `desktop-v*` tag, or run manually (workflow_dispatch, from
+# `main` only). The release is created as a DRAFT — a human reviews and
+# publishes it.
+#
+# Integrity: the release ships SHA256SUMS for every installer and a signed
+# build-provenance attestation (`gh attestation verify <file> -R
+# starknet-innovation/strkd`). The bundled prover is checked against hashes
+# pinned in desktop/scripts/prover-pin.env. The apps are NOT code-signed or
+# notarized, and the release notes say so.
 
 on:
   push:
@@ -24,15 +31,39 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. desktop-v0.1.0) — used for the draft release name'
+        description: 'Release tag, e.g. desktop-v0.2.0 (must match desktop-vX.Y.Z)'
         required: true
-        default: desktop-v0.1.0
 
+# Read-only by default; jobs that write raise their own permissions.
 permissions:
-  contents: write   # create the draft release + upload installers
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  # Refuse a malformed tag, and a manual run from anywhere but main: an
+  # unreviewed branch must not be able to produce installers under a release tag.
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check tag and ref
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^desktop-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release tag '$RELEASE_TAG' is not desktop-vX.Y.Z"; exit 1
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::manual desktop releases run from main only (got $REF)"; exit 1
+          fi
+
   build:
+    needs: guard
+    permissions:
+      contents: write   # tauri-action creates the draft release + uploads installers
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +113,12 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # tauri builds with plain `cargo build`, which honours the committed
+      # Cargo.lock but doesn't fail if it is stale. Fail here instead.
+      - name: Check Cargo.lock is current
+        working-directory: desktop/src-tauri
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       # Stage the pinned prover (version lives in desktop/scripts/prover-pin.env,
       # the single source of truth) from the backend's PREBUILT release artifacts.
       # v1.2.x prebuilt binaries are relocatable, so this is the supported CI path;
@@ -115,7 +152,55 @@ jobs:
           # reintroduce them here per the tauri-action docs.
         with:
           projectPath: desktop
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: strkd desktop ${{ github.event.inputs.tag || github.ref_name }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: strkd desktop ${{ env.RELEASE_TAG }}
           releaseDraft: true      # human-in-the-loop: review before publishing
           prerelease: false
+          releaseBody: |
+            **These builds are not code-signed and not notarized.** macOS will say the app
+            "cannot be opened": right-click → Open, or run
+            `xattr -dr com.apple.quarantine /Applications/strkd.app`. Only do that after you
+            have verified the download.
+
+            **Verify before you install.**
+            - Checksums: `shasum -a 256 -c SHA256SUMS --ignore-missing` (attached below).
+            - Provenance: `gh attestation verify <file> -R starknet-innovation/strkd` proves
+              the file was built by this repository's release workflow from this tag.
+
+            Platforms: macOS (Apple Silicon) and Linux x86_64. The on-device SNIP-36 prover is
+            bundled; its version is pinned in `desktop/scripts/prover-pin.env`.
+
+  # Checksums and provenance for everything the build jobs attached. Runs once,
+  # after every platform has uploaded, so SHA256SUMS covers the whole release.
+  checksums:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write       # upload SHA256SUMS to the draft release
+      id-token: write       # sign the provenance attestation
+      attestations: write
+    steps:
+      - name: Download the release's installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir assets
+          gh release download "$RELEASE_TAG" -R "$REPO" -D assets
+          rm -f assets/SHA256SUMS
+          ls -la assets
+          test -n "$(ls -A assets)" || { echo "::error::no assets on $RELEASE_TAG"; exit 1; }
+          (cd assets && sha256sum -- * > ../SHA256SUMS)
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "assets/*"
+
+      - name: Attach SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" SHA256SUMS -R "$REPO" --clobber
