@@ -50,7 +50,7 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
 | P4 | **Rust port** of the SDK's action compiler and invocation builder; no embedded TS SDK. Checked against the TS SDK by an independent JS verifier, as `conformance/verify.mjs` does for derivation. |
 | P5 | **Agents may deposit, transfer and withdraw**, under the existing pairing and approval policy. |
 | P6 | ~~Large proofs (PROOF2 / 0.14.4) first.~~ **Dropped 2026-10-05:** StarkWare is reworking PROOF2 for soundness issues before it reaches testnet. STRK20 builds on `PROOF1` (v1.2.2) and revisits the proof format when a fixed release lands. See [`backlog.md`](./backlog.md). |
-| P7 | **Live testing on mainnet**: no Sepolia pool or prover was found. Small amounts; the maintainer funds a registered test account with shielded STRK. |
+| P7 | **Test on Sepolia first.** Pool `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e` (deployed block 15865757, UDC tx `0x7c6949e9…c614`) runs the **same class as mainnet** (`0x6d163f2b…cf83`) and has accepted `PROOF1` proofs. Its config: fee 0, `proof_validity_blocks` 450, auditor key `0x6287ba0e…2bcb`, screener key `0x2159dc65…bf5` (not the `0xCAFEBABE` test key, so Sepolia deposits need the operator's Sepolia prover). The older `0xd894af9e…c233` pool (mezcal runbook) predates screening; ignore it. Mainnet (canonical pool, Starkscan) is the final check, with a maintainer-funded account. |
 
 ## 3. Phases
 
@@ -59,7 +59,7 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
   state, without submitting it. Measure rows per component against the cap, time and size; check
   it with `starknet_proof_verifier::verify_proof`.
 - Confirm which proof version the networks accept for privacy txs (PROOF1 today).
-- Confirm the live pool's class hash, `proof_validity_blocks`, fee and screener key.
+- Mainnet pool class confirmed `0x6d163f2b…cf83` (2026-10-05), identical to the Sepolia pool's.
 
 ### 1. Keys and reads
 - Re-pin krusty to a version with the scoped STRK20 derivation (overlaps #21).
@@ -104,6 +104,6 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
   (#29). Phase 0 answers this.
 - **Starkscan relay:** mainnet only, operator-issued keys, one-shot results; its docs say it is
   currently dormant (404).
-- **No testnet.** Every end-to-end run costs real fees.
+- **Sepolia deposits** need an attestation from the Sepolia pool's screener key; Starkscan and the bramble gateway are mainnet-only, so a Sepolia prover endpoint is still to be found. Register, transfer and withdraw are proved locally and need none.
 - Screening and sanctions behaviour is taken from the vendored service READMEs and Starkscan's
   public docs; it needs verification and legal review before anyone relies on it.
