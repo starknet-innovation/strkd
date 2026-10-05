@@ -6,33 +6,36 @@ this is the "later" pile. Newest first within each group.
 
 ## Features
 
-### Block-sized SNIP-36 proofs (v0.14.4 large-proof path, `PROOF2`)
-*Issue #29; investigated 2026-10-01 (PR #30 names the current cap). Up next — STRK20 local proving on mainnet depends on it ([`strk20-plan.md`](./strk20-plan.md) P6).*
+### Block-sized SNIP-36 proofs (v0.14.4 large-proof path, `PROOF2`) — on hold
+*Issue #29; investigated 2026-10-01 (PR #30 names the current cap). On hold since 2026-10-05:
+StarkWare found soundness issues in the PROOF2 route and is patching it before it reaches
+testnet. strkd stays on `PROOF1` (v1.2.2) until a fixed release lands.*
 
 Today a SNIP-36 tx can use at most 2^20 rows per AIR component (the `PROOF1`
 small prover — see [`prover.md` → Proof size limit](../code/prover.md#proof-size-limit)).
-Starknet v0.14.4 can prove any single-tx virtual block that would fit in a block,
-up to 1.1B L2 gas, via `privacy_recursive_prove_large` (starkware-libs/proving
-≥ `2b495a36`). It emits `PROOF2`. The stock `starknet_transaction_prover` never
-calls it.
 
-- **Shape:** patch the `main-v0.14.4` runner's `prove()` to use the small prover
-  when the trace fits and fall back to `privacy_recursive_prove_large` when it
-  doesn't. Build from source (nightly, ~40+ min) through the staging scripts, and
-  bump to the 0.14.4 stack (upstream backend PR #118 / deps-v11).
-- **Verify locally first:** prove a tx over the cap (#29's 200-intent settlement),
-  then check it with `starknet_proof_verifier::verify_proof` from `main-v0.14.4`.
-  That is the same call the node makes (`apollo_transaction_converter`). Also
-  check the proof is ≤ 480,000 bytes (gateway `max_proof_size`) and that the
-  `proof_facts` program hash is the one 0.14.4 expects.
-- **On-chain e2e later:** as of 2026-10-01 the Sepolia gateway rejects `PROOF2`
-  (`allow_proof_version_v2` is off) and accepts `PROOF1`. Mainnet is on 0.14.3.
-  0.14.4 is slated for 2026-10-05 (pending governance) and its config turns
-  `PROOF1` **off**, which breaks the current v1.2.2 pin. Run the e2e on whichever
-  network flips first, and keep the `PROOF1` pin for Sepolia until then.
-- **Watch:** the snip36 CLI's hard 600 s timeout on `starknet_proveTransaction`.
-  Large proofs on a laptop may need it raised (or strkd calling the runner
-  directly).
+What we know (checked 2026-10-05 against `starkware-libs/sequencer` `main-v0.14.4`):
+
+- The 0.14.4 runner stamps **every** proof `PROOF2` (`ProgramOutput::try_into_proof_facts`),
+  small or large. `PROOF2` is the new circuit, not only the large mode.
+- The stock runner calls only the small `privacy_recursive_prove`.
+  `privacy_recursive_prove_large` (starkware-libs/proving `2b495a36`, already a dependency of
+  `PRIVACY-0.14.4-RC.0`) is unused.
+- [`large-prover-fallback.patch`](./large-prover-fallback.patch) (against `PRIVACY-0.14.4-RC.0`,
+  `0ee373ac`) makes the runner try the small prover and fall back to the large one when it runs
+  out of twiddles; `SNIP36_PROVER_MODE=small|large|auto` overrides. It builds
+  (`cargo +nightly-2026-01-15 build --release -p starknet_transaction_prover --features
+  stwo_proving`, with the RC.0 `scripts/requirements.txt` venv) but has **not** been run on a real
+  oversized tx. Its home is snip-36-prover-backend's `setup.rs` patch step.
+- snip-36-prover-backend `deps-v11` / PR #118 already ship prebuilt 0.14.4-RC.0 binaries
+  (small prover only).
+- As of 2026-10-05 the Sepolia gateway still refuses `PROOF2` ("not accepted by this gateway")
+  and accepts `PROOF1`; mainnet is on 0.14.3.
+
+**When it resumes:** rebase the patch on StarkWare's fixed release, prove #29's 200-intent
+settlement, check it with `starknet_proof_verifier::verify_proof`, check size ≤ 480,000 bytes
+(gateway `max_proof_size`), then e2e on whichever network enables `PROOF2` first. Mind the snip36
+CLI's 600 s timeout on `starknet_proveTransaction`.
 
 ### Sweep stranded/agent funds back to the manager
 *Raised by the GoL agent's feedback (item 4, alternative to re-attach), 2026-06-10.*

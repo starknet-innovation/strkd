@@ -49,7 +49,7 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
 | P3 | **Submission of non-deposit batches:** AVNU private paymaster when the user sets an AVNU API key in Settings. Without one, strkd returns the signed, proven payload unbroadcast, for submission from another account. |
 | P4 | **Rust port** of the SDK's action compiler and invocation builder; no embedded TS SDK. Checked against the TS SDK by an independent JS verifier, as `conformance/verify.mjs` does for derivation. |
 | P5 | **Agents may deposit, transfer and withdraw**, under the existing pairing and approval policy. |
-| P6 | **Large proofs (PROOF2 / Starknet 0.14.4) come first** — mainnet 0.14.4 turns `PROOF1` off, and local proving on mainnet depends on it. See [`backlog.md`](./backlog.md). |
+| P6 | ~~Large proofs (PROOF2 / 0.14.4) first.~~ **Dropped 2026-10-05:** StarkWare is reworking PROOF2 for soundness issues before it reaches testnet. STRK20 builds on `PROOF1` (v1.2.2) and revisits the proof format when a fixed release lands. See [`backlog.md`](./backlog.md). |
 | P7 | **Live testing on mainnet**: no Sepolia pool or prover was found. Small amounts; the maintainer funds a registered test account with shielded STRK. |
 
 ## 3. Phases
@@ -58,7 +58,7 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
 - Locally prove a real `compile_actions` virtual tx (register, then a transfer) against mainnet
   state, without submitting it. Measure rows per component against the cap, time and size; check
   it with `starknet_proof_verifier::verify_proof`.
-- Confirm which proof version mainnet accepts for privacy txs after 0.14.4.
+- Confirm which proof version the networks accept for privacy txs (PROOF1 today).
 - Confirm the live pool's class hash, `proof_validity_blocks`, fee and screener key.
 
 ### 1. Keys and reads

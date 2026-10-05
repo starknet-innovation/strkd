@@ -1,0 +1,128 @@
+diff --git a/crates/starknet_transaction_prover/Cargo.toml b/crates/starknet_transaction_prover/Cargo.toml
+index 5708fb024d..162af9503f 100644
+--- a/crates/starknet_transaction_prover/Cargo.toml
++++ b/crates/starknet_transaction_prover/Cargo.toml
+@@ -28,6 +28,7 @@ http.workspace = true
+ http-body-util.workspace = true
+ indexmap.workspace = true
+ jsonrpsee = { workspace = true, features = ["macros", "server"] }
++privacy-circuit-verify-v2.workspace = true
+ privacy-prove = { workspace = true, optional = true }
+ reqwest = { workspace = true, features = ["json"] }
+ serde = { workspace = true, features = ["derive"] }
+diff --git a/crates/starknet_transaction_prover/src/proving/prover.rs b/crates/starknet_transaction_prover/src/proving/prover.rs
+index a6f457fc71..28f57f795c 100644
+--- a/crates/starknet_transaction_prover/src/proving/prover.rs
++++ b/crates/starknet_transaction_prover/src/proving/prover.rs
+@@ -2,10 +2,17 @@
+ //!
+ //! Provides functionality to generate zero-knowledge proofs from Cairo PIE files.
+ 
++use std::panic::{catch_unwind, AssertUnwindSafe};
+ use std::sync::Arc;
+ 
+ use cairo_vm::vm::runners::cairo_pie::CairoPie;
+-use privacy_prove::{privacy_recursive_prove, RecursiveProverPrecomputes};
++use privacy_circuit_verify_v2::PrivacyProofOutput;
++use privacy_prove::{
++    privacy_recursive_prove,
++    privacy_recursive_prove_large,
++    RecursiveProverPrecomputes,
++};
++use tracing::{info, warn};
+ use starknet_api::transaction::fields::Proof;
+ use starknet_proof_verifier::ProgramOutput;
+ 
+@@ -20,19 +27,85 @@ pub(crate) struct ProverOutput {
+     pub program_output: ProgramOutput,
+ }
+ 
++/// Which prover `prove` uses, from `SNIP36_PROVER_MODE` (snip-36-prover-backend patch).
++///
++/// - `auto` (default): the small recursive prover, falling back to the large prover when the
++///   trace does not fit (the small prover's fixed twiddle domain caps each component at 2^20
++///   rows and fails with "Not enough twiddles").
++/// - `small`: the small prover only (stock behaviour).
++/// - `large`: the large prover only.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum ProverMode {
++    Auto,
++    Small,
++    Large,
++}
++
++fn prover_mode() -> ProverMode {
++    match std::env::var("SNIP36_PROVER_MODE").as_deref() {
++        Ok("small") => ProverMode::Small,
++        Ok("large") => ProverMode::Large,
++        _ => ProverMode::Auto,
++    }
++}
++
++/// Runs a prover, turning a panic into an error so the caller can fall back.
++fn run_catching(
++    f: impl FnOnce() -> Result<PrivacyProofOutput, Box<dyn std::error::Error>>,
++) -> Result<PrivacyProofOutput, String> {
++    match catch_unwind(AssertUnwindSafe(f)) {
++        Ok(result) => result.map_err(|e| e.to_string()),
++        Err(panic) => Err(panic
++            .downcast_ref::<String>()
++            .cloned()
++            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
++            .unwrap_or_else(|| "prover panicked".to_string())),
++    }
++}
++
++/// Whether a small-prover failure means the trace is too large for it.
++fn is_capacity_error(message: &str) -> bool {
++    message.contains("twiddles")
++}
++
++fn prove_blocking(
++    cairo_pie: CairoPie,
++    precomputes: Arc<RecursiveProverPrecomputes>,
++    mode: ProverMode,
++) -> Result<PrivacyProofOutput, String> {
++    match mode {
++        ProverMode::Small => run_catching(|| privacy_recursive_prove(cairo_pie, precomputes)),
++        ProverMode::Large => {
++            info!("Proving with the large prover (SNIP36_PROVER_MODE=large)");
++            run_catching(|| privacy_recursive_prove_large(cairo_pie))
++        }
++        ProverMode::Auto => {
++            let fallback_pie = cairo_pie.clone();
++            match run_catching(|| privacy_recursive_prove(cairo_pie, precomputes)) {
++                Err(message) if is_capacity_error(&message) => {
++                    warn!("Small prover out of capacity ({message}); retrying with the large prover");
++                    run_catching(|| privacy_recursive_prove_large(fallback_pie))
++                }
++                other => other,
++            }
++        }
++    }
++}
++
+ /// Proves a Cairo PIE using the privacy recursive prover.
+ ///
+-/// Calls `privacy_recursive_prove` with the CairoPie and precomputed data on a blocking thread.
++/// Calls `privacy_recursive_prove` with the CairoPie and precomputed data on a blocking thread,
++/// falling back to `privacy_recursive_prove_large` for traces too large for it (see
++/// [`ProverMode`]).
+ pub(crate) async fn prove(
+     cairo_pie: CairoPie,
+     precomputes: Arc<RecursiveProverPrecomputes>,
+ ) -> Result<ProverOutput, ProvingError> {
+-    let proof_output = tokio::task::spawn_blocking(move || {
+-        privacy_recursive_prove(cairo_pie, precomputes).map_err(|e| e.to_string())
+-    })
+-    .await
+-    .map_err(ProvingError::TaskJoin)?
+-    .map_err(ProvingError::ProverExecution)?;
++    let mode = prover_mode();
++    let proof_output = tokio::task::spawn_blocking(move || prove_blocking(cairo_pie, precomputes, mode))
++        .await
++        .map_err(ProvingError::TaskJoin)?
++        .map_err(ProvingError::ProverExecution)?;
+ 
+     let proof = Proof::from(proof_output.proof);
+     let program_output = ProgramOutput::from(proof_output.output_preimage);
