@@ -4,6 +4,7 @@
 //! short-lived `Zeroizing` buffers and is wiped as soon as the derived public
 //! data (address / signature) has been produced.
 
+use krusty_kms::strk20::derive_scoped_strk20_viewing_key;
 use krusty_kms::{
     compute_typed_data_message_hash, derive_private_key_with_coin_type, sign_stark_hash,
     stark_public_key, StarkSignature,
@@ -40,6 +41,31 @@ fn private_key(
         passphrase,
     )
     .map_err(|_| CoreError::Derivation)
+}
+
+/// Derive the STRK20 viewing key (`user_sk`) for `(domain, index)`, scoped to one
+/// pool on one chain.
+///
+/// This is bramble's convention, so the same seed sees the same private notes in
+/// both wallets: sign `starknet_keccak("<chain_id>:<pool>")` with the account key
+/// (RFC 6979) and fold `Poseidon(r, s)` into `[1, n/2)`. krusty's
+/// `derive_scoped_strk20_viewing_key` does the work and carries the known-answer
+/// tests.
+///
+/// The result is a secret: it decrypts *and* spends the account's notes. It is
+/// returned only because the pool's `compile_actions` takes it as calldata
+/// (`docs/project/strk20-plan.md` §1); callers must not log or persist it.
+pub fn strk20_viewing_key(
+    mnemonic: &str,
+    domain: Domain,
+    index: u32,
+    passphrase: Option<&str>,
+    chain_id: &Felt,
+    pool: &Felt,
+) -> Result<Felt> {
+    let sk = private_key(mnemonic, domain, index, passphrase)?;
+    derive_scoped_strk20_viewing_key(&sk, &format!("{chain_id:#x}"), &format!("{pool:#x}"))
+        .map_err(|_| CoreError::Derivation)
 }
 
 /// Compute the Stark public key for `(domain, index)`.

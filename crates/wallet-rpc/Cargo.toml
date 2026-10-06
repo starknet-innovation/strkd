@@ -8,6 +8,7 @@ description = "Loopback JSON-RPC service for the Starknet wallet companion: auth
 [dependencies]
 wallet-core = { path = "../wallet-core" }
 prover = { path = "../prover" }
+strk20 = { path = "../strk20" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -2545,6 +2545,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "strk20"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "getrandom 0.2.17",
+ "krusty-kms",
+ "krusty-kms-common",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "starknet-types-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "wallet-core",
+]
+
+[[package]]
 name = "strkd"
 version = "0.2.0"
 dependencies = [
@@ -2911,6 +2928,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "starknet-crypto",
+ "strk20",
  "thiserror 1.0.69",
  "tokio",
  "wallet-core",

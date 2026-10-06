@@ -20,6 +20,12 @@ pub enum WalletRpcError {
     ChainIdNotSupported,
     /// 118 — caller is not a registered/paired client.
     NotRegistered,
+    /// STRK20: the account has no viewing key on the pool (`NOT_REGISTERED`).
+    Strk20NotRegistered(String),
+    /// STRK20 `INSUFFICIENT_PRIVATE_BALANCE`.
+    InsufficientPrivateBalance(String),
+    /// STRK20 `PRIVACY_LEAK`: the batch would link the user's activity.
+    PrivacyLeak(String),
     /// 162 — requested API version is not supported.
     ApiVersionNotSupported,
     /// 163 — catch-all internal error.
@@ -52,6 +58,9 @@ impl WalletRpcError {
             WalletRpcError::DeploymentDataNotAvailable => 116,
             WalletRpcError::ChainIdNotSupported => 117,
             WalletRpcError::NotRegistered => 118,
+            WalletRpcError::Strk20NotRegistered(_) => 118,
+            WalletRpcError::InsufficientPrivateBalance(_) => 119,
+            WalletRpcError::PrivacyLeak(_) => 120,
             WalletRpcError::ApiVersionNotSupported => 162,
             WalletRpcError::Unknown(_) => 163,
             WalletRpcError::Locked => -32001,
@@ -72,6 +81,11 @@ impl WalletRpcError {
             WalletRpcError::DeploymentDataNotAvailable => "deployment data not available".into(),
             WalletRpcError::ChainIdNotSupported => "chain id not supported".into(),
             WalletRpcError::NotRegistered => "caller is not a registered client".into(),
+            WalletRpcError::Strk20NotRegistered(a) => {
+                format!("{a} has not registered a viewing key with the STRK20 pool (call companion_strk20Register)")
+            }
+            WalletRpcError::InsufficientPrivateBalance(m) => format!("insufficient private balance: {m}"),
+            WalletRpcError::PrivacyLeak(m) => format!("privacy leak: {m}"),
             WalletRpcError::ApiVersionNotSupported => "api version not supported".into(),
             WalletRpcError::Unknown(m) => format!("unknown error: {m}"),
             WalletRpcError::Locked => "wallet is locked".into(),
