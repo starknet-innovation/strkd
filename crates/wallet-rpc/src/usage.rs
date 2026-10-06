@@ -154,6 +154,26 @@ concepts.proving.",
             ]
         },
 
+        "strk20_privacy": {
+            "what": "Private balances in the Starknet privacy pool (STRK20, wallet-API 0.10.4). \
+Funds in the pool are notes only your account's viewing key can read or spend; strkd derives that \
+key per call (same derivation as bramble, so the same seed sees the same notes) and never returns it.",
+            "how_it_runs": "register, transfer and withdraw are PROVED ON THIS MACHINE (~20-70 s). \
+A deposit must be screened, so it is proved by a remote screening prover (the user's own, else \
+Starkscan with the user's key, else the bramble gateway; mainnet only for the latter two) — that \
+prover sees the transaction, viewing key included. Register and deposits are public and submitted \
+from your account. Transfers and withdrawals are relayed privately by the AVNU paymaster if the \
+user set an AVNU key; otherwise use wallet_strk20PrepareInvoke and submit the result from ANY \
+other account. Each call is approval-gated and synchronous (expect up to ~1-2 min).",
+            "steps": [
+                "1. Register once: companion_strk20Register {account_address?} → {transaction_hash}. Opens your channel to yourself too.",
+                "2. Shield: wallet_strk20InvokeTransaction {actions:[{type:\"deposit\", token, amount}]} → {transaction_hash}. Deposits can't share a batch with private actions.",
+                "3. Read: wallet_strk20Balances {tokens:[…]} → [{token, balance}] (hex, base units). Notes become spendable ~12 blocks after they land.",
+                "4. Send privately / unshield: wallet_strk20InvokeTransaction {actions:[{type:\"transfer\", token, amount, recipient}, {type:\"withdraw\", token, amount, recipient}]} (needs the AVNU key) — or wallet_strk20PrepareInvoke with the same actions → {call, proof}, then submit from another account: wallet_addInvokeTransaction {account_address:<other>, calls:[call], proof_facts:proof.proof_facts, proof:proof.data, submit:true}.",
+                "Amounts are felts in base units (0x…). The recipient of a transfer must be registered (else 118). Not supported yet: transfer amount \"OPEN\", invoke and shadow_account_invoke actions (-32601)."
+            ]
+        },
+
         "methods": [
             { "method": "companion_getStatus", "auth": false, "prompts": false,
               "params": "{}", "returns": "{ locked, network, api_version, grant }",
@@ -236,17 +256,28 @@ contractAddress/to for the address; entrypoint/entry_point/selector for the sele
               "snip36": "Proof-carrying invoke: pass proof_facts (felt[]) and the signed V3 hash is \
 extended with Poseidon(proof_facts) so the signature covers them (required at sign time). On \
 submit:true also pass proof (standard-base64 STWO string; surrounding whitespace is stripped and \
-url-safe '-'/'_' is rejected) — required to broadcast. You MUST supply explicit \
-resource_bounds for proof-carrying invokes: strkd refuses to auto-estimate them (online estimation \
-simulates the call without proof_facts in tx_info, so a contract reading them reverts) and \
-companion_estimateFee is also unsafe here. Estimate bounds manually (~2× current gas prices). \
-Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
+url-safe '-'/'_' is rejected) — required to broadcast. With submit:true and the proof, strkd \
+estimates the fee WITH the proof attached (its on-chain verification dominates the fee), so \
+resource_bounds may be omitted. Sign-only without the proof needs explicit resource_bounds \
+(~2× current gas prices); companion_estimateFee does not include the proof and undercharges. Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
 normal invoke." },
             { "method": "wallet_addDeclareTransaction", "auth": true, "prompts": true,
               "params": "{ account_address, compiled_class_hash, contract_class?, class_hash?, submit?, nonce?, resource_bounds?, chainId? }",
               "returns": "{ transaction_hash, class_hash, submitted } (+ signature/signed_transaction when not submitted)",
               "note": "PASS contract_class — the whole compiled Sierra class (scarb's *.contract_class.json works as-is, ABI array and debug info included; so does the RPC CONTRACT_CLASS object). class_hash is then DERIVED from it and you can omit it. That matters: the node re-derives the class hash from the class you broadcast and the account validates the signature against the tx hash built from THAT value, so a class_hash that disagrees with the class produces 'Account: invalid signature' on-chain. Pass both and the wallet cross-checks them and refuses (114, naming both hashes) instead of signing a doomed declare. class_hash alone (no class) still signs, on trust, for offline flows. Estimation and submit:true need contract_class. Sign-only returns a COMPLETE BROADCASTED_DECLARE_TXN_V3 in signed_transaction, class included — POST it as declare_transaction unchanged." },
 
+            { "method": "companion_strk20Register", "auth": true, "prompts": true,
+              "params": "{ account_address?, chainId? }", "returns": "{ transaction_hash }",
+              "note": "Registers the account's STRK20 viewing key with the pool and opens its channel to itself, proved on this machine and submitted from the account (registration is public: it links the address to the pool). Once per account and pool; -32006 if already registered." },
+            { "method": "wallet_strk20Balances", "auth": true, "prompts": true,
+              "params": "{ tokens: [address…], account_address?, chainId? }", "returns": "[{ token, balance }]",
+              "note": "Private balance per token (hex, base units), read from the pool and decrypted locally — no indexer sees the viewing key. Approval-gated: it reveals private balances. 118 if the account isn't registered." },
+            { "method": "wallet_strk20PrepareInvoke", "auth": true, "prompts": true,
+              "params": "{ actions: [STRK20_ACTION…], simulate?, account_address?, chainId? }", "returns": "{ call: { contract_address, entry_point, calldata }, proof: { data, output, proof_facts } }",
+              "note": "Plans, signs and proves a batch WITHOUT submitting it: submit `call` from any account with proof_facts + proof (wallet_addInvokeTransaction does it). Actions: {type:\"deposit\",token,amount} | {type:\"transfer\",token,amount,recipient} | {type:\"withdraw\",token,amount,recipient}. simulate:true returns empty proof fields. Errors: 118 not registered, 119 insufficient private balance, 120 the batch would link you (opens >1 channel)." },
+            { "method": "wallet_strk20InvokeTransaction", "auth": true, "prompts": true,
+              "params": "{ actions: [STRK20_ACTION…], account_address?, chainId? }", "returns": "{ transaction_hash }",
+              "note": "Prepares AND submits. Deposit-only batches go from your account (approve + apply_actions, with the screening attestation). Private batches go through the AVNU private relay, whose fee is withdrawn from your shielded balance; without an AVNU key → -32006 pointing to wallet_strk20PrepareInvoke. Same errors as PrepareInvoke." },
             { "method": "wallet_switchStarknetChain", "auth": true, "prompts": true, "deprecated": true,
               "params": "{ chainId (felt: SN_SEPOLIA / SN_MAIN encoded) }", "returns": "true",
               "note": "DEPRECATED for agents. Switches the wallet's shared DEFAULT network for ALL clients (one agent can switch it out from under another). Prefer a per-request chainId on the operational methods. Kept for EIP-1193 compatibility + as the omitted-chainId fallback (the human sets the default in Settings). Unknown chain → error 117." },
@@ -257,16 +288,9 @@ normal invoke." },
 
         "deferred": {
             "note": "In the Starknet wallet spec but not built yet; returns -32601. \
-wallet_addStarknetChain needs a chain id beyond Sepolia/Mainnet.",
-            "methods": ["wallet_addStarknetChain"]
-        },
-
-        "out_of_scope": {
-            "note": "In the Starknet wallet spec but deliberately not implemented; returns -32601. \
-strkd's backend cannot express the STRK20 privacy surface, and shipping partial semantics \
-under the standard names would mean the same call meant different things in different wallets.",
-            "methods": ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction",
-                        "wallet_strk20Balances"]
+wallet_addStarknetChain needs a chain id beyond Sepolia/Mainnet; the STRK20 shadow-account \
+commitment comes with shadow-account invokes.",
+            "methods": ["wallet_addStarknetChain", "wallet_strk20ShadowAccountCommitment"]
         },
 
         "errors": {
@@ -274,7 +298,9 @@ under the standard names would mean the same call meant different things in diff
             "114": "INVALID_REQUEST_PAYLOAD — malformed params / missing field",
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",
             "117": "CHAIN_ID_NOT_SUPPORTED — only SN_SEPOLIA / SN_MAIN are supported",
-            "118": "NOT_REGISTERED — pair first, or your token is unknown/invalid",
+            "118": "NOT_REGISTERED — pair first, or your token is unknown/invalid. On wallet_strk20* methods: the account (or a transfer recipient) has no viewing key on the pool — companion_strk20Register",
+            "119": "INSUFFICIENT_PRIVATE_BALANCE — not enough spendable notes; notes younger than ~12 blocks aren't spendable yet",
+            "120": "PRIVACY_LEAK — the STRK20 batch would let an observer link your activity (e.g. opening channels to two new recipients at once); split it",
             "163": "INTERNAL_ERROR — an unexpected internal failure (key material is never leaked in the message); safe to retry, and report it if it persists",
             "-32001": "LOCKED — the wallet is locked; ask the user to unlock it",
             "-32002": "FORBIDDEN — you tried to act outside your own accounts (or wrong client kind)",

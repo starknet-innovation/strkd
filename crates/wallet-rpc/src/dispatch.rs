@@ -12,6 +12,7 @@ use wallet_core::{address_hex, AccountRef, ChainId, Felt};
 
 use wallet_core::{Call, InvokeV3Params, ResourceBounds, SierraClass};
 
+use crate::strk20;
 use crate::approval::{ApprovalRequest, Approver, Decision};
 use crate::auth::{ClientKind, ClientStore, PairedClient};
 use crate::error::WalletRpcError;
@@ -487,10 +488,12 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_proveStatus" => handle_prove_status(state, &params).await,
         "companion_proofActivity" => handle_proof_activity(state).await,
         "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
-        "wallet_strk20Balances" => crate::strk20::handle_balances(state, &client, &params).await,
-        "wallet_strk20PrepareInvoke" => crate::strk20::handle_prepare_invoke(state, &client, &params).await,
-        "wallet_strk20InvokeTransaction" => crate::strk20::handle_invoke_transaction(state, &client, &params).await,
-        "companion_strk20Register" => crate::strk20::handle_register(state, &client, &params).await,
+        "wallet_strk20Balances" => strk20::balances(state, strk20::Caller::Rpc(&client), &params).await,
+        "wallet_strk20PrepareInvoke" => strk20::prepare_invoke(state, strk20::Caller::Rpc(&client), &params).await,
+        "wallet_strk20InvokeTransaction" => {
+            strk20::invoke_transaction(state, strk20::Caller::Rpc(&client), &params).await
+        }
+        "companion_strk20Register" => strk20::register(state, strk20::Caller::Rpc(&client), &params).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),

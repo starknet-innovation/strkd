@@ -134,6 +134,27 @@ fn map_strk20(e: strk20::Error) -> WalletRpcError {
 
 // ── who, where, which pool ───────────────────────────────────────────────────
 
+/// Who is asking. An RPC client is confined to its scoped accounts and every
+/// operation goes through the approval broker; the desktop user acts on any
+/// account directly (clicking the button is the consent).
+#[derive(Clone, Copy)]
+pub enum Caller<'a> {
+    Rpc(&'a PairedClient),
+    Desktop,
+}
+
+impl Caller<'_> {
+    async fn approve(self, state: &ServerState, method: &str, summary: String) -> Result<(), WalletRpcError> {
+        match self {
+            Caller::Desktop => Ok(()),
+            Caller::Rpc(client) => match gated_approval(state, client, method, summary).await {
+                Decision::Reject => Err(WalletRpcError::UserRefused),
+                _ => Ok(()),
+            },
+        }
+    }
+}
+
 struct Ctx {
     account: AccountRef,
     user: Felt,
@@ -154,12 +175,15 @@ pub fn pool_for(cfg: &prover::Strk20Config, chain: ChainId) -> Result<Felt, Wall
     }
 }
 
-async fn ctx(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Ctx, WalletRpcError> {
+async fn ctx(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Ctx, WalletRpcError> {
     let chain = resolve_chain(state, params).await?;
     let account = {
         let session = state.session.lock().await;
         let reg = session.registry()?;
-        let scope = scope_for(client);
+        let scope = match caller {
+            Caller::Rpc(client) => scope_for(client),
+            Caller::Desktop => None,
+        };
         let mut scoped = reg.scoped_for(scope.as_deref());
         match opt_param_str(params, "account_address") {
             Some(a) => {
@@ -302,7 +326,7 @@ async fn discover_state(ctx: &Ctx, reader: &NodeReader, user_sk: Felt, intent: &
 
 async fn prepare(
     state: &ServerState,
-    client: &PairedClient,
+    caller: Caller<'_>,
     method: &str,
     ctx: &Ctx,
     intent: &Intent,
@@ -330,25 +354,22 @@ async fn prepare(
         Proving::Local => "proved by your configured remote prover, which will see your viewing key".to_string(),
         Proving::Remote(p) => format!("proved by {}, which screens the depositor and will see your viewing key", p.describe()),
     };
-    let decision = gated_approval(
-        state,
-        client,
-        method,
-        format!(
-            "STRK20 on {} from {}: {}. {} ({} action(s), pool {:#x}); {}.",
-            chain_name(ctx.chain),
-            ctx.account.address,
-            describe(intent),
-            where_proved,
-            plan.actions.len(),
-            ctx.pool,
-            submission,
-        ),
-    )
-    .await;
-    if decision == Decision::Reject {
-        return Err(WalletRpcError::UserRefused);
-    }
+    caller
+        .approve(
+            state,
+            method,
+            format!(
+                "STRK20 on {} from {}: {}. {} ({} action(s), pool {:#x}); {}.",
+                chain_name(ctx.chain),
+                ctx.account.address,
+                describe(intent),
+                where_proved,
+                plan.actions.len(),
+                ctx.pool,
+                submission,
+            ),
+        )
+        .await?;
 
     let pool_nonce = ctx
         .node
@@ -474,7 +495,7 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
 /// `wallet_strk20Balances { tokens, account_address?, chainId? }` → `[{token, balance}]`.
 ///
 /// Reveals private balances to the caller, so it is gated like a signature.
-pub async fn handle_balances(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
+pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let tokens: Vec<Felt> = params
         .get("tokens")
         .and_then(Value::as_array)
@@ -485,17 +506,19 @@ pub async fn handle_balances(state: &ServerState, client: &PairedClient, params:
     if tokens.is_empty() || tokens.len() > MAX_TOKENS {
         return Err(invalid(format!("tokens: between 1 and {MAX_TOKENS} required")));
     }
-    let ctx = ctx(state, client, params).await?;
-    let decision = gated_approval(
-        state,
-        client,
-        "wallet_strk20Balances",
-        format!("Reveal the private (STRK20) balance of {} token(s) held by {} on {}.", tokens.len(), ctx.account.address, chain_name(ctx.chain)),
-    )
-    .await;
-    if decision == Decision::Reject {
-        return Err(WalletRpcError::UserRefused);
-    }
+    let ctx = ctx(state, caller, params).await?;
+    caller
+        .approve(
+            state,
+            "wallet_strk20Balances",
+            format!(
+                "Reveal the private (STRK20) balance of {} token(s) held by {} on {}.",
+                tokens.len(),
+                ctx.account.address,
+                chain_name(ctx.chain)
+            ),
+        )
+        .await?;
     let user_sk = ctx.viewing_key(state).await?;
     let reader = ctx.reader(json!("latest"));
     if discovery::public_key(&reader, ctx.user).await.map_err(map_strk20)?.is_none() {
@@ -515,29 +538,29 @@ pub async fn handle_balances(state: &ServerState, client: &PairedClient, params:
 ///
 /// Registers the viewing key and opens the account's channel to itself, proved
 /// locally, submitted from the account (registration is public by nature).
-pub async fn handle_register(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
-    let ctx = ctx(state, client, params).await?;
+pub async fn register(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
+    let ctx = ctx(state, caller, params).await?;
     let reader = ctx.reader(json!("latest"));
     if discovery::public_key(&reader, ctx.user).await.map_err(map_strk20)?.is_some() {
         return Err(WalletRpcError::Precondition(format!("{} is already registered with the pool", ctx.account.address)));
     }
     let intent = Intent { register: true, ..Intent::default() };
     let prepared =
-        prepare(state, client, "companion_strk20Register", &ctx, &intent, Proving::Local, "submitted from this account").await?;
+        prepare(state, caller, "companion_strk20Register", &ctx, &intent, Proving::Local, "submitted from this account").await?;
     let hash = submit_from_account(state, &ctx, &prepared, &[]).await?;
     Ok(json!({ "transaction_hash": hex(&hash) }))
 }
 
 /// `wallet_strk20PrepareInvoke { actions, simulate?, account_address?, chainId? }`
 /// → `STRK20_CALL_AND_PROOF`, for the caller to submit from any account.
-pub async fn handle_prepare_invoke(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
+pub async fn prepare_invoke(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let actions = parse_actions(params)?;
-    let ctx = ctx(state, client, params).await?;
+    let ctx = ctx(state, caller, params).await?;
     let simulate = params.get("simulate").and_then(Value::as_bool).unwrap_or(false);
     let proving = proving_for(&ctx, &actions)?;
     let prepared = prepare(
         state,
-        client,
+        caller,
         "wallet_strk20PrepareInvoke",
         &ctx,
         &intent_of(&actions),
@@ -555,9 +578,9 @@ pub async fn handle_prepare_invoke(state: &ServerState, client: &PairedClient, p
 /// batch with private actions. Everything else is relayed by the AVNU
 /// paymaster, paying its fee from the shielded balance; without an AVNU key
 /// the caller is pointed to `wallet_strk20PrepareInvoke`.
-pub async fn handle_invoke_transaction(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
+pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let actions = parse_actions(params)?;
-    let ctx = ctx(state, client, params).await?;
+    let ctx = ctx(state, caller, params).await?;
     let mut intent = intent_of(&actions);
 
     if has_deposit(&actions) {
@@ -569,7 +592,7 @@ pub async fn handle_invoke_transaction(state: &ServerState, client: &PairedClien
         }
         let proving = proving_for(&ctx, &actions)?;
         let prepared =
-            prepare(state, client, "wallet_strk20InvokeTransaction", &ctx, &intent, proving, "submitted from this account").await?;
+            prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, proving, "submitted from this account").await?;
         let hash = submit_from_account(state, &ctx, &prepared, &intent.deposits).await?;
         return Ok(json!({ "transaction_hash": hex(&hash) }));
     }
@@ -591,7 +614,7 @@ pub async fn handle_invoke_transaction(state: &ServerState, client: &PairedClien
     intent.withdrawals.push((fee.recipient, fee.token, fee.amount));
     let submission = format!("relayed privately by the AVNU paymaster for a fee of {} (base units of {:#x})", fee.amount, fee.token);
     let prepared =
-        prepare(state, client, "wallet_strk20InvokeTransaction", &ctx, &intent, Proving::Local, &submission).await?;
+        prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, Proving::Local, &submission).await?;
     let hash = relay.execute(&prepared.call, &prepared.proved.proof, &prepared.proved.proof_facts).await.map_err(WalletRpcError::Unknown)?;
     Ok(json!({ "transaction_hash": hex(&hash) }))
 }

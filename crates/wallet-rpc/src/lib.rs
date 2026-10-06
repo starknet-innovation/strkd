@@ -8,6 +8,8 @@
 //!
 //! The [`dispatch`] entry point is transport-agnostic and fully testable; the
 //! [`server`] module wraps it in a loopback HTTP listener.
+// The agent usage doc (`usage.rs`) is one large `json!` literal.
+#![recursion_limit = "256"]
 
 pub mod approval;
 pub mod auth;
