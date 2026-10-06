@@ -52,6 +52,41 @@ Sources: `starknet-innovation/starknet-privacy` (contracts under `packages/priva
 | P6 | ~~Large proofs (PROOF2 / 0.14.4) first.~~ **Dropped 2026-10-05:** StarkWare is reworking PROOF2 for soundness issues before it reaches testnet. STRK20 builds on `PROOF1` (v1.2.2) and revisits the proof format when a fixed release lands. See [`backlog.md`](./backlog.md). |
 | P7 | **Test on Sepolia first.** Pool `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e` (deployed block 15865757, UDC tx `0x7c6949e9…c614`) runs the **same class as mainnet** (`0x6d163f2b…cf83`) and has accepted `PROOF1` proofs. Its config: fee 0, `proof_validity_blocks` 450, auditor key `0x6287ba0e…2bcb`, screener key `0x2159dc65…bf5` (not the `0xCAFEBABE` test key, so Sepolia deposits need the operator's Sepolia prover). The older `0xd894af9e…c233` pool (mezcal runbook) predates screening; ignore it. Mainnet (canonical pool, Starkscan) is the final check, with a maintainer-funded account. |
 
+## 2b. Phase 0 results (2026-10-06, Sepolia)
+
+Every privacy operation was proved **locally** by strkd's bundled prover (snip-36-prover-backend
+v1.2.2, `PROOF1`) and accepted on-chain. The official TS SDK (`0.14.3-rc.4`) built and signed each
+transaction and treated the local runner as its proving service. The viewing key uses bramble's
+scoped derivation; the JS port matches krusty's known-answer vector.
+
+Pool: our own deployment of the mainnet class (`0x6d163f2b…cf83`) at
+`0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323`. Its screener is the
+public test key `0xCAFEBABE` from StarkWare's screening vectors, so we sign test attestations
+ourselves. Test-seed accounts #0 `0x0497e844…7b4f` and #1 `0x024680b5…f8270`.
+
+| Operation | Tx | Prove | Proof | L2 gas | Fee (Sepolia) |
+|---|---|---|---|---|---|
+| Register #0 | `0x37023762…d9c1` | 60 s | 238 KB | 78.5M | 1.31 STRK |
+| Deposit 1 STRK | `0x451409dd…eb69` | 34 s | 236 KB | 84.6M | 1.42 STRK |
+| Withdraw 0.3 STRK | `0x4bb423d1…12e7` | 49 s | 229 KB | 78.5M | 1.32 STRK |
+| Register #1 | `0xdd60bc76…2def` | 55 s | 236 KB | 78.5M | 1.32 STRK |
+| Transfer 0.2 STRK #0→#1 | `0x429a2f83…64a6` | 68 s | 230 KB | 83.7M | 1.41 STRK |
+
+- **Size cap: not an issue.** Every proof stays far under the 2^20-row cap and the gateway's
+  480 KB limit. Proving takes 20–70 s on an M4 Pro.
+- **Screening enforced as designed.** Deposit without attestation → `SCREENING_REQUIRED`;
+  400 s old → `SCREENING_EXPIRED`; bad signature → `SCREENING_INVALID_SIGNATURE`. The attestation
+  is not proof-bound: one proof served all four simulations.
+- **Discovery over plain RPC works.** `ContractDiscoveryProvider`, with no indexer, found #0's
+  0.5 STRK change note and #1's received 0.2 STRK note, so `user_sk` never leaves the machine.
+- **Cost is the fixed proof verification**, about 78M L2 gas per proof-carrying tx. That is the
+  dominant fee, so the relayer-fee withdraw (P3) must cover it, and fee headroom of about 3.2 STRK
+  is needed at Sepolia prices to submit at all.
+- **Timing:** proofs read state 12 blocks back, so a freshly deployed or registered account must
+  wait about 12 blocks before its next proof.
+- Spike scripts (TS SDK + local runner) are kept outside the repo; the Rust port re-derives each
+  of these transactions as conformance vectors.
+
 ## 3. Phases
 
 ### 0. De-risk (spikes, no user-facing change)
