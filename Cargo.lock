@@ -2552,6 +2552,7 @@ dependencies = [
  "getrandom 0.2.17",
  "krusty-kms",
  "krusty-kms-common",
+ "reqwest",
  "serde",
  "serde_json",
  "starknet-types-core",

@@ -90,6 +90,16 @@ pub struct Plan {
     pub spent: Vec<Felt>,
     /// Change returned to the user, per token.
     pub change: BTreeMap<Felt, u128>,
+    /// Privacy warnings to surface before signing.
+    pub warnings: Vec<Warning>,
+}
+
+/// The SDK's privacy warnings (`WarningCode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Warning {
+    /// More than one channel opened in one batch: an observer can tell the new
+    /// channels share a sender (SDK `USER_LINKAGE`).
+    UserLinkage,
 }
 
 /// Plan a batch. `state.channels` must hold every transfer recipient and the
@@ -269,10 +279,20 @@ pub fn plan(intent: &Intent, state: &State, rng: &mut dyn Randomness) -> Result<
     }
     debug_assert!(actions.windows(2).all(|w| w[0].phase() <= w[1].phase()));
 
+    let opened = actions
+        .iter()
+        .filter(|a| matches!(a, ClientAction::OpenChannel { .. }))
+        .count();
+    let warnings = if opened > 1 {
+        vec![Warning::UserLinkage]
+    } else {
+        Vec::new()
+    };
     Ok(Plan {
         actions,
         spent: spends.iter().map(|n| n.id).collect(),
         change,
+        warnings,
     })
 }
 
@@ -291,5 +311,195 @@ fn note_salt(rng: &mut dyn Randomness) -> Result<u128, Error> {
         if salt > crypto::OPEN_NOTE_SALT {
             return Ok(salt);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic randomness: counts up from 2.
+    struct Counter(u64);
+    impl Randomness for Counter {
+        fn felt(&mut self) -> Result<Felt, Error> {
+            self.0 += 1;
+            Ok(Felt::from(self.0))
+        }
+        fn salt120(&mut self) -> Result<u128, Error> {
+            self.0 += 1;
+            Ok(self.0 as u128)
+        }
+    }
+
+    const USER: u64 = 0xa11ce;
+    const BOB: u64 = 0xb0b;
+    const STRK: u64 = 0x4718;
+    const SK: u64 = 0x5ec;
+
+    fn channel(recipient: u64, open: bool, subs: &[(u64, u32, u32)]) -> OutgoingChannel {
+        OutgoingChannel {
+            recipient: Felt::from(recipient),
+            recipient_public_key: Felt::from(recipient + 1),
+            key: Felt::from(recipient + 2),
+            open,
+            subchannels: subs
+                .iter()
+                .map(|&(t, index, next)| {
+                    (
+                        Felt::from(t),
+                        crate::discovery::Subchannel {
+                            index,
+                            next_note_index: next,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn note(amount: u128, index: u32) -> Note {
+        Note {
+            id: Felt::from(1000 + index as u64),
+            token: Felt::from(STRK),
+            amount,
+            channel_key: Felt::from(77u64),
+            index,
+            sender: Felt::from(USER),
+            open: false,
+        }
+    }
+
+    fn state(registered: bool, channels: Vec<OutgoingChannel>, notes: Vec<Note>) -> State {
+        State {
+            user: Felt::from(USER),
+            user_sk: Felt::from(SK),
+            registered,
+            outgoing_channels: channels.iter().filter(|c| c.open).count() as u32,
+            channels: channels.into_iter().map(|c| (c.recipient, c)).collect(),
+            notes,
+        }
+    }
+
+    #[test]
+    fn register_and_deposit_open_the_self_channel_and_subchannel() {
+        let intent = Intent {
+            register: true,
+            deposits: vec![(Felt::from(STRK), 5)],
+            ..Intent::default()
+        };
+        let p = plan(&intent, &state(false, vec![], vec![]), &mut Counter(1)).unwrap();
+        let kinds: Vec<_> = p.actions.iter().map(|a| a.phase()).collect();
+        use crate::actions::Phase::*;
+        assert_eq!(
+            kinds,
+            vec![Account, Channel, Subchannel, Deposit, CreateNotes]
+        );
+        assert!(matches!(
+            p.actions[1],
+            ClientAction::OpenChannel { index: 0, .. }
+        ));
+        assert!(matches!(
+            p.actions[4],
+            ClientAction::CreateEncNote {
+                amount: 5,
+                index: 0,
+                ..
+            }
+        ));
+        assert!(p.warnings.is_empty());
+    }
+
+    #[test]
+    fn transfer_spends_largest_notes_first_and_returns_change() {
+        let st = state(
+            true,
+            vec![
+                channel(USER, true, &[(STRK, 0, 3)]),
+                channel(BOB, false, &[]),
+            ],
+            vec![note(10, 0), note(50, 1), note(30, 2)],
+        );
+        let intent = Intent {
+            transfers: vec![(Felt::from(BOB), Felt::from(STRK), 70)],
+            ..Intent::default()
+        };
+        let p = plan(&intent, &st, &mut Counter(1)).unwrap();
+        assert_eq!(p.spent, vec![Felt::from(1001u64), Felt::from(1002u64)]); // 50, then 30
+        assert_eq!(p.change.get(&Felt::from(STRK)), Some(&10));
+        // Bob's channel opens at the user's next index (1); his note is the first on a new subchannel;
+        // the change is the 4th note on the user's existing STRK subchannel.
+        assert!(p.actions.contains(&ClientAction::OpenChannel {
+            recipient_addr: Felt::from(BOB),
+            index: 1,
+            random: Felt::from(2u64),
+            salt: Felt::from(3u64)
+        }));
+        let notes: Vec<_> = p
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                ClientAction::CreateEncNote {
+                    recipient_addr,
+                    amount,
+                    index,
+                    ..
+                } => Some((*recipient_addr, *amount, *index)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![(Felt::from(BOB), 70, 0), (Felt::from(USER), 10, 3)]
+        );
+    }
+
+    #[test]
+    fn insufficient_balance_is_refused() {
+        let st = state(
+            true,
+            vec![channel(USER, true, &[(STRK, 0, 1)])],
+            vec![note(10, 0)],
+        );
+        let intent = Intent {
+            withdrawals: vec![(Felt::from(USER), Felt::from(STRK), 11)],
+            ..Intent::default()
+        };
+        assert!(matches!(
+            plan(&intent, &st, &mut Counter(1)),
+            Err(Error::InsufficientBalance {
+                shortfall: 1,
+                available: 10,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn unregistered_user_must_register_first() {
+        let intent = Intent {
+            deposits: vec![(Felt::from(STRK), 1)],
+            ..Intent::default()
+        };
+        assert!(matches!(
+            plan(&intent, &state(false, vec![], vec![]), &mut Counter(1)),
+            Err(Error::NotRegistered(_))
+        ));
+    }
+
+    #[test]
+    fn opening_two_channels_warns_of_linkage() {
+        let st = state(
+            true,
+            vec![channel(USER, false, &[]), channel(BOB, false, &[])],
+            vec![note(5, 0)],
+        );
+        let intent = Intent {
+            transfers: vec![(Felt::from(BOB), Felt::from(STRK), 2)],
+            ..Intent::default()
+        };
+        assert_eq!(
+            plan(&intent, &st, &mut Counter(1)).unwrap().warnings,
+            vec![Warning::UserLinkage]
+        );
     }
 }

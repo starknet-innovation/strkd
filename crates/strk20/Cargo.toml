@@ -18,3 +18,5 @@ async-trait = { workspace = true }
 [dev-dependencies]
 krusty-kms = { workspace = true }
 tokio = { workspace = true }
+# examples/sepolia_e2e.rs talks JSON-RPC to a node and a local prover.
+reqwest = { workspace = true }
