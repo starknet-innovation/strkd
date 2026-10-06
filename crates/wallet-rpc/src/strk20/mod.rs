@@ -72,6 +72,16 @@ fn pool_revert(e: &str) -> Option<String> {
         .then(|| reason.to_string())
 }
 
+/// Remove the viewing key from text that leaves the handler (errors are returned
+/// to the caller and written to the request log). Provers are not expected to
+/// echo the transaction, but if one did, its calldata would carry `user_sk`.
+fn scrub(text: &str, user_sk: Felt) -> String {
+    let hex = format!("{user_sk:#x}");
+    let padded = format!("0x{user_sk:064x}");
+    let decimal = user_sk.to_string();
+    text.replace(&padded, "<viewing key>").replace(&hex, "<viewing key>").replace(&decimal, "<viewing key>")
+}
+
 /// A submission error: explain pool reverts, pass the rest through.
 fn submit_err(e: impl std::fmt::Display) -> WalletRpcError {
     let text = e.to_string();
@@ -389,13 +399,13 @@ async fn prepare(
             prover_network(ctx.chain).to_string(),
         )
         .await
-        .map_err(|e| WalletRpcError::Unknown(format!("proving failed: {e}")))?,
+        .map_err(|e| WalletRpcError::Unknown(scrub(&format!("proving failed: {e}"), user_sk)))?,
         Proving::Remote(p) => remote::prove(&p, ctx.chain, block, &tx).await.map_err(|e| match e {
             remote::RemoteError::ScreeningRejected(_) => WalletRpcError::Precondition(e.to_string()),
-            _ => WalletRpcError::Unknown(e.to_string()),
+            _ => WalletRpcError::Unknown(scrub(&e.to_string(), user_sk)),
         })?,
     };
-    let proved = remote::parse_result(&result, &ctx.pool).map_err(WalletRpcError::Unknown)?;
+    let proved = remote::parse_result(&result, &ctx.pool).map_err(|e| WalletRpcError::Unknown(scrub(&e, user_sk)))?;
     let call = strk20::apply::apply_actions_call(ctx.pool, &proved.output, proved.screening.as_ref()).map_err(map_strk20)?;
     Ok(Prepared { call, proved })
 }
@@ -645,6 +655,15 @@ mod tests {
         let zero = json!({ "actions": [{ "type": "deposit", "token": STRK, "amount": "0x0" }] });
         assert!(matches!(parse_actions(&zero), Err(WalletRpcError::InvalidRequest(_))));
         assert!(parse_actions(&json!({ "actions": [] })).is_err());
+    }
+
+    #[test]
+    fn scrubs_the_viewing_key_in_every_spelling() {
+        let sk = Felt::from_hex("0x2f6c0b3c1a9e5d4f8b7a6e5d4c3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29").unwrap();
+        let text = format!("calldata [0x1, {sk:#x}, 0x{sk:064x}, {sk}]");
+        let out = scrub(&text, sk);
+        assert!(!out.contains(&format!("{sk:#x}")[2..]) && !out.contains(&sk.to_string()), "{out}");
+        assert_eq!(out.matches("<viewing key>").count(), 3);
     }
 
     #[test]
