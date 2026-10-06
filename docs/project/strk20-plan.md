@@ -89,6 +89,10 @@ ourselves. Test-seed accounts #0 `0x0497e844…7b4f` and #1 `0x024680b5…f8270`
 
 ## 3. Phases
 
+**Status (2026-10-06):** phases 0–5 are built in PR #39 (`docs/code/strk20.md`). Open: the
+mainnet end-to-end (Starkscan or bramble-gateway deposits, AVNU relay), a live run of the
+desktop Private tab, and the "Later" items.
+
 ### 0. De-risk (spikes, no user-facing change)
 - Locally prove a real `compile_actions` virtual tx (register, then a transfer) against mainnet
   state, without submitting it. Measure rows per component against the cap, time and size; check
