@@ -118,7 +118,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 | Shell / packaging | Tauri 2.x | Native macOS tray; small binary; webview frontend |
 | Core language | Rust | Same language as `krusty-kms` → keys never cross an FFI/language boundary |
 | Crypto | `krusty-kms` (+ `krusty-kms-common`) | BIP-39/44 derivation, STARK signing, OZ address calc, invoke-V3 hash |
-| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` | Confidential proof generation — not shipped |
+| STRK20 privacy pool | `crates/strk20` (Rust port of StarkWare's SDK wallet side) | Pool-scoped viewing key via krusty; local SNIP-36 proving except deposits |
 | Node RPC | `krusty-kms-client` or `starknet-rs` | Fee estimation + optional broadcast |
 | Frontend | Web (framework TBD — Svelte/React) | Renders prompts + log; no key access |
 | Vault encryption | `argon2` (Argon2id) + AES-256-GCM (`aes-gcm`) | Authenticated encryption |
@@ -316,15 +316,20 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 | `wallet_addDeclareTransaction` | 2 | **yes** | Same submit/sign rules; `class_hash` **derived** from `contract_class` ([§7.4.1](#741-declare-the-class-hash-is-derived-not-trusted)); returns class hash + tx hash |
 | `wallet_watchAsset` | 2 | **yes** | Add token to display |
 | `wallet_addStarknetChain` | 2 | **yes** | Add a custom network |
-| `wallet_strk20PrepareInvoke` | parked³ | — | Out of scope: returns `-32601` |
-| `wallet_strk20InvokeTransaction` | parked³ | — | Out of scope: returns `-32601` |
-| `wallet_strk20Balances` | parked³ | — | Out of scope: returns `-32601` |
+| `wallet_strk20Balances` | 3³ | **yes** | Private balance per token, discovered on-chain and decrypted locally |
+| `wallet_strk20PrepareInvoke` | 3³ | **yes** | Plan + sign + prove a batch → `STRK20_CALL_AND_PROOF`, unsubmitted |
+| `wallet_strk20InvokeTransaction` | 3³ | **yes** | Same, then submit: deposits from the user's account, private batches via the AVNU private relay → `{transaction_hash}` |
+| `wallet_strk20ShadowAccountCommitment` | later | — | Returns `-32601` until shadow-account invokes land |
 
 ¹ First connection requires pairing approval; thereafter auto-served to the paired caller (within scope).
 ² Proof generation may be heavy; prompt + progress indication.
-³ Privacy is parked, not pending (strkd#20). strkd's Tongo backend cannot express the
-  spec's note-based pool, so the standard names stay free rather than carrying partial
-  semantics. The Tongo work is preserved, unmerged, in PR #11.
+³ STRK20 on the canonical privacy pool, wallet-API 0.10.4 (supersedes the strkd#20 park
+  and the Tongo PR #11). Register, transfer and withdraw are proved on the device; a deposit
+  needs a screening attestation, so it is proved by a remote screening prover (user URL,
+  else Starkscan with the user's key, else the bramble gateway). Supported actions:
+  `deposit`, `transfer` (fixed amount), `withdraw`; `"OPEN"` amounts, `invoke` and
+  `shadow_account_invoke` return `-32601`. Errors 118/119/120 per the spec. Design and
+  decisions: `docs/project/strk20-plan.md`; code: `docs/code/strk20.md`.
 
 ### 7.3 Companion extension methods (`companion_*`)
 Non-standard, namespaced to avoid clashing with `wallet_*`.
@@ -563,7 +568,7 @@ Full spec is the target; deliver in phases.
 - **Phase 0 — Skeleton:** Tauri menu-bar app, vault (gen/import + passphrase + lock/unlock), single user account, `krusty-kms` wired in (`generate_mnemonic`, `derive_keypair_with_coin_type`, OZ address). No service.
 - **Phase 1 — Core service (minimal usable wallet):** loopback JSON-RPC + pairing + per-request approval + log; methods `supportedWalletApi/Specs`, `getPermissions`, `requestAccounts`, `requestChainId`, `deploymentData`, `signTypedData`, `addInvokeTransaction` **sign-only** with node-backed **fee estimation**. Multi-account (user domain) + agent domain + `companion_createAgentAccount` + scoping.
 - **Phase 2 — Broadcast & remaining standard methods:** `submit: true` broadcasting via configured node; `switchStarknetChain` (Sepolia ⇄ Mainnet); `addDeclareTransaction`, `watchAsset`, `addStarknetChain`. Log viewer polish.
-- **Phase 3 — Privacy (Tongo / STRK20):** **parked** (strkd#20). The standard `strk20*` names return `-32601`; the Tongo work stays unmerged in PR #11.
+- **Phase 3 — Privacy (STRK20):** the canonical privacy pool through `crates/strk20` and the `wallet_strk20*` methods (plus `companion_strk20Register`), proved locally except deposits. Open notes, invokes and shadow accounts come later. See `docs/project/strk20-plan.md`.
 - **Hardening (parallel/after):** portability round-trip tests; UDS + peer-cred transport option; security audit; validate experimental crypto before Mainnet.
 
 ---
@@ -606,8 +611,8 @@ Full spec is the target; deliver in phases.
 | Sign typed data (SNIP-12) | `compute_typed_data_message_hash(...)` → `sign_stark_hash(...)` |
 | OZ address (counterfactual) | `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&pubkey, SaltPolicy::Zero)` → `OzDeploymentDescriptor` |
 | Invoke-V3 tx hash | `compute_invoke_v3_hash(sender, calldata, chain_id, nonce, account_deployment_data, tip, l1_gas, l2_gas, l1_data_gas, paymaster_data, nonce_da_mode, fee_da_mode)` |
-| Invoke-V3 with proof (Tongo) | `compute_invoke_v3_hash_with_proof_facts(..., proof_facts)` |
-| Tongo / STRK20 (parked, #20) | `krusty-kms-sdk` (`TongoAccount`, `FundParams`, …) |
+| Invoke-V3 with proof (SNIP-36) | `compute_invoke_v3_hash_with_proof_facts(..., proof_facts)` |
+| STRK20 viewing key | `strk20::derive_scoped_strk20_viewing_key(sk, chain_id, pool)` (bramble's convention) |
 
 Constants: `STARKNET_COIN_TYPE = 9004`, `TONGO_COIN_TYPE = 5454`. Types: `ResourceBounds { max_amount: u64, max_price_per_unit: u128 }`, `DaMode { L1, L2 }`, `SaltPolicy { PublicKey, Zero, Explicit(Felt) }`.
 

@@ -30,6 +30,7 @@ strkd/
 |---|---|---|---|
 | `wallet-core` | ✅ built | The only crate that touches seed/private-key material. Derivation, signing, address calc, encrypted vault, account registry. | [`wallet-core.md`](./wallet-core.md) |
 | `wallet-rpc` | ✅ built | Loopback JSON-RPC server, pairing/auth, approval broker, read + `signTypedData` + `addInvokeTransaction` + `companion_*` handlers (incl. `companion_prove*`), SQLite log, vault store, transport hardening. Calls into `wallet-core` and `prover`. | [`wallet-rpc.md`](./wallet-rpc.md) |
+| `strk20` | ✅ built | Rust port of the wallet side of StarkWare's privacy SDK: hashes, decryption, client actions, proof invocation, discovery, planner. Pure (no I/O); `user_sk` comes in from `wallet-core`. | [`strk20.md`](./strk20.md) |
 | `prover` | ✅ built | On-device proving companion (ported from `../dinner`). Generic prove seam + native SNIP-36 backend, per-network settings, job store, on-disk proof storage. **Holds no key material** — proves already-signed payloads. | [`prover.md`](./prover.md) |
 | `desktop` (Tauri) | ✅ built, not run-verified | Menu-bar tray app: onboarding, unlock, accounts, confirmation dialogs, log viewer, **Proving panel**. Hosts the service + approval bridge + the prover. Tauri 2 + React. | [`desktop.md`](./desktop.md) |
 

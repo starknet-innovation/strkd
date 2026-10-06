@@ -8,6 +8,53 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-10-06 — STRK20 privacy pool (phases 0–5)
+
+**Did**
+- Phase 0 on Sepolia (strkd's test pool: mainnet class, screener = StarkWare's
+  public test key): register, deposit, withdraw, private transfer, all proved by
+  the bundled v1.2.2 prover (PROOF1, < 240 KB, 20–70 s). Results in
+  [`strk20-plan.md`](./strk20-plan.md) §2b.
+- `wallet-core::strk20_viewing_key` (bramble's pool-scoped derivation via krusty).
+- New crate `crates/strk20`: Rust port of the wallet side of StarkWare's privacy
+  SDK. See [`code/strk20.md`](../code/strk20.md).
+- `wallet-rpc`: `wallet_strk20Balances`, `wallet_strk20PrepareInvoke`,
+  `wallet_strk20InvokeTransaction`, `companion_strk20Register`; deposit provers
+  (own URL / Starkscan / bramble gateway); AVNU private relay; errors 118/119/120.
+- `prover::prove_unrecorded`: proves without writing the payload to storage
+  (a STRK20 invocation carries the viewing key).
+- `wallet_addInvokeTransaction` now estimates a proof-carrying invoke with its
+  proof attached instead of demanding manual `resource_bounds`.
+- Desktop: Private tab and STRK20 settings.
+
+**Decisions**
+- Prove locally everything but deposits; deposits need the operator's screening
+  attestation. Plan P1–P7.
+- Deposits can't be batched with private actions (they are public and go from
+  the user's account); private batches need AVNU or go out unsubmitted.
+- A batch that would open more than one channel is refused (`PRIVACY_LEAK`),
+  following bramble.
+
+**Verify**
+- `cargo test -p strk20 -p wallet-core -p wallet-rpc` and
+  `cd conformance && npm ci && npm run verify` (30/30 strk20 values).
+- Live (needs Sepolia STRK on the test seed, the bundled prover):
+  `cargo run -p wallet-rpc --example strk20_live -- balances 0`.
+
+**Next / Resume**
+- Mainnet end-to-end with Starkscan (user key) or the bramble gateway, and the
+  AVNU relay once a key is available.
+- Run the desktop Private tab in a live session.
+
+**Notes / caveats**
+- Transactions verified live on Sepolia: transfer `0x579fd315…af08`, withdraw
+  `0x78b940c3…c1aa`, prepare + submit from another account `0x4411e26c…3a31`,
+  RPC register `0x4c7a76e3…d1c`. The latter also confirmed strkd's
+  proof-carrying `wallet_addInvokeTransaction` broadcast live.
+- Deposits on Sepolia need an operator screening prover; none is public.
+
+---
+
 ## 2026-10-02 — Temporary sweep removed (#31)
 
 **Did**
