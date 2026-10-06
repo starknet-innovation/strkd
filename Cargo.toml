@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wallet-core", "crates/wallet-rpc", "crates/wallet-cli", "crates/prover"]
+members = ["crates/wallet-core", "crates/strk20", "crates/wallet-rpc", "crates/wallet-cli", "crates/prover"]
 # The desktop (Tauri) app is its own crate under desktop/src-tauri; keep it out
 # of this workspace so `cargo build` of the core stays lean and toolchain-free
 # (mirrors ../dinner).
