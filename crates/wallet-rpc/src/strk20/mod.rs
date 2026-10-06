@@ -62,6 +62,32 @@ fn node_err(e: impl std::fmt::Display) -> WalletRpcError {
     WalletRpcError::Node(e.to_string())
 }
 
+/// The pool's revert reason (a Cairo short string such as `SCREENING_REQUIRED`)
+/// inside a node error, if there is one.
+fn pool_revert(e: &str) -> Option<String> {
+    let start = e.find("('")? + 2;
+    let end = start + e[start..].find("')")?;
+    let reason = &e[start..end];
+    (!reason.is_empty() && reason.bytes().all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit()))
+        .then(|| reason.to_string())
+}
+
+/// A submission error: explain pool reverts, pass the rest through.
+fn submit_err(e: impl std::fmt::Display) -> WalletRpcError {
+    let text = e.to_string();
+    match pool_revert(&text).as_deref() {
+        Some(r @ "SCREENING_REQUIRED") => WalletRpcError::Precondition(format!(
+            "the pool refused the deposit ({r}): the deposit prover returned no screening attestation. Use a \
+             screening prover (Starkscan, the bramble gateway, or the pool operator's)."
+        )),
+        Some(r @ ("SCREENING_EXPIRED" | "SCREENING_FUTURE_DATED")) => WalletRpcError::Precondition(format!(
+            "the pool refused the deposit ({r}): its screening attestation is no longer valid; retry the deposit"
+        )),
+        Some(r) => WalletRpcError::Precondition(format!("the pool refused the transaction: {r}")),
+        None => WalletRpcError::Node(text),
+    }
+}
+
 // ── reading the pool through the configured node ─────────────────────────────
 
 /// A [`PoolReader`] over the wallet's node for `chain`, pinned to one block.
@@ -423,7 +449,7 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
         .node
         .estimate_invoke_with_proof(&ctx.user, &calldata, &nonce, &prepared.proved.proof_facts, &prepared.proved.proof)
         .await
-        .map_err(node_err)?;
+        .map_err(submit_err)?;
     let signed = state.session.lock().await.sign_invoke_for(
         &ctx.account,
         &calls,
@@ -440,7 +466,7 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
     ctx.node
         .add_invoke(&ctx.user, &signed.calldata, &signed.signature, &nonce, &bounds, &prepared.proved.proof_facts, Some(&prepared.proved.proof))
         .await
-        .map_err(node_err)
+        .map_err(submit_err)
 }
 
 // ── handlers ─────────────────────────────────────────────────────────────────
@@ -596,6 +622,14 @@ mod tests {
         let zero = json!({ "actions": [{ "type": "deposit", "token": STRK, "amount": "0x0" }] });
         assert!(matches!(parse_actions(&zero), Err(WalletRpcError::InvalidRequest(_))));
         assert!(parse_actions(&json!({ "actions": [] })).is_err());
+    }
+
+    #[test]
+    fn pool_reverts_are_explained() {
+        let raw = r#"rpc: {"code":41,"data":{"error":"0x53435245454e494e475f5245515549524544 ('SCREENING_REQUIRED')"}}"#;
+        assert_eq!(pool_revert(raw).as_deref(), Some("SCREENING_REQUIRED"));
+        assert!(matches!(submit_err(raw), WalletRpcError::Precondition(m) if m.contains("no screening attestation")));
+        assert!(matches!(submit_err("rpc: timeout"), WalletRpcError::Node(_)));
     }
 
     #[test]

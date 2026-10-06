@@ -63,6 +63,7 @@ async fn main() {
     settings.testnet.rpc_url = RPC.into();
     settings.testnet.strk20.pool = std::env::var("STRK20_POOL").unwrap_or_else(|_| TEST_POOL.into());
     settings.testnet.strk20.avnu_api_key = std::env::var("AVNU_API_KEY").unwrap_or_default();
+    settings.testnet.strk20.deposit_prover_url = std::env::var("DEPOSIT_PROVER_URL").unwrap_or_default();
     prover.settings.update(settings).await.unwrap();
 
     let mut state = ServerState::new(Arc::new(Mutex::new(session)), Arc::new(AutoApprover(Decision::Approve)))
