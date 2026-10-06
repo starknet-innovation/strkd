@@ -172,6 +172,9 @@ The tokens port cleanly; the components are a reimplementation against the same 
 
 ### 5.6 Privacy — parked
 
+> **Superseded 2026-10-05.** STRK20 against the canonical pool is now planned in
+> [`strk20-plan.md`](./strk20-plan.md). The text below records the original decision.
+
 Phase 3 / Tongo work is shelved and privacy leaves strkd's scope for now. PR #11 is not merged.
 
 The reasoning is in strkd's own `strk20.rs` header: Tongo is a per-token encrypted balance with five
