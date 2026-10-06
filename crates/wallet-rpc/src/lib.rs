@@ -19,6 +19,7 @@ pub mod node;
 pub mod server;
 pub mod session;
 pub mod store;
+pub mod strk20;
 pub mod backoff;
 pub mod usage;
 

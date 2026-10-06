@@ -2928,6 +2928,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "starknet-crypto",
+ "strk20",
  "thiserror 1.0.69",
  "tokio",
  "wallet-core",

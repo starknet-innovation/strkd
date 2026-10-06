@@ -262,14 +262,14 @@ fn parse_u128_field(params: &Value, key: &str) -> Result<u128, WalletRpcError> {
     }
 }
 
-fn chain_name(c: ChainId) -> &'static str {
+pub(crate) fn chain_name(c: ChainId) -> &'static str {
     match c {
         ChainId::Mainnet => "SN_MAIN",
         ChainId::Sepolia => "SN_SEPOLIA",
     }
 }
 
-fn param_str(params: &Value, key: &str) -> Result<String, WalletRpcError> {
+pub(crate) fn param_str(params: &Value, key: &str) -> Result<String, WalletRpcError> {
     params
         .get(key)
         .and_then(|v| v.as_str())
@@ -277,12 +277,12 @@ fn param_str(params: &Value, key: &str) -> Result<String, WalletRpcError> {
         .ok_or_else(|| WalletRpcError::InvalidRequest(format!("missing string param '{key}'")))
 }
 
-fn opt_param_str(params: &Value, key: &str) -> Option<String> {
+pub(crate) fn opt_param_str(params: &Value, key: &str) -> Option<String> {
     params.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
 /// Which accounts this client may see/use.
-fn scope_for(client: &PairedClient) -> Option<String> {
+pub(crate) fn scope_for(client: &PairedClient) -> Option<String> {
     match client.kind {
         ClientKind::Agent => Some(client.id.clone()),
         ClientKind::App => None,
@@ -307,27 +307,14 @@ struct Handled {
 
 /// Standard methods that exist in the spec but return `-32601` here.
 ///
-/// Two different reasons, deliberately kept in one list because callers only
-/// care that the method is unavailable:
-///
 /// - `wallet_addStarknetChain` is **not built yet** — it needs a generalized
 ///   chain id beyond the Sepolia/Mainnet enum.
-/// - The `wallet_strk20*` privacy methods are **deliberately out of scope**
-///   (strkd#20). strkd's Tongo backend cannot express this surface — it is a
-///   per-token encrypted balance where the spec models a note-based pool — and
-///   shipping partial semantics under the standard names would mean the same
-///   call meant different things in strkd and bramble. The names stay free for
-///   a real implementation.
+/// - The STRK20 shadow-account commitment is not supported yet (open notes and
+///   shadow-account invokes come later; `docs/project/strk20-plan.md`).
 fn is_deferred(method: &str) -> bool {
-    method == "wallet_addStarknetChain" || is_out_of_scope(method)
-}
-
-/// The parked privacy surface (strkd#20): unlike `wallet_addStarknetChain`,
-/// these are not coming in a later phase, and the error says so.
-fn is_out_of_scope(method: &str) -> bool {
     matches!(
         method,
-        "wallet_strk20InvokeTransaction" | "wallet_strk20PrepareInvoke" | "wallet_strk20Balances"
+        "wallet_addStarknetChain" | "wallet_strk20ShadowAccountCommitment" | "wallet_strk20SubaccountCommitment"
     )
 }
 
@@ -450,11 +437,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 
     if is_deferred(method) {
         return Handled {
-            result: Err(WalletRpcError::NotImplemented(if is_out_of_scope(method) {
-                format!("{method} is out of scope: strkd does not implement the STRK20 privacy surface (strkd#20)")
-            } else {
-                format!("{method} is planned for a later phase")
-            })),
+            result: Err(WalletRpcError::NotImplemented(format!("{method} is planned for a later phase"))),
             decision: "n/a".into(),
             client: Some(client_label),
         };
@@ -504,6 +487,10 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_proveStatus" => handle_prove_status(state, &params).await,
         "companion_proofActivity" => handle_proof_activity(state).await,
         "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
+        "wallet_strk20Balances" => crate::strk20::handle_balances(state, &client, &params).await,
+        "wallet_strk20PrepareInvoke" => crate::strk20::handle_prepare_invoke(state, &client, &params).await,
+        "wallet_strk20InvokeTransaction" => crate::strk20::handle_invoke_transaction(state, &client, &params).await,
+        "companion_strk20Register" => crate::strk20::handle_register(state, &client, &params).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -520,7 +507,11 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_requestFunding"
         | "companion_requestGrant"
         | "companion_deployAccount"
-        | "companion_signAndProve" => decision_label(&result),
+        | "companion_signAndProve"
+        | "wallet_strk20Balances"
+        | "wallet_strk20PrepareInvoke"
+        | "wallet_strk20InvokeTransaction"
+        | "companion_strk20Register" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -537,7 +528,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
 /// prompt (funding spends the user's manager account; the rest change shared
 /// state). The agent is independently scoped to its own accounts, so a grant's
 /// blast radius is limited to accounts the agent controls.
-async fn gated_approval(
+pub(crate) async fn gated_approval(
     state: &ServerState,
     client: &PairedClient,
     method: &str,
@@ -871,7 +862,7 @@ fn opt_fee_bounds(params: &Value) -> Result<Option<FeeBounds>, WalletRpcError> {
 /// explicit and avoids the cross-agent race of a single shared mutable active
 /// chain (one client switching the network out from under another). An
 /// unsupported chain → 117; a malformed value → 114.
-async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, WalletRpcError> {
+pub(crate) async fn resolve_chain(state: &ServerState, params: &Value) -> Result<ChainId, WalletRpcError> {
     match params.get("chainId") {
         None | Some(Value::Null) => Ok(state.session.lock().await.chain()),
         Some(Value::String(s)) => {
@@ -905,7 +896,9 @@ async fn resolve_exec(
     sender: &Felt,
     encoded_calldata: &[Felt],
     params: &Value,
-    proof_carrying: bool,
+    // `(proof_facts, proof)` of a SNIP-36 proof-carrying invoke; `proof` may be
+    // absent in sign-only mode.
+    proof_carrying: Option<(&[Felt], Option<&str>)>,
 ) -> Result<(Felt, FeeBounds), WalletRpcError> {
     let nonce = match opt_nonce(params)? {
         Some(n) => n,
@@ -918,12 +911,20 @@ async fn resolve_exec(
     };
     let bounds = match opt_fee_bounds(params)? {
         Some(b) => b,
-        None if proof_carrying => {
+        // With the proof in hand, estimate with it attached: its on-chain
+        // verification dominates the fee.
+        None if proof_carrying.is_some_and(|(_, proof)| proof.is_some()) => {
+            let (facts, proof) = proof_carrying.expect("checked");
+            let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
+            node.estimate_invoke_with_proof(sender, encoded_calldata, &nonce, facts, proof.expect("checked"))
+                .await
+                .map_err(|e| WalletRpcError::Node(e.to_string()))?
+        }
+        None if proof_carrying.is_some() => {
             return Err(WalletRpcError::InvalidRequest(
-                "proof-carrying invoke (proof_facts) requires explicit resource_bounds: \
-                 online fee estimation simulates the call without proof_facts and the \
-                 contract reverts reading them. Set resource_bounds manually (e.g. ~2× \
-                 current gas prices)."
+                "proof-carrying invoke (proof_facts) without 'proof' needs explicit resource_bounds: \
+                 the fee can only be estimated with the proof attached. Pass 'proof', or set \
+                 resource_bounds manually (e.g. ~2× current gas prices)."
                     .into(),
             ));
         }
@@ -1277,7 +1278,15 @@ async fn handle_add_invoke(
     // fee can be shown).
     let encoded = wallet_core::encode_calls(&calls);
     let (nonce, bounds) =
-        resolve_exec(state, chain, &sender, &encoded, params, !proof_facts.is_empty()).await?;
+        resolve_exec(
+            state,
+            chain,
+            &sender,
+            &encoded,
+            params,
+            (!proof_facts.is_empty()).then_some((proof_facts.as_slice(), proof.as_deref())),
+        )
+        .await?;
 
     let kind = if proof_facts.is_empty() { "" } else { " (SNIP-36 proof-carrying)" };
     let decision = gated_approval(
@@ -1383,7 +1392,7 @@ and stores no GitHub credential."
 
 /// The wired prover, or a clean "not available" error when none is attached
 /// (e.g. a headless service started without `with_prover`).
-fn prover_or_err(state: &ServerState) -> Result<&prover::ProverState, WalletRpcError> {
+pub(crate) fn prover_or_err(state: &ServerState) -> Result<&prover::ProverState, WalletRpcError> {
     state.prover.as_deref().ok_or_else(|| {
         WalletRpcError::NotImplemented("on-device proving is not available on this service".into())
     })
@@ -1424,7 +1433,7 @@ async fn handle_proof_activity(state: &ServerState) -> Result<Value, WalletRpcEr
 
 /// The prover's network name for a chain (`mainnet`/`testnet`) — selects which
 /// per-network prover settings (RPC + remote prover) the prove uses.
-fn prover_network(chain: ChainId) -> &'static str {
+pub(crate) fn prover_network(chain: ChainId) -> &'static str {
     match chain {
         ChainId::Mainnet => "mainnet",
         ChainId::Sepolia => "testnet",
@@ -1852,7 +1861,7 @@ Deploy and fund it on {} first — it pays the transfer fee.",
     let encoded = wallet_core::encode_calls(&calls);
     // Manager/funding invokes are never proof-carrying.
     let (nonce, bounds) =
-        resolve_exec(state, chain, &manager_sender, &encoded, params, false).await?;
+        resolve_exec(state, chain, &manager_sender, &encoded, params, None).await?;
 
     let strk = amount as f64 / 1e18;
     let decision = state
@@ -2069,7 +2078,7 @@ async fn handle_create_agent_account(
     Ok(account_to_json(&account))
 }
 
-fn normalize_address(s: &str) -> Result<String, WalletRpcError> {
+pub(crate) fn normalize_address(s: &str) -> Result<String, WalletRpcError> {
     let f = Felt::from_hex(s)
         .map_err(|_| WalletRpcError::InvalidRequest("invalid account_address".into()))?;
     Ok(address_hex(&f))
