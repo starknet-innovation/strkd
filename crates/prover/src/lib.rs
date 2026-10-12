@@ -30,7 +30,7 @@ use serde_json::Value;
 pub use config::ProverConfig;
 pub use jobs::{Activity, Job, JobStatus, Jobs};
 pub use prover::{Prover, ProveRequest, ProveResult, RemoteProver};
-pub use settings::{NetworkConfig, Settings, SettingsStore};
+pub use settings::{NetworkConfig, Settings, SettingsStore, Strk20Config};
 pub use state::ProverState;
 pub use storage::{ProofRecord, ProofSummary, Storage, StorageStats};
 
@@ -111,4 +111,24 @@ pub async fn enqueue_prove(
         st.storage.save(&rec);
     });
     job_id
+}
+
+/// Prove and wait, **without persisting anything**. For payloads that carry a
+/// secret — a STRK20 proof invocation has the account's viewing key in its
+/// calldata — so they must never reach [`Storage`]. The job still shows in the
+/// activity feed (label, status, timing); its result is the proof only.
+pub async fn prove_unrecorded(
+    state: &ProverState,
+    payload: Value,
+    label: Option<String>,
+    network: String,
+) -> Result<Value, String> {
+    let job_id = state.jobs.create(label.clone()).await;
+    state.jobs.set_status(&job_id, JobStatus::Proving).await;
+    let res = state.prover.prove(ProveRequest { payload, label, network }).await;
+    match &res {
+        Ok(out) => state.jobs.succeed(&job_id, out.proof.clone()).await,
+        Err(e) => state.jobs.fail(&job_id, e.clone()).await,
+    }
+    res.map(|out| out.proof)
 }

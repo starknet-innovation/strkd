@@ -399,6 +399,79 @@ async fn log_ui_action(
     });
 }
 
+// ── STRK20 (privacy pool) ────────────────────────────────────────────────────
+//
+// The desktop runs the very handlers behind the `wallet_strk20*` RPC methods,
+// as `Caller::Desktop`: any of the user's accounts, no approval prompt (the
+// click is the consent). Errors keep their wallet-API code, e.g. 118 = the
+// account has not registered with the pool yet.
+
+async fn strk20_run(
+    state: &DesktopState,
+    ui_method: &str,
+    result: Result<serde_json::Value, wallet_rpc::WalletRpcError>,
+) -> Result<serde_json::Value, String> {
+    let network = chain_name(state.server.session.lock().await.chain()).to_string();
+    match result {
+        Ok(v) => {
+            // Log the transaction hash only: params carry amounts and recipients.
+            let hash = v.get("transaction_hash").map(|h| h.to_string());
+            log_ui_action(state, ui_method, &network, "ok", None, hash).await;
+            Ok(v)
+        }
+        Err(e) => {
+            log_ui_action(state, ui_method, &network, &format!("error {}", e.code()), Some(e.code()), None).await;
+            Err(format!("{} ({})", e.message(), e.code()))
+        }
+    }
+}
+
+/// Private balances of `address` for `tokens` (`[{token, balance}]`, hex).
+#[tauri::command]
+async fn strk20_balances(
+    state: State<'_, DesktopState>,
+    address: String,
+    tokens: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "account_address": address, "tokens": tokens });
+    // Reads only: not logged.
+    wallet_rpc::strk20::balances(&state.server, wallet_rpc::strk20::Caller::Desktop, &params)
+        .await
+        .map_err(|e| format!("{} ({})", e.message(), e.code()))
+}
+
+/// Register `address` with the pool ("activate private balance").
+#[tauri::command]
+async fn strk20_register(state: State<'_, DesktopState>, address: String) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "account_address": address });
+    let r = wallet_rpc::strk20::register(&state.server, wallet_rpc::strk20::Caller::Desktop, &params).await;
+    strk20_run(&state, "ui_strk20Register", r).await
+}
+
+/// Prove and submit a batch of STRK20 actions (wallet-API action objects).
+#[tauri::command]
+async fn strk20_invoke(
+    state: State<'_, DesktopState>,
+    address: String,
+    actions: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "account_address": address, "actions": actions });
+    let r = wallet_rpc::strk20::invoke_transaction(&state.server, wallet_rpc::strk20::Caller::Desktop, &params).await;
+    strk20_run(&state, "ui_strk20Invoke", r).await
+}
+
+/// Prove a batch without submitting it: `{call, proof}` to submit elsewhere.
+#[tauri::command]
+async fn strk20_prepare(
+    state: State<'_, DesktopState>,
+    address: String,
+    actions: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({ "account_address": address, "actions": actions });
+    let r = wallet_rpc::strk20::prepare_invoke(&state.server, wallet_rpc::strk20::Caller::Desktop, &params).await;
+    strk20_run(&state, "ui_strk20Prepare", r).await
+}
+
 /// STRK balance of `address` (fri, as a string to avoid JS precision loss).
 /// `None` when no node is configured. Works for counterfactual (undeployed)
 /// accounts — they can hold tokens before deployment.
@@ -1078,7 +1151,11 @@ pub fn run() {
             storage_stats,
             list_proofs,
             proof_detail,
-            clear_storage
+            clear_storage,
+            strk20_balances,
+            strk20_register,
+            strk20_invoke,
+            strk20_prepare
         ])
         .build(tauri::generate_context!())
         .expect("error while building strkd desktop")

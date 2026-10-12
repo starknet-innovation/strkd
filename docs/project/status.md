@@ -157,10 +157,12 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - **Phase 2 verification** — node wire format **live-verified** for
   nonce/deploy-status/estimate (Sepolia v0.10, 2026-06-09); the **broadcast hop**
   (`add_invoke`/`add_deploy_account`) still needs a funded-account submit.
-- **Privacy (`strk20*`)** — **parked**, not pending. An implementation exists on
-  `feat/strk20-tongo-phase3` (PR #11, unmerged); Tongo cannot express the
-  standard surface. See [#20](https://github.com/starknet-innovation/strkd/issues/20)
-  and [`bramble-convergence.md`](./bramble-convergence.md) §5.6.
+  _2026-10-06: a proof-carrying `add_invoke` broadcast succeeded live on
+  Sepolia (STRK20 work, tx `0x4411e26c…3a31`)._
+- **STRK20 (`wallet_strk20*`)** — built on the canonical pool
+  ([`code/strk20.md`](../code/strk20.md), plan [`strk20-plan.md`](./strk20-plan.md)).
+  Remaining: mainnet end-to-end (Starkscan / bramble gateway deposits, AVNU
+  relay), open notes / invokes / shadow accounts.
 - **Invoke end-to-end** — prove the computed invoke tx hash is accepted by a
   Sepolia node / matches a golden vector (belongs with the security-reviewed
   test plan).

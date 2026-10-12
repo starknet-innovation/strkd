@@ -1,0 +1,22 @@
+[package]
+name = "strk20"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "STRK20 (Starknet privacy pool) client: hashes, note crypto, client actions, proof invocations and discovery."
+
+[dependencies]
+wallet-core = { path = "../wallet-core" }
+krusty-kms-common = { workspace = true }
+starknet-types-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+getrandom = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+krusty-kms = { workspace = true }
+tokio = { workspace = true }
+# examples/sepolia_e2e.rs talks JSON-RPC to a node and a local prover.
+reqwest = { workspace = true }

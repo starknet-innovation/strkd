@@ -77,10 +77,42 @@ export interface Activity {
   label?: string;
 }
 
+/** Per-network STRK20 (privacy pool) settings. Empty = default. Keys are secrets. */
+export interface Strk20Config {
+  /** Pool address override; empty = the network's canonical pool. */
+  pool: string;
+  /** Starkscan API key with `prove` scope: deposits are proved + screened there (mainnet). */
+  starkscan_api_key: string;
+  /** A screening `starknet_proveTransaction` endpoint for deposits (overrides the defaults). */
+  deposit_prover_url: string;
+  /** AVNU paymaster key: relays private transfers/withdrawals. */
+  avnu_api_key: string;
+  /** Paymaster endpoint override; empty = AVNU's. */
+  paymaster_url: string;
+}
+
 export interface ProverNetworkConfig {
   rpc_url: string;
   prover_url: string;
   prover_api_key: string;
+  strk20: Strk20Config;
+}
+
+export interface Strk20Balance {
+  token: string;
+  /** Hex, base units. */
+  balance: string;
+}
+
+/** A wallet-API STRK20 action. Amounts are hex felts in base units. */
+export type Strk20Action =
+  | { type: "deposit"; token: string; amount: string }
+  | { type: "transfer"; token: string; amount: string; recipient: string }
+  | { type: "withdraw"; token: string; amount: string; recipient: string };
+
+export interface Strk20CallAndProof {
+  call: { contract_address: string; entry_point: string; calldata: string[] };
+  proof: { data: string; output: string[]; proof_facts: string[] };
 }
 
 export interface ProverSettings {
@@ -160,6 +192,18 @@ export const api = {
   clearStorage: () => invoke<number>("clear_storage"),
   listProofs: () => invoke<ProofSummary[]>("list_proofs"),
   proofDetail: (jobId: string) => invoke<ProofRecord | null>("proof_detail", { jobId }),
+
+  // STRK20 privacy pool. Same handlers as the wallet_strk20* RPC methods; the
+  // viewing key never crosses IPC. Errors end with their wallet-API code, e.g.
+  // "(118)" = not registered with the pool yet.
+  strk20Balances: (address: string, tokens: string[]) =>
+    invoke<Strk20Balance[]>("strk20_balances", { address, tokens }),
+  strk20Register: (address: string) =>
+    invoke<{ transaction_hash: string }>("strk20_register", { address }),
+  strk20Invoke: (address: string, actions: Strk20Action[]) =>
+    invoke<{ transaction_hash: string }>("strk20_invoke", { address, actions }),
+  strk20Prepare: (address: string, actions: Strk20Action[]) =>
+    invoke<Strk20CallAndProof>("strk20_prepare", { address, actions }),
 };
 
 /// Subscribe to approval prompts pushed from the service. Returns an unlisten fn.

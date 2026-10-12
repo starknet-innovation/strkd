@@ -20,6 +20,36 @@ pub struct NetworkConfig {
     pub prover_url: String,
     #[serde(default)]
     pub prover_api_key: String,
+    /// STRK20 (privacy pool) settings for this network.
+    #[serde(default)]
+    pub strk20: Strk20Config,
+}
+
+/// Per-network STRK20 settings. Empty strings mean "use the default". The API
+/// keys are secrets: like `prover_api_key`, they are only managed over the
+/// desktop IPC and never returned over the loopback JSON-RPC service.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Strk20Config {
+    /// Pool contract address. Empty = the network's canonical pool.
+    #[serde(default)]
+    pub pool: String,
+    /// Starkscan API key with `prove` scope: deposits are proved (and the
+    /// depositor screened) through Starkscan's STRK20 prover relay. Mainnet only.
+    #[serde(default)]
+    pub starkscan_api_key: String,
+    /// A `starknet_proveTransaction` JSON-RPC endpoint that screens deposits,
+    /// overriding Starkscan and the bramble gateway (e.g. an operator's Sepolia
+    /// prover).
+    #[serde(default)]
+    pub deposit_prover_url: String,
+    /// AVNU paymaster API key: transfers and withdrawals are relayed privately
+    /// through AVNU's `sponsored_private` mode. Without it, strkd only prepares
+    /// them (`wallet_strk20PrepareInvoke`) for submission from another account.
+    #[serde(default)]
+    pub avnu_api_key: String,
+    /// Paymaster endpoint. Empty = AVNU's endpoint for the network.
+    #[serde(default)]
+    pub paymaster_url: String,
 }
 
 /// All networks the prover knows about, plus the chosen prover backend.

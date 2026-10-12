@@ -490,16 +490,42 @@ async fn deferred_methods_report_not_implemented() {
     assert!(resp.error.unwrap().message.contains("later phase"));
 }
 
+/// STRK20 methods validate their params before touching the node, and the
+/// shadow-account commitment is the one part still to come.
 #[tokio::test]
-async fn parked_privacy_methods_say_out_of_scope_not_later() {
+async fn strk20_methods_validate_params_first() {
     let state = state_with(Decision::Approve, false);
     let token = pair(&state, "app").await;
     for method in ["wallet_strk20PrepareInvoke", "wallet_strk20InvokeTransaction", "wallet_strk20Balances"] {
         let resp = call(&state, Some(&token), method, json!({})).await;
-        assert_eq!(err_code(&resp), -32601, "{method}");
-        let msg = resp.error.unwrap().message;
-        assert!(msg.contains("out of scope") && !msg.contains("later phase"), "{method}: {msg}");
+        assert_eq!(err_code(&resp), 114, "{method}");
     }
+    let open = json!({ "actions": [{ "type": "transfer", "token": "0x4718", "amount": "OPEN", "recipient": "0x1" }] });
+    assert_eq!(err_code(&call(&state, Some(&token), "wallet_strk20PrepareInvoke", open).await), -32601);
+    // Valid params, but no node to read the pool from.
+    let ok = json!({ "tokens": ["0x4718"] });
+    assert_eq!(err_code(&call(&state, Some(&token), "wallet_strk20Balances", ok).await), -32005);
+    let resp = call(&state, Some(&token), "wallet_strk20ShadowAccountCommitment", json!({ "dapp_name": "x" })).await;
+    assert_eq!(err_code(&resp), -32601);
+    assert!(resp.error.unwrap().message.contains("later phase"));
+}
+
+/// Revealing private balances is gated like a signature: a refusal returns 113
+/// before the pool is read.
+#[tokio::test]
+async fn strk20_balances_need_approval() {
+    let state = state_rejecting(&["wallet_strk20Balances"]);
+    let node = MockNode {
+        nonce: Felt::ONE,
+        hash: Felt::TWO,
+        deployed: vec![],
+        all_deployed: false,
+        balance: 0,
+    };
+    state.set_node(ChainId::Sepolia, Some(Arc::new(node)));
+    let token = pair(&state, "app").await;
+    let resp = call(&state, Some(&token), "wallet_strk20Balances", json!({ "tokens": ["0x4718"] })).await;
+    assert_eq!(err_code(&resp), 113);
 }
 
 /// The loopback service must never expose seed reveal. It is IPC-only by

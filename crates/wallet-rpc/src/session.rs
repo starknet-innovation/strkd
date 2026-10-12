@@ -13,8 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 use wallet_core::{
-    address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_invoke_v3,
-    sign_typed_data, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
+    address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_hash, sign_invoke_v3,
+    sign_typed_data, strk20_viewing_key, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
     EncryptedVault,
     Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature,
 };
@@ -225,6 +225,33 @@ impl WalletSession {
             &address,
         )
         .map_err(WalletRpcError::from)
+    }
+
+    /// The account's STRK20 viewing key (`user_sk`) for `pool` on `chain`.
+    ///
+    /// A secret that decrypts *and* spends the account's private notes. The
+    /// caller only puts it into a proof invocation that is proven on this
+    /// machine (or, for a deposit, sent to the screening prover the user
+    /// configured); it is never logged, persisted or returned over RPC.
+    pub fn strk20_viewing_key_for(
+        &self,
+        account: &AccountRef,
+        chain: ChainId,
+        pool: &Felt,
+    ) -> Result<Felt, WalletRpcError> {
+        let u = self.require_unlocked()?;
+        strk20_viewing_key(&u.mnemonic, account.domain, account.index, None, &chain.as_felt(), pool)
+            .map_err(WalletRpcError::from)
+    }
+
+    /// Sign an already-computed hash with the account's key and serialize the
+    /// signature for its account contract. Used for STRK20 proof invocations,
+    /// whose V3 hash has the pool as sender (`strk20::invocation`).
+    pub fn sign_hash_for(&self, account: &AccountRef, hash: &Felt) -> Result<Vec<Felt>, WalletRpcError> {
+        let u = self.require_unlocked()?;
+        let sig = sign_hash(&u.mnemonic, account.domain, account.index, None, hash)
+            .map_err(WalletRpcError::from)?;
+        Ok(account.contract.serialize_signature(&sig))
     }
 
     /// Sign a V3 invoke (sign-only) with the given account's key. Returns the

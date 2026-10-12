@@ -75,6 +75,29 @@ pub trait StarknetRpc: Send + Sync {
         proof: Option<&str>,
     ) -> Result<Felt, NodeError>;
 
+    /// Estimate a SNIP-36 proof-carrying invoke with its proof attached: the
+    /// on-chain proof verification (~80M L2 gas) dominates its fee, so an
+    /// estimate without the proof undercharges badly. SKIP_VALIDATE, like
+    /// [`StarknetRpc::estimate_invoke`].
+    async fn estimate_invoke_with_proof(
+        &self,
+        sender: &Felt,
+        calldata: &[Felt],
+        nonce: &Felt,
+        proof_facts: &[Felt],
+        proof: &str,
+    ) -> Result<FeeBounds, NodeError> {
+        let _ = (proof_facts, proof);
+        self.estimate_invoke(sender, calldata, nonce).await
+    }
+
+    /// A raw JSON-RPC call, for reads this trait doesn't model (STRK20 pool
+    /// discovery). Node clients that can't forward arbitrary methods say so.
+    async fn raw(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        let _ = params;
+        Err(NodeError::Rpc(format!("{method}: not supported by this node client")))
+    }
+
     /// Whether `address` has a deployed contract class (false = counterfactual).
     async fn is_deployed(&self, address: &Felt) -> Result<bool, NodeError>;
 
@@ -369,6 +392,31 @@ impl StarknetRpc for HttpStarknetRpc {
             .ok_or_else(|| NodeError::Decode("empty estimate array".into()))?;
         // Spec 0.8 FEE_ESTIMATE fields. Amounts/prices get a safety margin.
         self.bounds_from_estimate(est)
+    }
+
+    async fn estimate_invoke_with_proof(
+        &self,
+        sender: &Felt,
+        calldata: &[Felt],
+        nonce: &Felt,
+        proof_facts: &[Felt],
+        proof: &str,
+    ) -> Result<FeeBounds, NodeError> {
+        let tx = invoke_v3_tx_json(sender, calldata, &[], nonce, &ZERO_BOUNDS, proof_facts, Some(proof));
+        let r = self
+            .call(
+                "starknet_estimateFee",
+                json!({ "request": [tx], "simulation_flags": ["SKIP_VALIDATE"], "block_id": BLOCK_TAG }),
+            )
+            .await?;
+        let est = r
+            .get(0)
+            .ok_or_else(|| NodeError::Decode("empty estimate array".into()))?;
+        self.bounds_from_estimate(est)
+    }
+
+    async fn raw(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        self.call(method, params).await
     }
 
     async fn add_invoke(

@@ -1,10 +1,11 @@
 {
   "name": "strkd-conformance",
   "private": true,
-  "description": "Independent re-derivation of crates/wallet-core/tests/fixtures/conformance-vectors.json (issue #17).",
+  "description": "Independent re-derivation of strkd's conformance fixtures: crates/wallet-core/tests/fixtures/conformance-vectors.json (issue #17) and crates/strk20/tests/fixtures/strk20-vectors.json.",
   "type": "module",
   "scripts": {
-    "verify": "node verify.mjs"
+    "verify": "node verify.mjs && node strk20.mjs",
+    "verify:strk20": "node strk20.mjs"
   },
   "dependencies": {
     "@scure/bip32": "2.4.0",

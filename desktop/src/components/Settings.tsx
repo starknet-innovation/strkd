@@ -5,12 +5,21 @@ import {
   type ProverSettings,
   type ProverNetworkConfig,
   type StorageStats,
+  type Strk20Config,
 } from "../api";
 import { RevealSeed } from "./RevealSeed";
 
+const EMPTY_STRK20: Strk20Config = {
+  pool: "",
+  starkscan_api_key: "",
+  deposit_prover_url: "",
+  avnu_api_key: "",
+  paymaster_url: "",
+};
+
 const EMPTY_PROVER: ProverSettings = {
-  mainnet: { rpc_url: "", prover_url: "", prover_api_key: "" },
-  testnet: { rpc_url: "", prover_url: "", prover_api_key: "" },
+  mainnet: { rpc_url: "", prover_url: "", prover_api_key: "", strk20: EMPTY_STRK20 },
+  testnet: { rpc_url: "", prover_url: "", prover_api_key: "", strk20: EMPTY_STRK20 },
   prover_backend: "",
 };
 
@@ -41,8 +50,20 @@ export function Settings({ onChange }: { onChange: () => void }) {
     api.storageStats().then(setStats).catch(() => {});
   }
 
-  function proverField(net: "mainnet" | "testnet", key: keyof ProverNetworkConfig, value: string) {
+  function proverField(
+    net: "mainnet" | "testnet",
+    key: Exclude<keyof ProverNetworkConfig, "strk20">,
+    value: string,
+  ) {
     setProver((s) => ({ ...s, [net]: { ...s[net], [key]: value } }));
+    setProverSaved(false);
+  }
+
+  function strk20Field(net: "mainnet" | "testnet", key: keyof Strk20Config, value: string) {
+    setProver((s) => ({
+      ...s,
+      [net]: { ...s[net], strk20: { ...EMPTY_STRK20, ...s[net].strk20, [key]: value } },
+    }));
     setProverSaved(false);
   }
 
@@ -178,6 +199,60 @@ export function Settings({ onChange }: { onChange: () => void }) {
 
       <button className="primary" onClick={saveProver}>
         {proverSaved ? "Saved ✓" : "Save prover settings"}
+      </button>
+
+      <h3>Private balances (STRK20)</h3>
+      <p className="muted small">
+        Transfers and withdrawals are proved on this device. Deposits must be screened, so they are
+        proved remotely: by your deposit prover if set, else by Starkscan with your API key, else by
+        the bramble gateway (mainnet only for the last two). That prover sees the deposit, viewing
+        key included. Private sends and withdrawals are relayed through AVNU when you set a key;
+        without one, prepare them here and submit from another account. Keys stay on this device.
+      </p>
+      {(["testnet", "mainnet"] as const).map((net) => {
+        const c = { ...EMPTY_STRK20, ...prover[net].strk20 };
+        return (
+          <div key={net} className="field">
+            <span className="muted small">{net === "testnet" ? "Sepolia (testnet)" : "Mainnet"}</span>
+            <input
+              className="input"
+              placeholder="Pool address (empty = canonical pool)"
+              value={c.pool}
+              onChange={(e) => strk20Field(net, "pool", e.target.value)}
+            />
+            <input
+              className="input"
+              type="password"
+              autoComplete="off"
+              placeholder="Starkscan API key (prove scope)"
+              value={c.starkscan_api_key}
+              onChange={(e) => strk20Field(net, "starkscan_api_key", e.target.value)}
+            />
+            <input
+              className="input"
+              placeholder="Deposit prover URL (optional, overrides Starkscan/bramble)"
+              value={c.deposit_prover_url}
+              onChange={(e) => strk20Field(net, "deposit_prover_url", e.target.value)}
+            />
+            <input
+              className="input"
+              type="password"
+              autoComplete="off"
+              placeholder="AVNU paymaster API key"
+              value={c.avnu_api_key}
+              onChange={(e) => strk20Field(net, "avnu_api_key", e.target.value)}
+            />
+            <input
+              className="input"
+              placeholder="Paymaster URL (empty = AVNU)"
+              value={c.paymaster_url}
+              onChange={(e) => strk20Field(net, "paymaster_url", e.target.value)}
+            />
+          </div>
+        );
+      })}
+      <button className="primary" onClick={saveProver}>
+        {proverSaved ? "Saved ✓" : "Save STRK20 settings"}
       </button>
 
       <h3>Proof storage</h3>

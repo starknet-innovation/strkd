@@ -24,6 +24,8 @@ Lives in [`docs/code/`](./code/). Describes the implementation.
   `wallet-core` crate (derivation, signing, vault, registry).
 - [`code/wallet-rpc.md`](./code/wallet-rpc.md) — reference for the `wallet-rpc`
   crate (JSON-RPC service, auth, approval broker, handlers).
+- [`code/strk20.md`](./code/strk20.md) — STRK20 privacy pool support: the
+  `strk20` crate, the `wallet_strk20*` handlers, deposit provers, paymaster.
 - [`code/desktop.md`](./code/desktop.md) — reference for the `desktop` Tauri app
   (menu-bar shell, onboarding/unlock UI, approval bridge).
 
