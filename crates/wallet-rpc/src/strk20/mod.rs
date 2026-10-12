@@ -93,6 +93,10 @@ fn submit_err(e: impl std::fmt::Display) -> WalletRpcError {
         Some(r @ ("SCREENING_EXPIRED" | "SCREENING_FUTURE_DATED")) => WalletRpcError::Precondition(format!(
             "the pool refused the deposit ({r}): its screening attestation is no longer valid; retry the deposit"
         )),
+        Some(r @ "NON_ZERO_VALUE") => WalletRpcError::Precondition(format!(
+            "the pool refused the batch ({r}): it was proved against state that a more recent transaction from this \
+             account has since changed (a note spent, or a note or channel slot taken). Retry in about a minute."
+        )),
         Some(r) => WalletRpcError::Precondition(format!("the pool refused the transaction: {r}")),
         None => WalletRpcError::Node(text),
     }
@@ -334,6 +338,12 @@ async fn discover_state(ctx: &Ctx, reader: &NodeReader, user_sk: Felt, intent: &
     Ok(State { user: ctx.user, user_sk, registered, outgoing_channels, channels, notes })
 }
 
+/// Whether two discoveries of the same account agree on everything a plan
+/// writes to or spends.
+fn same_state(a: &State, b: &State) -> bool {
+    a.registered == b.registered && a.outgoing_channels == b.outgoing_channels && a.channels == b.channels && a.notes == b.notes
+}
+
 async fn prepare(
     state: &ServerState,
     caller: Caller<'_>,
@@ -350,6 +360,17 @@ async fn prepare(
     let user_sk = ctx.viewing_key(state).await?;
 
     let st = discover_state(ctx, &reader, user_sk, intent).await?;
+    // The proof runs against `block`, but the pool applies it to the latest
+    // state. If this account's private state moved since (a spend or a new
+    // note in the last PROVING_LAG blocks), the batch would re-spend a note or
+    // reuse a slot and revert with NON_ZERO_VALUE after a wasted proof.
+    let now = discover_state(ctx, &ctx.reader(json!("latest")), user_sk, intent).await?;
+    if !same_state(&st, &now) {
+        return Err(WalletRpcError::Precondition(format!(
+            "a recent STRK20 transaction from this account is not yet {PROVING_LAG} blocks old, and proofs run \
+             {PROVING_LAG} blocks behind the chain head. Retry in about a minute."
+        )));
+    }
     let plan: Plan = planner::plan(intent, &st, &mut OsRandomness).map_err(map_strk20)?;
     if plan.warnings.contains(&Warning::UserLinkage) {
         return Err(WalletRpcError::PrivacyLeak(
@@ -672,6 +693,8 @@ mod tests {
         assert_eq!(pool_revert(raw).as_deref(), Some("SCREENING_REQUIRED"));
         assert!(matches!(submit_err(raw), WalletRpcError::Precondition(m) if m.contains("no screening attestation")));
         assert!(matches!(submit_err("rpc: timeout"), WalletRpcError::Node(_)));
+        let stale = r#"rpc: {"code":41,"data":{"error":"0x4e4f4e5f5a45524f5f56414c5545 ('NON_ZERO_VALUE')"}}"#;
+        assert!(matches!(submit_err(stale), WalletRpcError::Precondition(m) if m.contains("about a minute")));
     }
 
     #[test]

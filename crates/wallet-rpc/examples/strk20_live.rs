@@ -6,7 +6,7 @@
 //! cargo run -p wallet-rpc --example strk20_live -- register <account>
 //! cargo run -p wallet-rpc --example strk20_live -- prepare-transfer <from> <to> <amount_wei>
 //! cargo run -p wallet-rpc --example strk20_live -- invoke <from> <json-actions>
-//! cargo run -p wallet-rpc --example strk20_live -- prepare-submit <from> <to> <amount_wei> <submitter>
+//! cargo run -p wallet-rpc --example strk20_live -- prepare-submit <from> <to|0x…> <amount_wei> <submitter>
 //! ```
 //!
 //! `<account>`, `<from>`, `<to>` are test-seed user account indices (the
@@ -28,6 +28,10 @@ const MNEMONIC: &str =
 const RPC: &str = "https://sepolia.nodes.starknet.org/rpc/v0_10";
 const TEST_POOL: &str = "0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323";
 const STRK: &str = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d";
+
+fn addr_arg(a: &str) -> String {
+    if a.starts_with("0x") { a.to_string() } else { address(a.parse().unwrap()) }
+}
 
 fn address(i: u32) -> String {
     address_hex(&oz_address(MNEMONIC, Domain::User, i, None, ChainId::Sepolia).unwrap())
@@ -101,14 +105,14 @@ async fn main() {
         }
         Some("prepare-submit") => {
             // The no-paymaster route: prepare as <from>, submit from <submitter>.
-            let (from, to, amount, by): (u32, u32, u128, u32) =
-                (args[1].parse().unwrap(), args[2].parse().unwrap(), args[3].parse().unwrap(), args[4].parse().unwrap());
+            let (from, to, amount, by): (u32, String, u128, u32) =
+                (args[1].parse().unwrap(), addr_arg(&args[2]), args[3].parse().unwrap(), args[4].parse().unwrap());
             let prepared = rpc(
                 &state,
                 t,
                 "wallet_strk20PrepareInvoke",
                 json!({ "account_address": address(from),
-                        "actions": [{ "type": "transfer", "token": STRK, "amount": format!("{amount:#x}"), "recipient": address(to) }] }),
+                        "actions": [{ "type": "transfer", "token": STRK, "amount": format!("{amount:#x}"), "recipient": to }] }),
             )
             .await;
             let r = &prepared["result"];
