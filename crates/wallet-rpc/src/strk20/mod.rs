@@ -467,6 +467,33 @@ async fn pool_fee(ctx: &Ctx) -> Result<u128, WalletRpcError> {
     u128::try_from(fee).map_err(|_| node_err("get_fee_amount exceeds u128"))
 }
 
+/// Refuse a deposit the account can't pay for before asking a screening
+/// prover: the pool pulls the deposits plus its fee (in STRK) from the account,
+/// which also pays the transaction's gas.
+async fn check_public_funds(ctx: &Ctx, deposits: &[(Felt, u128)]) -> Result<(), WalletRpcError> {
+    let mut needed: BTreeMap<Felt, u128> = BTreeMap::new();
+    for &(token, amount) in deposits {
+        *needed.entry(token).or_default() += amount;
+    }
+    let fee = pool_fee(ctx).await?;
+    *needed.entry(felt(STRK)).or_default() += fee;
+    for (token, need) in needed {
+        let request = json!({ "contract_address": hex(&token), "entry_point_selector": hex(&get_selector_from_name("balance_of")),
+                              "calldata": [hex(&ctx.user)] });
+        let out = ctx.node.raw("starknet_call", json!({ "request": request, "block_id": "latest" })).await.map_err(node_err)?;
+        let low = out.get(0).and_then(Value::as_str).and_then(|s| Felt::from_hex(s).ok()).ok_or_else(|| node_err("balance_of: bad result"))?;
+        let have = u128::try_from(low).unwrap_or(u128::MAX);
+        if have < need {
+            return Err(WalletRpcError::Precondition(format!(
+                "{} holds {have} of {token:#x}, and this deposit needs {need} (the deposit{}), plus gas. Fund the account first.",
+                ctx.account.address,
+                if token == felt(STRK) && fee > 0 { format!(" plus the pool's fee of {fee}") } else { String::new() },
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn approve(token: Felt, spender: Felt, amount: u128) -> Call {
     Call { to: token, selector: get_selector_from_name("approve"), calldata: vec![spender, Felt::from(amount), Felt::ZERO] }
 }
@@ -622,6 +649,7 @@ pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params:
             ));
         }
         let proving = proving_for(&ctx, &actions)?;
+        check_public_funds(&ctx, &intent.deposits).await?;
         let prepared =
             prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, proving, "submitted from this account").await?;
         let hash = submit_from_account(state, &ctx, &prepared, &intent.deposits).await?;
@@ -644,8 +672,15 @@ pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params:
     let fee = relay.quote(&ctx.pool, &ctx.user).await.map_err(WalletRpcError::Unknown)?;
     intent.withdrawals.push((fee.recipient, fee.token, fee.amount));
     let submission = format!("relayed privately by the AVNU paymaster for a fee of {} (base units of {:#x})", fee.amount, fee.token);
-    let prepared =
-        prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, Proving::Local, &submission).await?;
+    let prepared = prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, Proving::Local, &submission)
+        .await
+        .map_err(|e| match e {
+            WalletRpcError::InsufficientPrivateBalance(m) => WalletRpcError::InsufficientPrivateBalance(format!(
+                "{m} The amount includes the AVNU relay fee of {} (base units of {:#x}), which covers the pool's fee.",
+                fee.amount, fee.token
+            )),
+            e => e,
+        })?;
     let hash = relay.execute(&prepared.call, &prepared.proved.proof, &prepared.proved.proof_facts).await.map_err(WalletRpcError::Unknown)?;
     Ok(json!({ "transaction_hash": hex(&hash) }))
 }

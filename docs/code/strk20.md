@@ -43,6 +43,12 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
      `wallet_strk20PrepareInvoke` returns `{call, proof}` for submission from
      any account (`wallet_addInvokeTransaction` does it).
 
+**Fees.** The pool charges a flat fee per `apply_actions` (`get_fee_amount`,
+in STRK: 2.5 STRK on mainnet in October 2026, 0 on strkd's Sepolia test pool).
+Submissions from the account approve it alongside the deposits; the AVNU relay
+passes it on in its fee withdraw. A deposit is checked against the account's
+public balance before the screening prover is called.
+
 ## Verification
 
 - `crates/strk20/tests/fixtures/strk20-vectors.json` is checked by the crate
