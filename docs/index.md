@@ -36,11 +36,13 @@ Lives in [`docs/project/`](./project/).
 - [`project/progress-log.md`](./project/progress-log.md) — append-only history.
 - [`project/workflow.md`](./project/workflow.md) — prescriptive process: how to
   log progress, pick up work, and the security gates.
-- [`project/backlog.md`](./project/backlog.md) — deferred work (e.g. fund sweep,
-  parked privacy) with context to pick it up later.
+- [`project/backlog.md`](./project/backlog.md) — deferred work (e.g. large SNIP-36
+  proofs) with context to pick it up later.
 - [`project/bramble-convergence.md`](./project/bramble-convergence.md) — plan and
   decision record for aligning strkd with the bramble browser wallet (account
   model, krusty pin, design system).
+- [`project/strk20-plan.md`](./project/strk20-plan.md) — plan and decisions for
+  STRK20 privacy-pool support (local proving, remote-proved deposits).
 
 ## Quick routes
 
