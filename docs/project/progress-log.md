@@ -8,6 +8,27 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-10-26 — Prover pin v1.3.0 (low-memory prover)
+
+**Did**
+- Bumped `desktop/scripts/prover-pin.env` from v1.2.2 / deps-v7 to v1.3.0 /
+  deps-v12. v1.3.0 builds `starknet_transaction_prover` with the low-memory
+  prover backport (snip-36-prover-backend #128, plus Adrien's security fixes in
+  #140). Sequencer `e6b6fd2e` (was `9f78ee7c`), which pins the same prover
+  revisions: still PROOF1, byte-identical proofs, peak memory ~14 GB → ~2–3 GB.
+- Re-ran the pin checklist. A STRK20 private transfer (test seed, account 1 → 0)
+  was proved on-device by the staged darwin-arm64 release in 14.3 s at 2.05 GB
+  peak RSS and accepted on Sepolia as PROOF1 (block 17191935, tx
+  `0x796c14410a1d20a33b0655b5496b7471864f91a0c0752350821fd0dca418184`).
+  `stage-prover-prebuilt.sh` passes with the new pins on darwin-arm64.
+  The linux-x86_64 pins come from the verified release tarballs, not a staged run.
+
+**Next**
+- PROOF1 ends with Starknet 0.14.5: sequencer `main` accepts only V2 proofs
+  (starkware-libs/sequencer#15240). Plan the PROOF2 move before it ships.
+
+---
+
 ## 2026-10-06 — STRK20 privacy pool (phases 0–5)
 
 **Did**
