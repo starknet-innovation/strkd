@@ -139,9 +139,9 @@ turning `PROOF1` off). Until a gateway accepts `PROOF2`, the cap above is the ma
 The native backend needs the SNIP-36 / stwo prover stack on disk (286–403 MB).
 `desktop/scripts/` stages it into `desktop/src-tauri/resources/prover/` (gitignored):
 
-- `prover-pin.env` — the pinned release (`v1.3.0`, deps-v12, with the low-memory
-  prover: ~2–3 GB peak instead of ~14 GB, same PROOF1 bytes — **live-verified on
-  Sepolia, 2026-10-26**: a STRK20 transfer proved on-device and accepted on-chain).
+- `prover-pin.env` — the pinned release (`v1.3.1`, deps-v13, with the hardened
+  low-memory prover: ~2–3 GB peak instead of ~14 GB, same PROOF1 bytes —
+  **live-verified on Sepolia, 2026-10-27**: a STRK20 transfer proved on-device and accepted on-chain).
   Do not bump without re-verifying against the live Sepolia verifier.
 - `stage-prover.sh` — from a locally-built checkout (~286 MB).
 - `stage-prover-source.sh` — build from source + apply the relocatability patch

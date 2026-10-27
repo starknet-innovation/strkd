@@ -8,6 +8,35 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-10-27 — Prover pin v1.3.1 (low-memory prover hardening)
+
+**Did**
+- Reviewed every `unsafe` site that snip-36-prover-backend's `stwo.patch` adds.
+  Nothing was reachable from a transaction on darwin-arm64 or linux-x86_64.
+  Two latent issues were fixed in #143: `madvise` ranges now use the kernel
+  page size, because 16/64 KiB-page aarch64 kernels could have bytes past a
+  buffer zeroed; and pooled buffers are length-checked before the out-of-place
+  iFFT writes into them. The fixture proofs stay byte-identical.
+- Bumped `desktop/scripts/prover-pin.env` from v1.3.0 / deps-v12 to v1.3.1 /
+  deps-v13, which uses the same pins and sequencer. A STRK20 private transfer
+  (test seed, account 1 → 0) was proved on-device by the staged darwin-arm64
+  release in 16.3 s at 2.06 GB peak RSS and accepted on Sepolia as PROOF1
+  (block 17234440, tx
+  `0x253e8a21ad64796abd4286911a3a065acd8da94a5d87fcf801ea0d2425b1d24`).
+  `stage-prover-prebuilt.sh` passes with the new pins on darwin-arm64. The
+  linux-x86_64 pins come from the verified release tarballs.
+
+**Next**
+- Left for a stwo maintainer: safe public APIs in the patch that rely on
+  unchecked lengths, and the global allocator living in the `privacy_prove`
+  library.
+- Open question: where STRK20 witness privacy comes from, given that stwo
+  489a0f3e has no zero-knowledge masking. Ask someone who knows the proving
+  pipeline.
+- PROOF2 move before 0.14.5 (unchanged).
+
+---
+
 ## 2026-10-26 — Prover pin v1.3.0 (low-memory prover)
 
 **Did**
