@@ -99,6 +99,11 @@ install-path = "CARGO_HOME"
 # temporarily drop this key, regenerate, then re-apply the tag-glob edit.
 allow-dirty = ["ci"]
 
+# GitHub retired the macos-14 image that dist 0.32 picks for Apple Silicon by
+# default ("The configuration 'macos-14-arm64-us-default' is not supported").
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 # Optimized release builds for the shipped binary.
 [profile.dist]
 inherits = "release"
