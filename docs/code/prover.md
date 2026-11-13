@@ -105,43 +105,35 @@ and broadcasts Tx B via `wallet_addInvokeTransaction { proof_facts, proof, submi
 ## Proof size limit
 
 One SNIP-36 transaction can be proved only if its execution trace fits the
-verifier the network accepts. For the bundled stack (snip36 v1.2.x, proving-utils
-`v0.14.3-rust-bump`, `PROOF1`) that is **at most 2^20 rows in any single AIR
-component**: the prover precomputes twiddles for a `2^(20+3)` domain
-(`CAIRO_TRACE_LOG_SIZE = 20`, `CAIRO_LOG_BLOWUP_FACTOR = 3`), and a larger
-component panics with `Not enough twiddles!`. It is a protocol constant, not a
-machine limit — more RAM or a retry does not help.
+prover whose proofs the network's verifier accepts. Past that size the prover
+panics with `Not enough twiddles!`. More RAM or a retry won't help.
 
 - Rule of thumb ≈ 1M Cairo steps (the sequencer's own sizing guidance), but the
-  bound is per component: `ec_op` and `keccak` are outside the recursive
-  verifier's component set and are emulated in Cairo by the privacy bootloader,
-  so ECDSA/keccak-heavy code hits it well before 1M steps (issue #29: ~100 ECDSA
-  verifies per tx).
+  bound is per AIR component: `ec_op` and `keccak` are emulated in Cairo by the
+  privacy bootloader, so ECDSA/keccak-heavy code hits it well before 1M steps.
 - Splitting across calls *inside* one tx doesn't help — they share one trace.
   Split across separate transactions, each proved on its own.
-- `classify_prover_error` maps the panic to `transaction too large to prove: …`
-  naming the limit. The measured `n_steps` can't be reported: the runner logs it
-  to stdout, which the snip36 CLI pipes and never reads.
+- `classify_prover_error` maps the panic to `transaction too large to prove: …`.
+  The measured `n_steps` can't be reported: the runner logs it to stdout, which
+  the snip36 CLI pipes and never reads.
 
-**Block-sized proofs (Starknet v0.14.4).** v0.14.4 adds a "large proof" path
-(proving PR #183, `privacy_recursive_prove_large`, a leaf prover for traces of
-2^25–2^29 rows) for any single-tx virtual block that would fit in a block
-gas-wise, up to 1.1B L2 gas (`execute_max_sierra_gas` = 1.11B in the 0.14.4
-versioned constants). It emits `PROOF2`, and the stock `starknet_transaction_prover`
-service does not call it (still small-proof only, even on `main-v0.14.4`).
-As of 2026-10-01 no live gateway accepts `PROOF2`: Sepolia (0.14.4 blocks) returns
-`PROOF_VERSION_NOT_ALLOWED` for it and accepts `PROOF1`; mainnet is on 0.14.3
-(0.14.4 slated for 2026-10-05, pending governance, with the 0.14.4 deploy config
-turning `PROOF1` off). Until a gateway accepts `PROOF2`, the cap above is the max.
+**PROOF1 → V2 (PROOF2), 2026-11.** Until snip36 v1.3.1 strkd bundled the PROOF1
+stack (proving-utils `v0.14.3-rust-bump`), which capped every component at
+exactly 2^20 rows (`CAIRO_TRACE_LOG_SIZE = 20`, blowup 3; issue #29: ~100 ECDSA
+verifies per tx). Sepolia and Mainnet now run 0.14.4 and take V2 proofs
+(snip36 v1.4.1 passed live e2e on both, 2026-11-10), and `starkware-libs/sequencer`
+accepts only V2 from 0.14.5 (#15240). strkd bundles the V2 stack from snip36
+v1.4.2. Its per-tx limit has not been re-measured yet; re-run the #29 batch
+sweep before quoting a number.
 
 ## Native prover bundling
 
 The native backend needs the SNIP-36 / stwo prover stack on disk (286–403 MB).
 `desktop/scripts/` stages it into `desktop/src-tauri/resources/prover/` (gitignored):
 
-- `prover-pin.env` — the pinned release (`v1.3.1`, deps-v13, with the hardened
-  low-memory prover: ~2–3 GB peak instead of ~14 GB, same PROOF1 bytes —
-  **live-verified on Sepolia, 2026-10-27**: a STRK20 transfer proved on-device and accepted on-chain).
+- `prover-pin.env` — the pinned release (`v1.4.2`, deps-v16: the V2 / PROOF2
+  prover with the reviewed low-memory port, proof bytes identical to stock V2).
+  Previous pin v1.3.1 (PROOF1) was live-verified on Sepolia 2026-10-27.
   Do not bump without re-verifying against the live Sepolia verifier.
 - `stage-prover.sh` — from a locally-built checkout (~286 MB).
 - `stage-prover-source.sh` — build from source + apply the relocatability patch
