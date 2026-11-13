@@ -77,3 +77,30 @@ jobs:
       - name: Re-derive the conformance vectors independently
         working-directory: conformance
         run: npm ci && npm run verify
+
+  # Reference STRK20 owner contract (issue #48). Its tests include the Cairo side
+  # of the SNIP-12 Strk20Plan vector, which the Rust (`test` job) and starknet.js
+  # (`conformance-independent`) jobs also check. Tool versions come from the
+  # project's .tool-versions. setup-snfoundry pulls
+  # software-mansion/setup-universal-sierra-compiler@v1 itself (a moving tag).
+  owner-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: contracts/strk20-owner-example
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: software-mansion/setup-scarb@2a96b748888e3329ee44ac9ac073d930e692b3cd # v1.6.2
+        with:
+          tool-versions: contracts/strk20-owner-example/.tool-versions
+          scarb-lock: contracts/strk20-owner-example/Scarb.lock
+      - uses: foundry-rs/setup-snfoundry@16e23ddd0e2845f38727c92f4b913a7b728cda9e # v6.0.0
+        with:
+          tool-versions: contracts/strk20-owner-example/.tool-versions
+      - name: Check formatting
+        run: scarb fmt --check
+      - name: Build
+        run: scarb build
+      - name: Test
+        run: snforge test
