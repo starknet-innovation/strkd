@@ -3336,8 +3336,8 @@ async fn submit_account_prompts_and_submits_from_the_controller() {
     assert_eq!(r["submitter_address"], json!(controller));
     let prompts = prompted(&f.approver, PROVE);
     assert_eq!(prompts.len(), 1);
-    for want in [&controller, OWNER, "links", "publicly", "pool's fee"] {
-        assert!(prompts[0].contains(want), "prompt lacks {want:?}: {}", prompts[0]);
+    for (i, want) in [&controller, OWNER, "links", "publicly", "pool's fee"].iter().enumerate() {
+        assert!(prompts[0].contains(want), "prompt lacks expected item #{i}");
     }
 
     let job = poll_job(&f.state, &token, r["job_id"].as_str().unwrap()).await;
