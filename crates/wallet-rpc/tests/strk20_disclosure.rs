@@ -726,7 +726,13 @@ async fn channel_key_always_prompts_and_returns_the_pool_derivation() {
     // A fresh random salt, as the planner draws it (not a fixed value).
     let later_salt = {
         use strk20::planner::Randomness;
-        strk20::planner::OsRandomness.salt120().unwrap().max(2)
+        // Salts 0 and 1 mean "no note" / "open note": redraw (vanishingly rare).
+        loop {
+            let s = strk20::planner::OsRandomness.salt120().unwrap();
+            if s >= 2 {
+                break s;
+            }
+        }
     };
     node.set(
         "get_note",
