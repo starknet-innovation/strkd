@@ -68,18 +68,11 @@ async fn rpc_call(http: &reqwest::Client, rpc: &str, method: &str, params: Value
         .map_err(|e| format!("rpc {method}: non-JSON response ({e}); body: {}", snippet(&text)))
 }
 
-/// Largest trace the bundled (small, `PROOF1`) prover can commit, per AIR
-/// component: `2^CAIRO_TRACE_LOG_SIZE` rows. It is a constant of the verifier the
-/// network accepts, not a strkd or machine limit — the prover precomputes twiddles
-/// for exactly `CAIRO_TRACE_LOG_SIZE + CAIRO_LOG_BLOWUP_FACTOR` (20 + 3), and any
-/// component above `2^20` rows panics with "Not enough twiddles!".
-/// Source: proving-utils `privacy_circuit_verify/src/consts.rs` at `v0.14.3-rust-bump`
-/// (the stack every v1.2.x snip36 release ships).
-pub const MAX_COMPONENT_LOG_ROWS: u32 = 20;
-
 /// The sequencer's own sizing guidance for one SNIP-36 tx (its README and
-/// out-of-gas hint): `l2_gas.max_amount` 100M ≈ 1M Cairo steps. A rule of thumb —
-/// the real bound is per component (above), so builtin-heavy code hits it sooner.
+/// out-of-gas hint): `l2_gas.max_amount` 100M ≈ 1M Cairo steps. A rule of thumb:
+/// the prover's real bound is per AIR component, so builtin-heavy code hits it
+/// sooner. (The old PROOF1 stack capped every component at exactly 2^20 rows;
+/// the V2 stack bundled since snip36 v1.4.2 has not been re-measured, see #29.)
 pub const APPROX_MAX_STEPS: u64 = 1_000_000;
 
 /// Strip ANSI colour escapes (color-eyre colours the CLI's final error).
@@ -118,15 +111,14 @@ pub fn classify_prover_error(stderr: &str) -> String {
     let low = stderr.to_lowercase();
     if low.contains("not enough twiddles") {
         format!(
-            "transaction too large to prove: its execution trace exceeds the SNIP-36 prover's \
-             fixed size — at most 2^{MAX_COMPONENT_LOG_ROWS} rows in any one AIR component \
-             (≈{APPROX_MAX_STEPS} Cairo steps as a rule of thumb). This is a protocol constant \
-             of the verifier the network accepts (PROOF1), not a machine limit: more RAM or a \
-             retry won't help. Split the work across separate transactions, each \
-             proved on its own (several calls inside one tx share one trace). ec_op and keccak \
-             are emulated in Cairo by the prover's bootloader, so ECDSA/keccak-heavy code hits \
-             the cap well before 1M steps — find the largest batch that proves and chunk below \
-             it. raw: {}",
+            "transaction too large to prove: its execution trace exceeds the bundled SNIP-36 \
+             prover's maximum size in at least one AIR component (≈{APPROX_MAX_STEPS} Cairo \
+             steps as a rule of thumb). This is a fixed size of the prover the network's \
+             verifier accepts, not a machine limit: more RAM or a retry won't help. Split the \
+             work across separate transactions, each proved on its own (several calls inside \
+             one tx share one trace). ec_op and keccak are emulated in Cairo by the prover's \
+             bootloader, so ECDSA/keccak-heavy code hits the cap well before that — find the \
+             largest batch that proves and chunk below it. raw: {}",
             snippet(stderr)
         )
     } else if low.contains("429") || low.contains("too many requests") || low.contains("rpc provider error") {
@@ -361,7 +353,7 @@ mod tests {
     fn twiddles_panic_names_the_cap() {
         let msg = classify_prover_error(TWIDDLES_STDERR);
         assert!(msg.starts_with("transaction too large to prove"), "{msg}");
-        assert!(msg.contains("2^20 rows") && msg.contains("PROOF1"));
+        assert!(msg.contains("AIR component") && !msg.contains("PROOF1"));
         assert!(msg.contains("separate transactions"));
         // The raw cause is kept, starting at the error and without ANSI noise.
         assert!(msg.contains("raw: Error:"), "{msg}");

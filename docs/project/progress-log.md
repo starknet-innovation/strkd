@@ -8,6 +8,26 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — Prover pin v1.4.2 (PROOF1 → V2 / PROOF2)
+
+**Did**
+- Sepolia and Mainnet both run 0.14.4 and take V2 proofs; snip-36-prover-backend
+  v1.4.1 passed live e2e on both (2026-11-10). strkd was still on v1.3.1 (PROOF1).
+- Bumped `desktop/scripts/prover-pin.env` from v1.3.1 / deps-v13 to v1.4.2 /
+  deps-v16: the V2 prover with the reviewed low-memory port (proof bytes match
+  stock V2). The Sierra compiler moved to 2.19.6. `stage-prover-prebuilt.sh`
+  passes on darwin-arm64; the linux-x86_64 pins come from the verified tarballs.
+- A STRK20 private transfer (test seed, account 1 → 0, submitted by account 0)
+  was proved on-device by the staged release in 16–19 s at ~2.4 GB peak RSS and
+  accepted on Sepolia as PROOF2 (block 18077302, tx
+  `0x58069de49658a203a6dd090fde6e3cd22d43619cbc6975f99790ade661bc1ee`).
+- The "transaction too large" error no longer quotes PROOF1's 2^20-row cap.
+
+**Next**
+- Re-measure the per-tx size limit on V2 (#29 batch sweep).
+
+---
+
 ## 2026-10-27 — Prover pin v1.3.1 (low-memory prover hardening)
 
 **Did**
