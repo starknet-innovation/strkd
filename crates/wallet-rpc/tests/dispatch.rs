@@ -2594,8 +2594,8 @@ async fn plan_for_an_owner_prompts_signs_nothing_and_returns_a_reproducible_hash
     assert_eq!(prompts.len(), 1);
     let text = &prompts[0];
     let pool = format!("{:#x}", sepolia_pool());
-    for want in [OWNER, "\"vault\"", &controller, "SN_SEPOLIA", "2 action(s)", &pool, "approve this plan on-chain", "Nothing is signed"] {
-        assert!(text.contains(want), "prompt lacks {want:?} ({} chars)", text.len());
+    for (i, want) in [OWNER, "\"vault\"", &controller, "SN_SEPOLIA", "2 action(s)", &pool, "approve this plan on-chain", "Nothing is signed"].iter().enumerate() {
+        assert!(text.contains(want), "prompt lacks expected item #{i}");
     }
     assert!(prompted(&approver, REVEAL).is_empty());
 
