@@ -16,7 +16,10 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
 
 ## How an operation runs
 
-1. **Discover** at the proving block (head − 12): registration, the user's
+1. **Discover** at the proving block (head − 12), after checking the account
+   is deployed there (`starknet_getClassHashAt`); an account deployed in the
+   last 12 blocks gets `-32006` "not deployed at reference block N", retry in
+   about a minute, instead of a revert inside the prover. Then read registration, the user's
    channels to itself and each recipient, its outgoing-channel count, unspent
    notes. All through pool view calls on the wallet's node, decrypted locally
    (`strk20::discovery`), so no indexer sees `user_sk`.
@@ -48,6 +51,12 @@ in STRK: 2.5 STRK on mainnet in October 2026, 0 on strkd's Sepolia test pool).
 Submissions from the account approve it alongside the deposits; the AVNU relay
 passes it on in its fee withdraw. A deposit is checked against the account's
 public balance before the screening prover is called.
+
+**Prover errors.** A local proving failure comes back as `163` (unknown error) with the
+prover's own error, bounded to about 4,000 chars (head and tail kept, cut
+between words) and scrubbed of the viewing key. When the virtual transaction
+reverts, the message carries the full revert reason
+(`prover::snip36::classify_prover_error`).
 
 ## Verification
 

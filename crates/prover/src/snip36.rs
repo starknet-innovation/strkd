@@ -37,6 +37,47 @@ fn snippet(s: &str) -> String {
     s.trim().chars().take(300).collect()
 }
 
+/// Bound on the prover error text returned to the caller. A revert trace names
+/// the failing contract and its reason near the end, so 300 chars cut it off
+/// (#50); this keeps a typical trace whole while still bounding the error.
+const MAX_PROVER_ERROR_CHARS: usize = 4000;
+
+/// `s` trimmed and bounded to about `max` chars. A longer text keeps its head
+/// and its tail (where a revert reason sits) around a `[…]` marker. Cuts land
+/// on a non-alphanumeric char, so no hex value is split: a caller that scrubs a
+/// secret from the result (wallet-rpc's viewing key) never sees a fragment.
+fn bounded(s: &str, max: usize) -> String {
+    let s = s.trim();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let half = max / 2;
+    let is_cut = |c: &char| !c.is_ascii_alphanumeric();
+    // Head: up to and including the last boundary char in the first `half`.
+    let head_end = chars[..half].iter().rposition(is_cut).map_or(0, |i| i + 1);
+    // Tail: from the first boundary char in the last `half`.
+    let tail_from = chars.len() - half;
+    let tail_start = chars[tail_from..].iter().position(is_cut).map_or(chars.len(), |i| tail_from + i);
+    let head: String = chars[..head_end].iter().collect();
+    let tail: String = chars[tail_start..].iter().collect();
+    format!("{} […] {}", head.trim_end(), tail.trim_start())
+}
+
+/// The revert reason the prover reports for a transaction that failed while it
+/// executed (`... revert reason: <trace>`), without the JSON-RPC envelope that
+/// closes the error's `data` string, bounded.
+fn revert_reason(err: &str) -> Option<String> {
+    let i = err.find("revert reason:")?;
+    let reason = &err[i + "revert reason:".len()..];
+    let reason = match reason.rfind("\",\"message\"") {
+        Some(j) => &reason[..j],
+        None => reason,
+    };
+    let reason = reason.trim();
+    (!reason.is_empty()).then(|| bounded(reason, MAX_PROVER_ERROR_CHARS))
+}
+
 /// A JSON-RPC call with explicit handling of redirects, non-2xx, and non-JSON
 /// bodies (each of which previously surfaced as `expected value at line 1
 /// column 1` with no context).
@@ -105,11 +146,22 @@ fn error_part(stderr: &str) -> String {
 }
 
 /// Map a known prover-CLI failure to an actionable message; else return the raw
-/// stderr. Lets a driving agent react instead of staring at a backtrace.
+/// stderr (bounded, see [`MAX_PROVER_ERROR_CHARS`]). Lets a driving agent react
+/// instead of staring at a backtrace.
 pub fn classify_prover_error(stderr: &str) -> String {
     let stderr = &error_part(stderr);
     let low = stderr.to_lowercase();
-    if low.contains("not enough twiddles") {
+    let raw = |s: &str| bounded(s, MAX_PROVER_ERROR_CHARS);
+    // First: a revert trace quotes addresses and hex data that could match the
+    // keyword checks below.
+    if low.contains("reverted transactions are not supported") {
+        let reason = revert_reason(stderr).unwrap_or_else(|| raw(stderr));
+        format!(
+            "the transaction reverted while it was proved, and the prover proves only transactions \
+             that succeed. It runs against the reference block's state, so every contract it touches \
+             (the sender account included) must already be deployed at that block. revert reason: {reason}"
+        )
+    } else if low.contains("not enough twiddles") {
         format!(
             "transaction too large to prove: its execution trace exceeds the bundled SNIP-36 \
              prover's maximum size in at least one AIR component (≈{APPROX_MAX_STEPS} Cairo \
@@ -119,21 +171,21 @@ pub fn classify_prover_error(stderr: &str) -> String {
              one tx share one trace). ec_op and keccak are emulated in Cairo by the prover's \
              bootloader, so ECDSA/keccak-heavy code hits the cap well before that — find the \
              largest batch that proves and chunk below it. raw: {}",
-            snippet(stderr)
+            raw(stderr)
         )
     } else if low.contains("429") || low.contains("too many requests") || low.contains("rpc provider error") {
         format!(
             "upstream RPC throttled (HTTP 429 / provider error) — proving fetches lots of state; \
              use a higher-quota RPC in Settings. raw: {}",
-            snippet(stderr)
+            raw(stderr)
         )
     } else if low.contains("state_diff_commitment") {
         format!(
             "RPC too old (missing `state_diff_commitment`) — needs a spec ≥0.10 endpoint. raw: {}",
-            snippet(stderr)
+            raw(stderr)
         )
     } else if low.contains("port") && low.contains("already in use") {
-        format!("prover port in use (stale runner) — retry; strkd picks a fresh port per prove. raw: {}", snippet(stderr))
+        format!("prover port in use (stale runner) — retry; strkd picks a fresh port per prove. raw: {}", raw(stderr))
     } else if low.contains("invalid starknet version") || low.contains("convert block header") {
         format!(
             "the bundled prover does not support this network's Starknet protocol version — it \
@@ -141,10 +193,10 @@ pub fn classify_prover_error(stderr: &str) -> String {
              current protocol. Fix: update the prover pin (desktop/scripts/prover-pin.env) to a \
              release that supports it and re-stage, or set the prover backend to `remote` (Settings) \
              and point at a compatible prover. raw: {}",
-            snippet(stderr)
+            raw(stderr)
         )
     } else {
-        format!("prover failed: {}", snippet(stderr))
+        format!("prover failed: {}", raw(stderr))
     }
 }
 
@@ -326,7 +378,7 @@ pub(crate) async fn run_and_parse(
 
 #[cfg(test)]
 mod tests {
-    use super::classify_prover_error;
+    use super::{bounded, classify_prover_error, MAX_PROVER_ERROR_CHARS};
 
     #[test]
     fn unsupported_protocol_version_is_actionable() {
@@ -365,6 +417,65 @@ mod tests {
         // A log line mentioning "429" must not be read as RPC throttling.
         let stderr = "  INFO fetched 429 storage keys\nError: \n   0: some other failure";
         assert_eq!(classify_prover_error(stderr), "prover failed: Error: \n   0: some other failure");
+    }
+
+    /// The shape from #50: the virtual tx reverted in the prover because the
+    /// sender account wasn't deployed at the reference block yet. The revert
+    /// reason comes after a long preamble, past the old 300-char cut.
+    fn revert_stderr() -> String {
+        let trace = format!(
+            "Transaction execution has failed:\\n0: Error in the called contract (contract address: \
+             0x{:064x}, class hash: 0x{:064x}, selector: 0x{:064x}):\\nError at pc=0:4573:\\n\
+             Got an exception while executing a hint: Requested contract address 0x{:064x} is not deployed.",
+            0xa11ce_u64, 0xc1a55_u64, 0x5e1_u64, 0xb0b_u64
+        );
+        format!(
+            "  INFO Sending starknet_proveTransaction request...\nError: \n   0: \u{1b}[91mstarknet_proveTransaction \
+             failed: {{\"code\":-32603,\"data\":\"Reverted transactions are not supported; the transaction \
+             reverted during execution. revert reason: {trace}\",\"message\":\"Internal error\"}}\u{1b}[0m\n\n\
+             Location:\n   crates/snip36-cli/src/commands/prove.rs:342\n"
+        )
+    }
+
+    #[test]
+    fn revert_reason_is_returned_whole() {
+        let stderr = revert_stderr();
+        let msg = classify_prover_error(&stderr);
+        assert!(msg.starts_with("the transaction reverted while it was proved"), "{msg}");
+        assert!(msg.contains("deployed at that block"), "{msg}");
+        // The full reason survives, through the tail of the trace, and the
+        // JSON-RPC envelope after it is dropped.
+        assert!(msg.contains("Error in the called contract (contract address: 0x"), "{msg}");
+        assert!(msg.ends_with("is not deployed."), "{msg}");
+        assert!(msg.contains(&format!("0x{:064x}", 0xb0b_u64)), "{msg}");
+        assert!(!msg.contains("Internal error") && !msg.contains('\u{1b}'), "{msg}");
+        assert!(msg.chars().count() > 300);
+    }
+
+    #[test]
+    fn long_errors_stay_bounded_and_keep_the_tail() {
+        let filler = "x".repeat(10) + " ";
+        let stderr = format!("Error: start {} the actual cause", filler.repeat(1000));
+        let msg = classify_prover_error(&stderr);
+        assert!(msg.chars().count() <= MAX_PROVER_ERROR_CHARS + 40, "{}", msg.len());
+        assert!(msg.starts_with("prover failed: Error: start") && msg.ends_with("the actual cause"), "{msg}");
+        assert!(msg.contains(" […] "));
+    }
+
+    #[test]
+    fn bounding_never_splits_a_hex_value() {
+        // A run of hex words: every cut must fall between two of them, so a
+        // caller scrubbing one value (wallet-rpc's viewing key) never sees a
+        // fragment of it.
+        let word = format!("0x{:064x}", 0x2f6c0b3c1a9e5d4f_u64);
+        let text = vec![word.as_str(); 200].join(", ");
+        let out = bounded(&text, 1000);
+        assert!(out.chars().count() <= 1000 + 5);
+        for part in out.split(|c: char| !c.is_ascii_alphanumeric()).filter(|p| !p.is_empty()) {
+            assert_eq!(part, word, "split value");
+        }
+        // Short text is untouched apart from trimming.
+        assert_eq!(bounded("  short  ", 1000), "short");
     }
 
     #[test]

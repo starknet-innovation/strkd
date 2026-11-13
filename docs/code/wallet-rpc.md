@@ -145,7 +145,10 @@ opaque one: `companion_requestFunding` checks the **manager is deployed** on the
 active network (else the node would fail fee-estimation with "Contract not
 found"), and `companion_deployAccount` checks the account **isn't already
 deployed** (else a second deploy reuses nonce 0 → confusing "invalid nonce"). The
-desktop `deploy_account` command applies the same already-deployed guard.
+desktop `deploy_account` command applies the same already-deployed guard. The
+STRK20 handlers that prove check the account **is deployed at the proving block**
+(head − 12), so registering right after a deploy says to retry in about a minute
+instead of failing inside the prover ([`strk20.md`](./strk20.md)).
 
 **Wire format — live-verified (2026-06-09)** against a Sepolia **v0.10** node
 (`sepolia.nodes.starknet.org/rpc/v0_10`) using the real client: `getNonce`,

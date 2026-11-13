@@ -36,7 +36,7 @@ use crate::dispatch::{
     scope_for, ServerState,
 };
 use crate::error::WalletRpcError;
-use crate::node::StarknetRpc;
+use crate::node::{NodeError, StarknetRpc};
 
 pub const MAINNET_POOL: &str = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
 pub const SEPOLIA_POOL: &str = "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e";
@@ -131,6 +131,28 @@ impl PoolReader for NodeReader {
 
 async fn block_number(node: &dyn StarknetRpc) -> Result<u64, WalletRpcError> {
     node.raw("starknet_blockNumber", json!([])).await.map_err(node_err)?.as_u64().ok_or_else(|| node_err("blockNumber: not a number"))
+}
+
+/// Whether a node error is JSON-RPC `CONTRACT_NOT_FOUND` (code 20).
+fn is_contract_not_found(e: &NodeError) -> bool {
+    let NodeError::Rpc(m) = e else { return false };
+    let code = serde_json::from_str::<Value>(m).ok().and_then(|v| v.get("code").and_then(Value::as_i64));
+    code == Some(20) || (code.is_none() && m.to_lowercase().contains("contract not found"))
+}
+
+/// Refuse to prove for an account that has no contract at `block`, the proving
+/// block, with an error that says why and when to retry.
+async fn ensure_deployed_at(ctx: &Ctx, block: u64) -> Result<(), WalletRpcError> {
+    let params = json!({ "block_id": { "block_number": block }, "contract_address": hex(&ctx.user) });
+    match ctx.node.raw("starknet_getClassHashAt", params).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_contract_not_found(&e) => Err(WalletRpcError::Precondition(format!(
+            "account {} is not deployed at reference block {block} (proofs run {PROVING_LAG} blocks behind the chain \
+             head). If you just deployed it, retry in about a minute.",
+            ctx.account.address
+        ))),
+        Err(e) => Err(node_err(e)),
+    }
 }
 
 fn map_strk20(e: strk20::Error) -> WalletRpcError {
@@ -356,6 +378,9 @@ async fn prepare(
     let prover = prover_or_err(state)?;
     let head = block_number(ctx.node.as_ref()).await?;
     let block = head.saturating_sub(PROVING_LAG);
+    // The prover executes the account's signature check at `block`. An account
+    // deployed after it (e.g. just now) would revert in the prover (#50).
+    ensure_deployed_at(ctx, block).await?;
     let reader = ctx.reader(json!({ "block_number": block }));
     let user_sk = ctx.viewing_key(state).await?;
 
@@ -730,6 +755,16 @@ mod tests {
         assert!(matches!(submit_err("rpc: timeout"), WalletRpcError::Node(_)));
         let stale = r#"rpc: {"code":41,"data":{"error":"0x4e4f4e5f5a45524f5f56414c5545 ('NON_ZERO_VALUE')"}}"#;
         assert!(matches!(submit_err(stale), WalletRpcError::Precondition(m) if m.contains("about a minute")));
+    }
+
+    #[test]
+    fn contract_not_found_is_told_apart_from_other_node_errors() {
+        assert!(is_contract_not_found(&NodeError::Rpc(r#"{"code":20,"message":"Contract not found"}"#.into())));
+        assert!(is_contract_not_found(&NodeError::Rpc("Contract not found".into())));
+        // BLOCK_NOT_FOUND, transport and decode failures are node errors.
+        assert!(!is_contract_not_found(&NodeError::Rpc(r#"{"code":24,"message":"Block not found"}"#.into())));
+        assert!(!is_contract_not_found(&NodeError::Transport("contract not found".into())));
+        assert!(!is_contract_not_found(&NodeError::Decode("missing result".into())));
     }
 
     #[test]
