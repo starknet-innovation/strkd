@@ -13,6 +13,7 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
 | Owner records | `wallet-core::Strk20Owner`, `crates/wallet-rpc/src/strk20/owners.rs` | Enrolled owner contracts in the sealed registry, plus `companion_strk20AddOwner` / `ListOwners` / `RemoveOwner`. |
 | Plans | `crates/wallet-rpc/src/strk20/plan.rs` | `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 `Strk20Plan` hash (`plan_hash`), and the in-memory `PlanStore` (#48). |
 | Prove | `crates/wallet-rpc/src/strk20/prove.rs` | `companion_strk20Prove`: the prove-time checks, the caller's signature (owners) or strkd's (accounts), and the unrecorded proving job (#48). |
+| Note disclosure | `strk20::planner::NoteLocator`, `crates/wallet-rpc/src/strk20/channel.rs` | The `notes` locators the batch methods return, and `companion_strk20ChannelKey` (#49). |
 | Protocol client | `crates/strk20` | Pure Rust port of the wallet side of StarkWare's SDK: hashes, decryption, client actions, the proof invocation, discovery, planner, `apply_actions`. No I/O. |
 | RPC + desktop | `crates/wallet-rpc/src/strk20/` | The `wallet_strk20*` handlers and `companion_strk20Register`, the deposit provers (`remote.rs`), the AVNU private relay (`paymaster.rs`). |
 | Desktop | `desktop/src/components/Privacy.tsx` | The Private tab; Tauri commands `strk20_*` run the same handlers as `Caller::Desktop`. |
@@ -102,6 +103,47 @@ never returned or logged: the virtual transaction carries the viewing key and
 channel keys, and contract code it runs chooses the revert text (#48 review).
 To debug a revert, run `snip36 prove virtual-os` by hand with a test seed.
 Locking the wallet stops a local prove that is still running.
+
+## Note disclosure (#49)
+
+How a third party, such as an app or a proof it consumes, verifies a private
+payment without anyone's viewing key. The design and the decisions are in
+[`project/design-49-strk20-channel-disclosure.md`](../project/design-49-strk20-channel-disclosure.md)
+(§13).
+
+- **Locators.** `wallet_strk20PrepareInvoke`, `wallet_strk20InvokeTransaction`,
+  `companion_strk20Plan` and the `companion_strk20Prove` job result add
+  `notes: [{recipient, token, amount, index, note_id, salt}]`. There is one
+  entry per note the batch creates for a transfer; change and deposit notes
+  back to the subject are left out, and an explicit transfer to oneself is
+  included. `index` is the note's index on the (sender, recipient, token)
+  subchannel. `note_id = H(NOTE_ID_TAG, ck, token, index, 0)` is the pool's
+  `get_note` key, and `salt` becomes public once the note lands. The planner
+  computes them (`Plan::notes`) from the same channel and subchannel state it
+  plans the `CreateEncNote` actions from. A locator holds no key, so the plan
+  returns it without `reveal_actions`.
+- **Channel key.** `companion_strk20ChannelKey {recipient, account_address? |
+  owner_address?, chainId?, pool_address?}` returns `{channel_key, sender,
+  recipient, recipient_public_key, marker, pool, chainId, subchannels}`.
+  - The verifier checks `channel_exists(marker)`, where marker =
+    `H(CHANNEL_MARKER_TAG, ck, S, R, R_pk)`, then `get_note(note_id)`, and
+    removes the amount pad: the low 128 bits of
+    `H(ENC_AMOUNT_TAG, ck, token, index, 0, salt)`.
+  - The key exposes **every** past and future note from S to R, in every token,
+    and it cannot be revoked. It cannot spend or see spent status, and it does
+    not reveal S's other channels.
+  - So the method always prompts (`Caller::approve_always`; a grant never covers
+    it), with that wording.
+  - It refuses before prompting: the subject's own channel (114,
+    `SELF_CHANNEL`), a channel that is not open (-32006, `CHANNEL_NOT_FOUND`),
+    and an unregistered recipient (118).
+  - It never returns the outgoing-channel index.
+  - Its `channel_key` is redacted from the request log, and errors are scrubbed
+    of both keys.
+  - Subjects are resolved like the other methods (`ctx()`): an agent reaches
+    only its own accounts and the owners it enrolled.
+- **Not built:** in-proof verification through `compute_and_invoke` (option D,
+  future work), and a desktop entry point.
 
 ## External owners (#48)
 
@@ -273,6 +315,11 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   `crates/wallet-rpc/examples/strk20_live.rs` (the RPC handlers; its
   `prepare-deposit` mode proves a locally screened deposit and only estimates
   the submission). Results are recorded in the plan.
+- Note disclosure (#49): `crates/wallet-rpc/tests/strk20_disclosure.rs` runs
+  locators and `companion_strk20ChannelKey` against an in-memory pool built
+  with the pool's own hashes and encryptions. `strk20_live channel-key <from>
+  <to>` checks a disclosed key against Sepolia, read-only: the marker is set and
+  every note is found and decrypted.
 - `crates/strk20/tests/screening.rs` checks attestations against
   starknet-privacy's screening vectors; `crates/wallet-rpc/tests/strk20_pool.rs`
   covers pool selection, prompts, the `pool_address` assertion and the local

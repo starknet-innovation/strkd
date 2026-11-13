@@ -417,10 +417,12 @@ pub async fn dispatch(state: &ServerState, token: Option<&str>, req: Request) ->
 
 /// Result fields the request log must never hold, even with full payloads on.
 /// `companion_strk20Plan` with `reveal_actions` returns the plan's actions,
-/// which carry channel keys (#48 §5.6, #49): the caller gets them, the log
-/// gets a placeholder.
-const REDACTED_RESULT_FIELDS: &[(&str, &[&str])] =
-    &[("companion_strk20Plan", &["client_actions", "client_actions_felts"])];
+/// which carry channel keys (#48 §5.6, #49), and `companion_strk20ChannelKey`
+/// returns one: the caller gets them, the log gets a placeholder.
+const REDACTED_RESULT_FIELDS: &[(&str, &[&str])] = &[
+    ("companion_strk20Plan", &["client_actions", "client_actions_felts"]),
+    (strk20::channel::METHOD, &["channel_key"]),
+];
 
 /// A STRK20 proving job's `result` and `error`, as `companion_proveStatus`
 /// returns them, stay out of the request log too: the jobs are unrecorded by
@@ -589,6 +591,9 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
             strk20::plan::discard(state, strk20::Caller::Rpc(&client), &params).await
         }
         "companion_strk20Prove" => strk20::prove::prove(state, strk20::Caller::Rpc(&client), &params).await,
+        "companion_strk20ChannelKey" => {
+            strk20::channel::channel_key(state, strk20::Caller::Rpc(&client), &params).await
+        }
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -613,7 +618,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_strk20AddOwner"
         | "companion_strk20RemoveOwner"
         | "companion_strk20Plan"
-        | "companion_strk20Prove" => decision_label(&result),
+        | "companion_strk20Prove"
+        | "companion_strk20ChannelKey" => decision_label(&result),
         _ => "n/a".into(),
     };
 

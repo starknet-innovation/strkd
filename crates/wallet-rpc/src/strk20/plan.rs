@@ -19,11 +19,11 @@ use serde_json::{json, Value};
 use strk20::actions::{serialize_actions, ClientAction};
 use strk20::discovery;
 use strk20::hashes::poseidon_hash_many;
-use strk20::planner::{Intent, State};
+use strk20::planner::{Intent, NoteLocator, State};
 use wallet_core::{address_hex, AccountRef, ChainId, Felt};
 
 use super::{
-    ctx, describe, has_deposit, hex, intent_of, invalid, map_strk20, parse_actions,
+    ctx, describe, has_deposit, hex, intent_of, invalid, map_strk20, notes_json, parse_actions,
     plan_at_reference, pool_fee, prover_identity, where_proved, Caller, Ctx, Planned, Proving,
     Subject, STRK,
 };
@@ -139,6 +139,9 @@ pub(super) struct StoredPlan {
     /// `serialize_actions(actions)`: what `plan_hash` commits to.
     pub(super) client_actions_felts: Vec<Felt>,
     pub(super) plan_hash: Felt,
+    /// Where the plan's transfer notes land (#49). No key; returned by the
+    /// plan and by the prove job's result.
+    pub(super) notes: Vec<NoteLocator>,
     /// The state discovered at `plan_block`, with `user_sk` zeroed. Prove
     /// compares a fresh discovery against it (`same_state`, §5.5).
     pub(super) state: State,
@@ -478,7 +481,7 @@ fn channel_keys(actions: &[ClientAction]) -> usize {
 }
 
 /// Who the plan is for, in prompts.
-fn subject_text(ctx: &Ctx) -> String {
+pub(super) fn subject_text(ctx: &Ctx) -> String {
     match &ctx.subject {
         Subject::Owner(o) => {
             let label = match o.label.as_str() {
@@ -564,8 +567,11 @@ fn summary_json(
 /// `companion_strk20Plan { owner_address | account_address, actions?, register?,
 /// reveal_actions?, ttl_secs?, chainId? }` → `{ plan_id, plan_version,
 /// expires_at, plan_block, chain_id, pool, owner, subject, controller,
-/// plan_hash, actions_hash, typed_data, summary, actions_revealed?,
+/// plan_hash, actions_hash, typed_data, summary, notes, actions_revealed?,
 /// client_actions?, client_actions_felts? }`.
+///
+/// `notes` locates each transfer note the plan creates (#49). It holds no
+/// channel key, so it is returned without `reveal_actions`.
 ///
 /// Plans `actions` (or `register: true`) against `head − PROVING_LAG`, prompts
 /// (a grant may cover it), and stores the plan. Signs nothing, proves nothing.
@@ -664,6 +670,7 @@ pub async fn plan(
         "actions_hash": hex(&hashed.actions_hash),
         "typed_data": hashed.typed_data,
         "summary": summary_json(&intent, &plan, &ctx.pool, fee),
+        "notes": notes_json(&plan.notes),
     });
     let stored = StoredPlan {
         id: id.clone(),
@@ -678,6 +685,7 @@ pub async fn plan(
         actions: plan.actions,
         client_actions_felts: felts,
         plan_hash: hashed.plan_hash,
+        notes: plan.notes,
         state: snapshot,
         prover_id: prover_identity(prover, ctx.chain).await,
         submission: "none",
@@ -844,6 +852,7 @@ mod tests {
             }],
             client_actions_felts: vec![Felt::ONE],
             plan_hash: Felt::ONE,
+            notes: Vec::new(),
             state: State {
                 user: Felt::from(user),
                 user_sk: Felt::ZERO,

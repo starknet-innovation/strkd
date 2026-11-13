@@ -20,7 +20,13 @@
 //! External owner contracts (#48) go through [`owners`] (enrolment), [`plan`]
 //! (`companion_strk20Plan`: plan now, approve on-chain) and [`prove`]
 //! (`companion_strk20Prove`: prove the approved plan later, as a job).
+//!
+//! Note disclosure (#49): the batch methods return a `notes` locator per
+//! transfer ([`notes_json`]: no key), and [`channel`]
+//! (`companion_strk20ChannelKey`) discloses one outgoing channel's key behind a
+//! prompt a grant never covers.
 
+pub mod channel;
 pub mod owners;
 pub mod paymaster;
 pub mod plan;
@@ -35,7 +41,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use strk20::discovery::{self, PoolReader};
 use strk20::invocation::ProofInvocation;
-use strk20::planner::{self, Intent, OsRandomness, Plan, State, Warning};
+use strk20::planner::{self, Intent, NoteLocator, OsRandomness, Plan, State, Warning};
 use wallet_core::{address_hex, get_selector_from_name, AccountRef, Call, ChainId, Felt, InvokeV3Params, Strk20Owner};
 
 use crate::approval::{ApprovalRequest, Decision};
@@ -584,6 +590,26 @@ enum Proving {
 struct Prepared {
     call: Call,
     proved: remote::ProvedInvocation,
+    /// Where the batch's transfer notes land (#49).
+    notes: Vec<NoteLocator>,
+}
+
+/// The `notes` locators (#49): one per note the batch creates for a transfer,
+/// in action order. Change and deposit notes back to the subject are left out.
+/// No key: `note_id` and `salt` are public once the batch lands, and the
+/// channel key they derive from is never included.
+pub(super) fn notes_json(notes: &[NoteLocator]) -> Value {
+    json!(notes
+        .iter()
+        .map(|n| json!({
+            "recipient": hex(&n.recipient),
+            "token": hex(&n.token),
+            "amount": format!("{:#x}", n.amount),
+            "index": n.index,
+            "note_id": hex(&n.note_id),
+            "salt": format!("{:#x}", n.salt),
+        }))
+        .collect::<Vec<_>>())
 }
 
 async fn discover_state(ctx: &Ctx, reader: &NodeReader, user_sk: Felt, intent: &Intent) -> Result<State, WalletRpcError> {
@@ -761,7 +787,7 @@ async fn prepare(
         proved.screening = Some(screener::attest(ctx.node.as_ref(), ctx.chain, ctx.user, &sk).await?);
     }
     let call = strk20::apply::apply_actions_call(ctx.pool, &proved.output, proved.screening.as_ref()).map_err(map_strk20)?;
-    Ok(Prepared { call, proved })
+    Ok(Prepared { call, proved, notes: plan.notes })
 }
 
 /// A prover result strkd can't parse. Fixed text: the result came from the
@@ -1039,7 +1065,9 @@ pub async fn register(state: &ServerState, caller: Caller<'_>, params: &Value) -
 }
 
 /// `wallet_strk20PrepareInvoke { actions, simulate?, account_address?, chainId? }`
-/// → `STRK20_CALL_AND_PROOF`, for the caller to submit from any account.
+/// → `STRK20_CALL_AND_PROOF` plus `notes` (#49), for the caller to submit from
+/// any account. The locators hold only if this call lands before any other
+/// batch from the account to the same recipient and token.
 pub async fn prepare_invoke(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let actions = parse_actions(params)?;
     let ctx = ctx(state, caller, params).await?.account_only("wallet_strk20PrepareInvoke")?;
@@ -1055,11 +1083,13 @@ pub async fn prepare_invoke(state: &ServerState, caller: Caller<'_>, params: &Va
         "returned to the caller unsubmitted",
     )
     .await?;
-    Ok(call_and_proof(&prepared, simulate))
+    let mut out = call_and_proof(&prepared, simulate);
+    out["notes"] = notes_json(&prepared.notes);
+    Ok(out)
 }
 
 /// `wallet_strk20InvokeTransaction { actions, account_address?, chainId? }`
-/// → `{ transaction_hash }`.
+/// → `{ transaction_hash, notes }` (`notes`: #49; empty for deposits).
 ///
 /// Deposits are public and go from the user's account; they can't share a
 /// batch with private actions. Everything else is relayed by the AVNU
@@ -1082,7 +1112,7 @@ pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params:
         let prepared =
             prepare(state, caller, "wallet_strk20InvokeTransaction", &ctx, &intent, proving, "submitted from this account").await?;
         let hash = submit_from_account(state, &ctx, &prepared, &intent.deposits).await?;
-        return Ok(json!({ "transaction_hash": hex(&hash) }));
+        return Ok(json!({ "transaction_hash": hex(&hash), "notes": notes_json(&prepared.notes) }));
     }
 
     if ctx.cfg.avnu_api_key.trim().is_empty() {
@@ -1111,7 +1141,7 @@ pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params:
             e => e,
         })?;
     let hash = relay.execute(&prepared.call, &prepared.proved.proof, &prepared.proved.proof_facts).await.map_err(WalletRpcError::Unknown)?;
-    Ok(json!({ "transaction_hash": hex(&hash) }))
+    Ok(json!({ "transaction_hash": hex(&hash), "notes": notes_json(&prepared.notes) }))
 }
 
 #[cfg(test)]

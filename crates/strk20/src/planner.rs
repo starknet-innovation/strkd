@@ -92,6 +92,28 @@ pub struct Plan {
     pub change: BTreeMap<Felt, u128>,
     /// Privacy warnings to surface before signing.
     pub warnings: Vec<Warning>,
+    /// Where each note the batch creates for a transfer will land (#49), in
+    /// the order of [`Intent::transfers`]. Change and deposit notes back to the
+    /// user are not listed. Holds no key.
+    pub notes: Vec<NoteLocator>,
+}
+
+/// Where a note this batch creates will be found in the pool (#49). Nothing
+/// here is secret once the batch lands: `note_id` keys the pool's `get_note`
+/// and the `EncNoteCreated` event, and `salt` is the high 128 bits of the
+/// stored `packed_value`. The channel key it is derived from is not included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteLocator {
+    pub recipient: Felt,
+    pub token: Felt,
+    pub amount: u128,
+    /// The note's index on its (sender, recipient, token) subchannel: 0 for
+    /// the first note the sender ever sent this recipient in this token.
+    pub index: u32,
+    /// `note_id(channel_key, token, index)`, as the pool computes it.
+    pub note_id: Felt,
+    /// The note's salt (≥ 2, 120 bits).
+    pub salt: u128,
 }
 
 /// The SDK's privacy warnings (`WarningCode`).
@@ -173,6 +195,7 @@ pub fn plan(intent: &Intent, state: &State, rng: &mut dyn Randomness) -> Result<
     let mut open_channels = Vec::new();
     let mut open_subchannels = Vec::new();
     let mut create_notes = Vec::new();
+    let mut locators = Vec::new();
 
     if intent.register && !state.registered {
         account.push(ClientAction::SetViewingKey {
@@ -216,7 +239,7 @@ pub fn plan(intent: &Intent, state: &State, rng: &mut dyn Randomness) -> Result<
     if intent.register && !state.registered {
         ensure_channel(user, &mut channels, rng)?;
     }
-    for &(recipient, token, amount) in &new_notes {
+    for (n, &(recipient, token, amount)) in new_notes.iter().enumerate() {
         ensure_channel(recipient, &mut channels, rng)?;
         let channel = channels.get_mut(&recipient).expect("ensured above");
         let next_sub = channel.subchannels.len() as u32;
@@ -239,13 +262,26 @@ pub fn plan(intent: &Intent, state: &State, rng: &mut dyn Randomness) -> Result<
                 sub
             }
         };
+        let salt = note_salt(rng)?;
+        // The first `transfers.len()` new notes are the transfers; the rest
+        // are change to the user.
+        if n < intent.transfers.len() {
+            locators.push(NoteLocator {
+                recipient,
+                token,
+                amount,
+                index: sub.next_note_index,
+                note_id: hashes::note_id(channel.key, token, sub.next_note_index),
+                salt,
+            });
+        }
         create_notes.push(ClientAction::CreateEncNote {
             recipient_addr: recipient,
             recipient_public_key: channel.recipient_public_key,
             token,
             amount,
             index: sub.next_note_index,
-            salt: note_salt(rng)?,
+            salt,
         });
         channel
             .subchannels
@@ -293,6 +329,7 @@ pub fn plan(intent: &Intent, state: &State, rng: &mut dyn Randomness) -> Result<
         spent: spends.iter().map(|n| n.id).collect(),
         change,
         warnings,
+        notes: locators,
     })
 }
 
@@ -451,6 +488,85 @@ mod tests {
             notes,
             vec![(Felt::from(BOB), 70, 0), (Felt::from(USER), 10, 3)]
         );
+    }
+
+    /// #49: one locator per transfer, none for change; the note id is the
+    /// pool's `note_id(channel_key, token, index)` and the salt is the one the
+    /// `CreateEncNote` action carries.
+    #[test]
+    fn locators_list_transfers_only_and_match_the_created_notes() {
+        let st = state(
+            true,
+            vec![
+                channel(USER, true, &[(STRK, 0, 3)]),
+                channel(BOB, true, &[(STRK, 0, 2)]),
+            ],
+            vec![note(10, 0), note(50, 1)],
+        );
+        let intent = Intent {
+            transfers: vec![
+                (Felt::from(BOB), Felt::from(STRK), 20),
+                (Felt::from(BOB), Felt::from(STRK), 5),
+            ],
+            ..Intent::default()
+        };
+        let p = plan(&intent, &st, &mut Counter(1)).unwrap();
+        // The 50 note covers the 25 sent: change of 25 to the user, not listed.
+        assert_eq!(p.change.get(&Felt::from(STRK)), Some(&25));
+        assert_eq!(p.notes.len(), 2);
+        let bob_key = Felt::from(BOB + 2);
+        for (i, (loc, want_amount)) in p.notes.iter().zip([20u128, 5]).enumerate() {
+            let want_index = 2 + i as u32;
+            assert_eq!(
+                (loc.recipient, loc.token, loc.amount, loc.index),
+                (Felt::from(BOB), Felt::from(STRK), want_amount, want_index)
+            );
+            assert_eq!(
+                loc.note_id,
+                hashes::note_id(bob_key, Felt::from(STRK), want_index)
+            );
+            let created = p.actions.iter().find_map(|a| match a {
+                ClientAction::CreateEncNote {
+                    recipient_addr,
+                    index,
+                    salt,
+                    ..
+                } if *recipient_addr == Felt::from(BOB) && *index == want_index => Some(*salt),
+                _ => None,
+            });
+            assert_eq!(created, Some(loc.salt));
+            assert!(loc.salt > crypto::OPEN_NOTE_SALT);
+        }
+    }
+
+    /// An explicit transfer to oneself is listed (the caller asked for it);
+    /// the change note on the same subchannel is not. Deposits create no
+    /// locator.
+    #[test]
+    fn a_transfer_to_self_is_listed_but_change_and_deposits_are_not() {
+        let st = state(
+            true,
+            vec![channel(USER, true, &[(STRK, 0, 4)])],
+            vec![note(50, 0)],
+        );
+        let intent = Intent {
+            transfers: vec![(Felt::from(USER), Felt::from(STRK), 20)],
+            ..Intent::default()
+        };
+        let p = plan(&intent, &st, &mut Counter(1)).unwrap();
+        assert_eq!(p.notes.len(), 1);
+        assert_eq!(
+            (p.notes[0].recipient, p.notes[0].index),
+            (Felt::from(USER), 4)
+        );
+        let deposit = Intent {
+            deposits: vec![(Felt::from(STRK), 5)],
+            ..Intent::default()
+        };
+        assert!(plan(&deposit, &st, &mut Counter(1))
+            .unwrap()
+            .notes
+            .is_empty());
     }
 
     #[test]
