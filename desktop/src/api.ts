@@ -89,6 +89,23 @@ export interface Strk20Config {
   avnu_api_key: string;
   /** Paymaster endpoint override; empty = AVNU's. */
   paymaster_url: string;
+  /**
+   * Testnet only: the screener private key of a pool you deployed yourself.
+   * Write-only: reads back as "<stored>" when set; send "<stored>" to keep it.
+   */
+  screener_key: string;
+}
+
+/** What `strk20CheckPool` reports about a pool address. Never carries a key. */
+export interface Strk20PoolInfo {
+  deployed: boolean | null;
+  class_hash?: string;
+  known_class?: boolean;
+  version?: string | null;
+  screener_public_key?: string | null;
+  fee_amount?: string | null;
+  screener_matches?: boolean | null;
+  warnings: string[];
 }
 
 export interface ProverNetworkConfig {
@@ -204,6 +221,8 @@ export const api = {
     invoke<{ transaction_hash: string }>("strk20_invoke", { address, actions }),
   strk20Prepare: (address: string, actions: Strk20Action[]) =>
     invoke<Strk20CallAndProof>("strk20_prepare", { address, actions }),
+  strk20CheckPool: (network: "mainnet" | "testnet", pool: string, screenerKey?: string) =>
+    invoke<Strk20PoolInfo>("strk20_check_pool", { network, pool, screenerKey: screenerKey || null }),
 };
 
 /// Subscribe to approval prompts pushed from the service. Returns an unlisten fn.

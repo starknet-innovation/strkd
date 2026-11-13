@@ -170,7 +170,8 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
                 "2. Shield: wallet_strk20InvokeTransaction {actions:[{type:\"deposit\", token, amount}]} → {transaction_hash}. Deposits can't share a batch with private actions.",
                 "3. Read: wallet_strk20Balances {tokens:[…]} → [{token, balance}] (hex, base units). Notes become spendable ~12 blocks after they land.",
                 "4. Send privately / unshield: wallet_strk20InvokeTransaction {actions:[{type:\"transfer\", token, amount, recipient}, {type:\"withdraw\", token, amount, recipient}]} (needs the AVNU key) — or wallet_strk20PrepareInvoke with the same actions → {call, proof}, then submit from another account: wallet_addInvokeTransaction {account_address:<other>, calls:[call], proof_facts:proof.proof_facts, proof:proof.data, submit:true}.",
-                "Amounts are felts in base units (0x…). The recipient of a transfer must be registered (else 118). Not supported yet: transfer amount \"OPEN\", invoke and shadow_account_invoke actions (-32601)."
+                "Amounts are felts in base units (0x…). The recipient of a transfer must be registered (else 118). Not supported yet: transfer amount \"OPEN\", invoke and shadow_account_invoke actions (-32601).",
+                "Pool: the user picks it per network in Settings → STRK20 (default: the canonical pool); you can't. The STRK20 methods (and companion_strk20Plan) accept an optional pool_address that only asserts which pool you expect: a mismatch is 114, nothing runs. On a testnet pool the user deployed, deposits may be screened by a local test screener key instead of a remote prover."
             ],
             "owner_contracts": "A deployed contract that advertises SRC5 is_custom_signature_valid \
 (interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \

@@ -315,9 +315,10 @@ fn prove_prompt(
         Subject::Account => format!("your account {}", ctx.address()),
     };
     let mut text = format!(
-        "Prove STRK20 plan {plan_id} on {} for {who}: {}. It will be {where_proved}.",
+        "Prove STRK20 plan {plan_id} on {} for {who}: {} ({}). It will be {where_proved}.",
         chain_name(ctx.chain),
         describe(&meta.intent),
+        ctx.pool_label(),
     );
     if prover_id != meta.prover_id {
         text.push_str(&format!(

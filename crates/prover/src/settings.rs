@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Proving config for one network.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct NetworkConfig {
     #[serde(default)]
     pub rpc_url: String,
@@ -28,7 +28,7 @@ pub struct NetworkConfig {
 /// Per-network STRK20 settings. Empty strings mean "use the default". The API
 /// keys are secrets: like `prover_api_key`, they are only managed over the
 /// desktop IPC and never returned over the loopback JSON-RPC service.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Strk20Config {
     /// Pool contract address. Empty = the network's canonical pool.
     #[serde(default)]
@@ -50,6 +50,49 @@ pub struct Strk20Config {
     /// Paymaster endpoint. Empty = AVNU's endpoint for the network.
     #[serde(default)]
     pub paymaster_url: String,
+    /// **Testnet only.** The screener private key of a privacy pool you
+    /// deployed yourself (the pool's constructor takes its screener public
+    /// key). With it, deposits are proved on this machine and strkd signs the
+    /// screening attestation, instead of asking a screening prover. A secret:
+    /// IPC-only like the API keys, never logged, never returned over the
+    /// loopback service, and masked when read back by the desktop UI. strkd
+    /// refuses it on mainnet (settings validation and at deposit time) and
+    /// checks it against the pool's `get_screener_public_key` before use.
+    #[serde(default)]
+    pub screener_key: String,
+}
+
+fn redacted(s: &str) -> &'static str {
+    if s.is_empty() {
+        ""
+    } else {
+        "<redacted>"
+    }
+}
+
+// Hand-written so a stray `{:?}` never prints a secret.
+impl std::fmt::Debug for Strk20Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Strk20Config")
+            .field("pool", &self.pool)
+            .field("starkscan_api_key", &redacted(&self.starkscan_api_key))
+            .field("deposit_prover_url", &self.deposit_prover_url)
+            .field("avnu_api_key", &redacted(&self.avnu_api_key))
+            .field("paymaster_url", &self.paymaster_url)
+            .field("screener_key", &redacted(&self.screener_key))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for NetworkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkConfig")
+            .field("rpc_url", &self.rpc_url)
+            .field("prover_url", &self.prover_url)
+            .field("prover_api_key", &redacted(&self.prover_api_key))
+            .field("strk20", &self.strk20)
+            .finish()
+    }
 }
 
 /// All networks the prover knows about, plus the chosen prover backend.
@@ -147,8 +190,52 @@ impl SettingsStore {
             std::fs::create_dir_all(p)?;
         }
         std::fs::write(&self.path, serde_json::to_string_pretty(&s).unwrap_or_default())?;
+        // API keys and a testnet screener key live here: owner-only, like config.json.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600))?;
+        }
         // Record our own write's mtime so reload_if_changed doesn't re-read it.
         *self.mtime.lock().unwrap() = file_mtime(&self.path);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_never_prints_secrets() {
+        let cfg = NetworkConfig {
+            prover_api_key: "prover-secret".into(),
+            strk20: Strk20Config {
+                pool: "0x123".into(),
+                starkscan_api_key: "starkscan-secret".into(),
+                avnu_api_key: "avnu-secret".into(),
+                screener_key: "0xcafebabe".into(),
+                ..Strk20Config::default()
+            },
+            ..NetworkConfig::default()
+        };
+        let out = format!("{cfg:?}");
+        for secret in ["prover-secret", "starkscan-secret", "avnu-secret", "cafebabe"] {
+            assert!(!out.contains(secret), "{out}");
+        }
+        assert!(out.contains("0x123") && out.contains("<redacted>"), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn settings_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("strkd-settings-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = SettingsStore::load(dir.join("settings.json"));
+        store.update(Settings::default()).await.unwrap();
+        let mode = std::fs::metadata(dir.join("settings.json")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

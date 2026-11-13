@@ -61,6 +61,51 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 - The owner keeps about 0.01 STRK of private notes on the test pool. The withdraw approval
   `0x759ff509…ca1` stays approved in the contract (it was not revoked).
 
+## 2026-11-13 — STRK20 pool per network + testnet local screener (#57)
+
+**Did**
+- Gap analysis: the per-network pool override (`Strk20Config.pool`) and the
+  deposit prover URL already existed, were editable in Settings → STRK20 and
+  reached every STRK20 method through `ctx()`, with the viewing key scoped to
+  the chosen pool. Missing: a deposit screening source for a self-deployed
+  Sepolia pool (no Sepolia screening prover exists), pool validation in
+  Settings, the pool in the balances prompt, and any non-canonical flag.
+- Testnet local screener: `strk20::screening` (SNIP-12 `DepositorValidation`,
+  matches starknet-privacy's vectors byte for byte), `Strk20Config.screener_key`,
+  `wallet-rpc` `strk20::screener` (validation, mainnet refusal, pool key check,
+  attestation after a local proof).
+- Prompts name a non-canonical pool; `pool_address` asserts the pool (114 on
+  mismatch). Desktop: screener key field (Sepolia only, write-only), Check pool,
+  settings validation. Settings file now `0600`; settings `Debug` redacts keys.
+
+**Decisions**
+- No per-call pool choice: the pool stays a user setting so a paired agent
+  can't redirect strkd; `pool_address` only asserts.
+- The screener key sits in the prover's `settings.json` with the API keys
+  (existing pattern for comparable secrets) rather than the vault: it is a test
+  key for a test pool, and the vault is passphrase-sealed seed storage.
+- Local screener wins over `deposit_prover_url` on testnet: the deposit's
+  invocation (with `user_sk`) then never leaves the machine.
+
+**Verify**
+- `cargo test --locked` and `cargo clippy --locked --all-targets -- -D warnings`.
+- Live, read-only (2026-11-13): `STRK20_SCREENER_KEY=0xCAFEBABE cargo run -p
+  wallet-rpc --example strk20_live -- prepare-deposit 0 10000000000000000`
+  proved a 0.01 STRK deposit into the test pool on-device (12.4 s, PROOF2) and
+  the node's fee estimate of approve + `apply_actions` with the attestation
+  succeeded (~129.6M L2 gas). Nothing was submitted.
+
+**Next / Resume**
+- A submitted deposit via the desktop Private tab or `strk20_live invoke`.
+
+**Notes / caveats**
+- Merged over the #48 stack (plan/prove split, owner subjects): the local
+  screener applies to the one-shot deposit methods only; plan/prove deposits
+  still return DEPOSIT_UNSUPPORTED. Plan/prove/enrol prompts flag a
+  non-canonical pool too, and `companion_strk20Plan` accepts `pool_address`.
+
+---
+
 ## 2026-11-13 — STRK20 #48 part 3: security-review fixes
 
 **Did**
