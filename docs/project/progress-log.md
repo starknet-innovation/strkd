@@ -8,6 +8,57 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 #49: note locators and companion_strk20ChannelKey
+
+**Did**
+- Added `notes: [{recipient, token, amount, index, note_id, salt}]` locators:
+  - computed by the planner (`strk20::planner::Plan::notes`, `NoteLocator`);
+  - returned, as an additive field, by `wallet_strk20PrepareInvoke`,
+    `wallet_strk20InvokeTransaction`, `companion_strk20Plan` and the
+    `companion_strk20Prove` job result.
+- Added `companion_strk20ChannelKey` (`crates/wallet-rpc/src/strk20/channel.rs`):
+  - it discloses one outgoing channel's key, marker and per-token note counts, for an
+    in-scope account or enrolled owner;
+  - it always prompts, and the request log redacts the key.
+- Committed the design note `docs/project/design-49-strk20-channel-disclosure.md`, with its
+  decisions in §13.
+- Added the `channel-key` mode to `strk20_live` (read-only).
+- Updated the agent guide (`usage.rs`), `docs/code/strk20.md` and `docs/code/wallet-rpc.md`.
+
+**Decisions**
+- Built A (channel key) and C (locators). D (in-proof verification) is future work. B is
+  rejected as unsound.
+- Locators list transfer notes only. Change and deposit notes back to the subject are
+  excluded; an explicit transfer to oneself is included.
+- `index` is the note index on the subchannel. The outgoing-channel index is never returned.
+- The channel key goes to paired apps and agents for subjects in their scope. It always
+  prompts (a grant never covers it), with wording that states the full, irrevocable
+  disclosure.
+- It refuses `SELF_CHANNEL` (114), `CHANNEL_NOT_FOUND` (-32006) and an unregistered
+  recipient (118) before prompting. The not-found answer leaks one bit to an in-scope
+  caller (design §13.3).
+
+**Verify**
+- `cargo test --locked` and `cargo clippy --locked --all-targets -- -D warnings`.
+- `cargo test -p wallet-rpc --test strk20_disclosure` and `cargo test -p strk20 planner`.
+- Live, read-only:
+  `cargo run -p wallet-rpc --example strk20_live -- channel-key 1 0x01f03e564a8a07244e5e895fb2428e4fbe01c1bd838c84c786f2e2636fef27f4`
+  → `marker_matches_derivation: true`, `channel_exists(marker): true`, and note 0 found with
+  amount 10000000000000000 (0.01 STRK). `channel-key 1 0` → five notes found.
+
+**Next / Resume**
+- Option D (`compute_and_invoke`) with the `invoke` actions.
+- Optional: the §10 send-and-verify live run with a starknet.js-only verifier. It changes
+  Sepolia state, so it needs sign-off.
+
+**Notes / caveats**
+- The channel key cannot be revoked. Treat every grant of it as permanent disclosure of
+  that sender→recipient pair.
+- A locator from PrepareInvoke or Plan holds only if that batch lands first for that
+  recipient and token.
+
+---
+
 ## 2026-11-13 — STRK20 #48 live test (Sepolia): external owner contract
 
 **Did**

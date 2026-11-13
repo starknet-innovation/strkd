@@ -25,7 +25,7 @@ use wallet_core::{address_hex, get_selector_from_name, AccountRef, ChainId, Felt
 use super::plan::{client_id, plan_hash, StoredPlan};
 use super::{
     block_number, call_and_proof, chain_name, ctx, describe, discover_state, ensure_deployed_at,
-    hex, invalid, map_strk20, node_err, owners, pool_fee_at, prover_identity, remote,
+    hex, invalid, map_strk20, node_err, notes_json, owners, pool_fee_at, prover_identity, remote,
     safe_prover_error, same_state, scrub, submit_from, where_proved, Caller, Ctx, Prepared,
     Proving, Subject, SubmitGuard, SubmitTarget, PROVING_LAG,
 };
@@ -71,6 +71,8 @@ struct Meta {
     prover_id: String,
     submission: &'static str,
     plan_hash: Felt,
+    /// The plan's transfer-note locators (#49), returned in the job result.
+    notes: Vec<strk20::planner::NoteLocator>,
     /// The plan prompt as the user saw it, quoted when prove prompts again.
     plan_prompt: String,
     created_at_ms: u64,
@@ -89,6 +91,7 @@ impl Meta {
             prover_id: p.prover_id.clone(),
             submission: p.submission,
             plan_hash: p.plan_hash,
+            notes: p.notes.clone(),
             plan_prompt: p.prompt.clone(),
             created_at_ms: p.created_at_ms,
         }
@@ -382,8 +385,9 @@ fn prover_failure(err: &str, owner: bool, block: u64) -> prover::JobFailure {
 /// Checks everything up front, prompts only if the prover kind changed since
 /// the plan's prompt or `submit` is `"account"`, consumes the plan, and queues
 /// an unrecorded proving job. Poll `companion_proveStatus { job_id }`: on
-/// success `result` is `{ call, proof }` (`submit: "none"`) or
-/// `{ transaction_hash, submitter_address, call }` (`"account"`).
+/// success `result` is `{ call, proof, notes }` (`submit: "none"`) or
+/// `{ transaction_hash, submitter_address, call, notes }` (`"account"`), where
+/// `notes` locates the plan's transfer notes (#49, no key).
 pub async fn prove(
     state: &ServerState,
     caller: Caller<'_>,
@@ -541,6 +545,7 @@ pub async fn prove(
 
     // 8. Queue the unrecorded job.
     let pool = ctx.pool;
+    let notes = meta.notes.clone();
     let owner = meta.is_owner();
     let jobs = prover.jobs.clone();
     let scope = caller.scope();
@@ -565,9 +570,15 @@ pub async fn prove(
         })?;
         let call = strk20::apply::apply_actions_call(pool, &proved.output, None)
             .map_err(|e| failure("PROVING_FAILED", scrub(&e.to_string(), user_sk)))?;
-        let prepared = Prepared { call, proved };
+        let prepared = Prepared {
+            call,
+            proved,
+            notes,
+        };
         let Some((mut target, submitter)) = route else {
-            return Ok(call_and_proof(&prepared, false));
+            let mut out = call_and_proof(&prepared, false);
+            out["notes"] = notes_json(&prepared.notes);
+            return Ok(out);
         };
         // Checked here, and again under the session lock right before
         // signing (a lock and a quick unlock while the node is queried).
@@ -599,6 +610,7 @@ pub async fn prove(
         }
         out["transaction_hash"] = json!(hex(&hash));
         out["submitter_address"] = json!(submitter.address);
+        out["notes"] = notes_json(&prepared.notes);
         Ok(out)
     };
     let job_id = prover::enqueue_prove_unrecorded(
@@ -620,8 +632,8 @@ pub async fn prove(
         "block_number": block,
         "subject": if owner { "owner" } else { "account" },
         "submit": submission,
-        "next": "poll companion_proveStatus { job_id } until status is \"succeeded\" (result = { call, proof }, or \
-                 { transaction_hash, submitter_address, call } after submit: \"account\") or \"failed\" (error, \
+        "next": "poll companion_proveStatus { job_id } until status is \"succeeded\" (result = { call, proof, notes }, \
+                 or { transaction_hash, submitter_address, call, notes } after submit: \"account\") or \"failed\" (error, \
                  error_reason). The result is kept 1 h, and dropped if the wallet locks.",
     });
     if let Some(s) = &submitter {
@@ -762,6 +774,7 @@ mod tests {
             actions,
             client_actions_felts: felts,
             plan_hash: hash,
+            notes: Vec::new(),
             state: snapshot(false),
             prover_id: "native".into(),
             submission: "none",

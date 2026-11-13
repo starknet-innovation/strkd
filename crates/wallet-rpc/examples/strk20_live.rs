@@ -11,7 +11,15 @@
 //! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> register
 //! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> withdraw <amount_wei> <to|0x…>
 //! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> transfer <amount_wei> <to|0x…>
+//! cargo run -p wallet-rpc --example strk20_live -- channel-key <from> <to|0x…>
 //! ```
+//!
+//! `channel-key` (#49) is read-only: it calls `companion_strk20ChannelKey` for
+//! `<from>`'s channel to `<to>`, then checks the result against the pool
+//! directly, as a verifier would: the marker re-derived from the key,
+//! `channel_exists(marker)`, and `get_note` for every note the key enumerates,
+//! with the amount decrypted from the key and the note's public salt. It
+//! prints the checks, not the key. No transaction.
 //!
 //! `owner-flow` (#48) runs plan → approve → prove for an external owner
 //! contract (`contracts/strk20-owner-example`, deployed with `admin` = test
@@ -200,6 +208,7 @@ async fn main() {
             prepared
         }
         Some("owner-flow") => owner_flow(&state, t, &args).await,
+        Some("channel-key") => channel_key(&state, t, &args).await,
         Some("invoke") => {
             let from: u32 = args[1].parse().unwrap();
             let actions: Value = serde_json::from_str(&args[2]).unwrap();
@@ -277,4 +286,52 @@ async fn owner_flow(state: &ServerState, t: Option<&str>, args: &[String]) -> Va
             return job;
         }
     }
+}
+
+/// `channel-key <from> <to|0x…>`: read-only, see the module docs.
+async fn channel_key(state: &ServerState, t: Option<&str>, args: &[String]) -> Value {
+    use wallet_core::Felt;
+    let from = address(args[1].parse().unwrap());
+    let to = addr_arg(&args[2]);
+    let r = rpc(state, t, "companion_strk20ChannelKey", json!({ "account_address": from, "recipient": to })).await;
+    let res = r["result"].clone();
+    if res.is_null() {
+        return r;
+    }
+    let felt = |v: &Value| Felt::from_hex(v.as_str().unwrap()).unwrap();
+    let (ck, marker, pool) = (felt(&res["channel_key"]), felt(&res["marker"]), felt(&res["pool"]));
+    let node = HttpStarknetRpc::new(RPC);
+    let view = |name: &str, calldata: Vec<Felt>| {
+        let node = &node;
+        let request = json!({ "contract_address": format!("{pool:#x}"),
+                              "entry_point_selector": format!("{:#x}", wallet_core::get_selector_from_name(name)),
+                              "calldata": calldata.iter().map(|f| format!("{f:#x}")).collect::<Vec<_>>() });
+        async move {
+            let out = wallet_rpc::StarknetRpc::raw(node, "starknet_call", json!({ "request": request, "block_id": "latest" }))
+                .await
+                .unwrap();
+            out.as_array().unwrap().iter().map(|v| Felt::from_hex(v.as_str().unwrap()).unwrap()).collect::<Vec<_>>()
+        }
+    };
+    // The verifier's own derivation: the marker from the key and the public inputs.
+    let derived =
+        strk20::hashes::channel_marker(ck, felt(&res["sender"]), felt(&res["recipient"]), felt(&res["recipient_public_key"]));
+    let exists = view("channel_exists", vec![marker]).await[0] != Felt::ZERO;
+    let mut notes = Vec::new();
+    for sub in res["subchannels"].as_array().unwrap() {
+        let token = felt(&sub["token"]);
+        for i in 0..sub["note_count"].as_u64().unwrap() as u32 {
+            let id = strk20::hashes::note_id(ck, token, i);
+            let packed = view("get_note", vec![id]).await[0];
+            let value = strk20::crypto::decrypt_note_value(packed, ck, token, i);
+            notes.push(json!({ "token": format!("{token:#x}"), "index": i, "note_id": format!("{id:#x}"),
+                               "found": value.is_some(), "amount": value.map(|v| v.amount.to_string()) }));
+        }
+    }
+    json!({
+        "sender": res["sender"], "recipient": res["recipient"], "pool": res["pool"],
+        "marker_matches_derivation": derived == marker,
+        "channel_exists(marker)": exists,
+        "notes": notes,
+    })
 }

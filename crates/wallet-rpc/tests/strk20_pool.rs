@@ -335,6 +335,8 @@ async fn local_screener_attests_a_testnet_deposit() {
     let r = h.call("wallet_strk20InvokeTransaction", deposit()).await;
     assert!(r.error.is_none());
     assert_eq!(r.result.as_ref().unwrap()["transaction_hash"], json!("0xabc"));
+    // A deposit creates only a note back to the depositor: no locator (#49).
+    assert_eq!(r.result.as_ref().unwrap()["notes"], json!([]));
 
     let prompt = h.prompt("wallet_strk20InvokeTransaction");
     assert!(prompt.contains("proved on this machine, screened with the test screener key"), "prompt len {}", prompt.len());
