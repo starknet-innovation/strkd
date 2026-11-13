@@ -124,7 +124,16 @@ impl ServerState {
     }
 
     /// Attach the on-device proving companion so `companion_prove*` is available.
+    ///
+    /// Also hooks the session's lock so every lock, by any path, drops the
+    /// results of unrecorded (STRK20) proving jobs (#48 §5.7). Call it at
+    /// construction, while nothing else holds the session.
     pub fn with_prover(mut self, prover: Arc<prover::ProverState>) -> Self {
+        let jobs = prover.jobs.clone();
+        self.session
+            .try_lock()
+            .expect("with_prover: the session is held elsewhere during construction")
+            .add_lock_hook(Arc::new(move || jobs.wipe_ephemeral()));
         self.prover = Some(prover);
         self
     }
@@ -506,8 +515,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_requestGrant" => handle_request_grant(state, &client, &params).await,
         "companion_requestFunding" => handle_request_funding(state, &client, &params).await,
         "companion_deployAccount" => handle_deploy_account(state, &client, &params).await,
-        "companion_prove" => handle_prove(state, &params).await,
-        "companion_proveStatus" => handle_prove_status(state, &params).await,
+        "companion_prove" => handle_prove(state, &client, &params).await,
+        "companion_proveStatus" => handle_prove_status(state, &client, &params).await,
         "companion_proofActivity" => handle_proof_activity(state).await,
         "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
         "wallet_strk20Balances" => strk20::balances(state, strk20::Caller::Rpc(&client), &params).await,
@@ -525,6 +534,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_strk20DiscardPlan" => {
             strk20::plan::discard(state, strk20::Caller::Rpc(&client), &params).await
         }
+        "companion_strk20Prove" => strk20::prove::prove(state, strk20::Caller::Rpc(&client), &params).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -548,7 +558,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_strk20Register"
         | "companion_strk20AddOwner"
         | "companion_strk20RemoveOwner"
-        | "companion_strk20Plan" => decision_label(&result),
+        | "companion_strk20Plan"
+        | "companion_strk20Prove" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -1437,14 +1448,15 @@ pub(crate) fn prover_or_err(state: &ServerState) -> Result<&prover::ProverState,
 
 /// `companion_prove` — enqueue an opaque, already-signed payload for on-device
 /// proving. Returns immediately with a job id; poll `companion_proveStatus`.
-async fn handle_prove(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+/// The job belongs to the calling client: no other client can poll it.
+async fn handle_prove(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
     let network = opt_param_str(params, "network").unwrap_or_else(|| "mainnet".into());
     let label = opt_param_str(params, "label");
     // `payload` is the opaque thing to prove; if absent, treat the whole params
     // object as the payload (mirrors the prover crate's generic contract).
     let payload = params.get("payload").cloned().unwrap_or_else(|| params.clone());
-    let job_id = prover::enqueue_prove(prover, payload, label, network).await;
+    let job_id = prover::enqueue_prove_as(prover, payload, label, network, Some(client.id.clone())).await;
     Ok(json!({
         "job_id": job_id,
         "status": "queued",
@@ -1453,10 +1465,16 @@ async fn handle_prove(state: &ServerState, params: &Value) -> Result<Value, Wall
 }
 
 /// `companion_proveStatus` — poll a proving job by id (status + result/error).
-async fn handle_prove_status(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+/// Only the client that queued a job sees it; any other job id, including
+/// another client's, is "unknown job".
+async fn handle_prove_status(
+    state: &ServerState,
+    client: &PairedClient,
+    params: &Value,
+) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
     let job_id = param_str(params, "job_id")?;
-    match prover.jobs.get(&job_id).await {
+    match prover.jobs.get_for(&job_id, &client.id).await {
         Some(job) => Ok(json!(job)),
         None => Err(WalletRpcError::InvalidRequest(format!("unknown job '{job_id}'"))),
     }
@@ -1601,8 +1619,14 @@ async fn handle_sign_and_prove(
         payload["block_number"] = json!(bn);
     }
     let label = opt_param_str(params, "label");
-    let job_id =
-        prover::enqueue_prove(prover, payload, label, prover_network(chain).to_string()).await;
+    let job_id = prover::enqueue_prove_as(
+        prover,
+        payload,
+        label,
+        prover_network(chain).to_string(),
+        Some(client.id.clone()),
+    )
+    .await;
 
     Ok(json!({
         "job_id": job_id,

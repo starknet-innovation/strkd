@@ -31,12 +31,12 @@ desktop's IPC. Concretely:
 | `config` | `ProverConfig` from env (`STRKD_PROVER`). |
 | `settings` | `SettingsStore` — per-network `rpc_url` / `prover_url` / `prover_api_key` + `prover_backend`, persisted to `settings.json`, hot-reloaded on external edits. **Carries secrets — IPC-only.** In the desktop, `rpc_url` is **mirrored from the wallet's shared RPC config** (Settings shows one RPC field per network for both wallet + prover), not edited here. |
 | `storage` | `Storage` — one `ProofRecord` JSON per job under `storage/`; `ProofSummary`/`StorageStats` for the UI; `max_seq` seeds the job counter across restarts. |
-| `jobs` | `Jobs` — in-memory job lifecycle (`queued`→`proving`→`succeeded`/`failed`) + a capped activity feed. |
+| `jobs` | `Jobs` — in-memory job lifecycle (`queued`→`proving`→`succeeded`/`failed`) + a capped activity feed. Jobs can be owned by a client (`JobOptions::client_id`, read with `get_for`) and ephemeral (`result_ttl_ms`: the result is dropped that long after the job finishes, or at once by `wipe_ephemeral`). Failures can carry `error_reason`. |
 | `prover` | The `Prover` seam (`prove`/`kind`/`ready`) + `RemoteProver` (forwards to a configured remote prover; **no mock** — errors if no URL is set). |
 | `snip36` | Shared SNIP-36 helpers: nonce/block preflight, the CLI env (incl. the dummy `0x1` key), output parsing, and `run_and_parse`. |
 | `native_prover` | `NativeProver` — runs the local/bundled `snip36 prove virtual-os` CLI. The default, preferred backend. |
 | `state` | `ProverState { prover, jobs, settings, storage }` — cheap to clone (all `Arc`). |
-| `lib` | `build_prover_state`, `enqueue_prove`. |
+| `lib` | `build_prover_state`, `enqueue_prove` / `enqueue_prove_as` (recorded), `prove_unrecorded` / `enqueue_prove_unrecorded` (nothing persisted). |
 
 ## Backends (`STRKD_PROVER` / Settings `prover_backend`)
 
@@ -70,11 +70,44 @@ Paired callers only. The first three change no wallet state, so they don't promp
 
 - `companion_prove { payload, network?, label? }` → `{ job_id, status }` — prove an
   already-signed payload the caller supplies.
-- `companion_proveStatus { job_id }` → job (status + `result`/`error`)
+- `companion_proveStatus { job_id }` → job (status + `result`/`error`). Every
+  job belongs to the paired client that queued it (`enqueue_prove_as` /
+  `enqueue_prove_unrecorded` tag it, `Jobs::get_for` reads it): any other
+  client gets "unknown job" (114), the same answer as for a missing id. Before
+  #48 part 3, any paired client could poll any job by its sequential id.
+  Untagged jobs (the desktop's own) are not visible over RPC.
 - `companion_proofActivity` → recent activity feed
 - `companion_signAndProve { account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }`
   → `{ job_id, status, transaction_hash, next }` — **approval-gated**; signs the
   virtual tx itself, then proves it (below).
+
+### Unrecorded jobs (payloads that carry a secret)
+
+A STRK20 proof invocation holds the subject's viewing key in its calldata, so
+it must never reach `Storage`. Two paths keep it off disk:
+
+- `prove_unrecorded` (synchronous, the one-shot `wallet_strk20*` methods): the
+  job shows in the feed, is untagged (no RPC client can poll it) and ephemeral.
+- `enqueue_prove_unrecorded(state, payload, label, network, client_id, finish)`
+  (asynchronous, `companion_strk20Prove`): writes neither the payload nor the
+  result to `Storage`. The job is owned by `client_id` and ephemeral
+  (`UNRECORDED_RESULT_TTL_MS`, 1 h after it finishes). `finish(job_id, outcome)`
+  runs in the background task and turns the prover's outcome into the job's
+  result or `JobFailure { reason, message }`; the caller scrubs secrets there.
+  The payload is dropped as soon as the prover returns.
+
+**Wiped on lock.** `ServerState::with_prover` adds a lock hook to the session
+(`WalletSession::add_lock_hook`), so every lock, by any path (desktop button,
+auto-lock, tests), calls `Jobs::wipe_ephemeral`: finished ephemeral results are
+dropped (`result_dropped: "wiped_on_lock"`), and running ephemeral jobs finish
+without a result (`error_reason: "WIPED_ON_LOCK"`; `Jobs::is_wiped` lets a job
+stop before submitting). `Jobs` uses a plain mutex, never held across an
+`.await`, so the hook can run from the synchronous lock path.
+
+**Known exposure, unchanged:** the native backend writes the transaction (and
+so the viewing key) to `$TMPDIR/strkd-prove-<pid>-<n>/tx_a.json` for the
+`snip36` CLI and deletes the directory when the CLI exits. A remote backend
+sees the whole payload.
 
 For SNIP-36 the `companion_prove` `payload` is `{ transaction: <signed invoke-v3>,
 block_number? }` and the proof comes back as `{ proof (base64 STWO), proof_facts,
@@ -151,7 +184,9 @@ stub `Prover`** (in the test code, never shipped):
 - `crates/prover/tests/enqueue.rs` drives the orchestration through the real
   failure path — an unconfigured `remote` backend fails fast with a clear error
   and still persists a `failed` `ProofRecord` — and checks the job counter seeds
-  past existing records.
+  past existing records. It also checks that `enqueue_prove_unrecorded` writes
+  nothing to storage and keeps the job for its client only; `jobs.rs` unit tests
+  cover ownership, result expiry and the lock wipe.
 - `wallet-rpc`'s `tests/dispatch.rs` attaches a stub `Prover` (returns a canned
   proof) to cover `companion_prove` / `companion_signAndProve` success end-to-end
   through the service, plus the unconfigured (`-32601`) and rejected (`113`) paths.

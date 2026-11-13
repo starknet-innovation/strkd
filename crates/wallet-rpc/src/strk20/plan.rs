@@ -4,7 +4,7 @@
 //! A plan fixes a batch's `client_actions` (every index, channel key, salt and
 //! random value) without signing or proving it, and returns `plan_hash`: the
 //! SNIP-12 digest an owner contract approves on-chain before the proof is built
-//! (`companion_strk20Prove`, part 3 of #48). Plans work for enrolled owners and
+//! (`companion_strk20Prove`, [`super::prove`]). Plans work for enrolled owners and
 //! for strkd accounts (§2.1); for an account, strkd signs at prove time.
 //!
 //! Plans live in a [`PlanStore`] held by the unlocked session: in memory only,
@@ -117,9 +117,6 @@ pub fn plan_hash(
 // ── stored plans ─────────────────────────────────────────────────────────────
 
 /// A plan as the store keeps it. No `Debug`: it holds channel keys.
-///
-/// Some fields are only read by `companion_strk20Prove` (#48, part 3).
-#[allow(dead_code)]
 pub(super) struct StoredPlan {
     pub(super) id: String,
     /// The paired client that made it. Only that client can see, discard or
@@ -358,8 +355,7 @@ impl PlanStore {
     }
 
     /// Remove and return the live plan `id`, if `client` made it. Discard
-    /// drops it (wiping it); prove (#48 part 3) consumes it once its job is
-    /// queued.
+    /// drops it (wiping it); prove consumes it once its job is queued.
     pub(super) fn take(
         &mut self,
         id: &str,
@@ -374,7 +370,7 @@ impl PlanStore {
 // ── the handlers ─────────────────────────────────────────────────────────────
 
 /// The id plans are bound to.
-fn client_id(caller: Caller<'_>) -> String {
+pub(super) fn client_id(caller: Caller<'_>) -> String {
     match caller {
         Caller::Rpc(c) => c.id.clone(),
         Caller::Desktop => "desktop".into(),

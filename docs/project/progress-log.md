@@ -8,6 +8,58 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 external owners, part 3: the prove step (#48)
+
+**Did**
+- `companion_strk20Prove { plan_id, block_number?, signature?, submit?, submitter_address? }`
+  (`strk20/prove.rs`). It runs every §5.5 check synchronously: plan, subject still in scope, `B`
+  bounds, deployed and SRC5 at `B`, discovery at `B` and `latest` against the plan's snapshot, plan
+  hash re-check. Then it consumes the plan and queues a proving job, polled with
+  `companion_proveStatus`. The result is `{ call, proof }`, or `{ transaction_hash,
+  submitter_address, call }` with `submit: "account"`.
+- Owners: the caller's `signature` felts go into the virtual tx verbatim, and strkd never signs.
+  Accounts: strkd signs the invocation hash with the account key.
+- `prover::enqueue_prove_unrecorded`: a background proof that writes nothing to proof storage,
+  owned by one client, with its result dropped 1 h after it finishes or when the wallet locks
+  (a session lock hook installed by `ServerState::with_prover`).
+- Every proving job is now client-scoped (`Jobs::get_for`): `companion_proveStatus` answers
+  "unknown job" for another client's job, including `companion_prove` and
+  `companion_signAndProve` jobs.
+- `submit_from` generalises `submit_from_account` so any in-scope strkd account can submit an
+  owner's proof. The relay is refused (`RELAY_UNSUPPORTED`).
+- Prover errors that show the pool's `INVALID_SIGNATURE` fail the job with `error_reason`
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account). Everything is scrubbed.
+- `strk20_live owner-flow` example command for the manual Sepolia run. Usage doc, code docs and
+  design note §10 and §11.2 updated.
+
+**Decisions**
+- Client scoping applies to all jobs, not only STRK20 ones. It is compatible for clients that poll
+  their own jobs (re-attach keeps the id) and closes the "any paired client can poll any job" hole.
+- `BLOCK_TOO_RECENT` also covers "the head hasn't moved 12 blocks past the plan yet"; there is no
+  separate `BLOCK_TOO_EARLY`. `BLOCK_TOO_OLD` keeps 120 blocks of the pool's window in hand.
+- `PLAN_STALE` drops the plan; bound, SRC5 and param errors keep it.
+- Job wipe-on-lock is a `WalletSession` lock hook, so every lock path (desktop button, auto-lock,
+  tests) runs it with no change in the desktop crate. `Jobs` moved to a plain mutex so the hook can
+  run synchronously.
+
+**Verify**
+- `cargo test --locked` → green across the workspace (15 new prove dispatch tests, 5 unit tests in
+  `strk20/prove.rs`, 3 in `prover/src/jobs.rs`, 1 in `prover/tests/enqueue.rs`).
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` and `cargo test --locked` → green.
+
+**Next / Resume**
+- Sepolia live run with `contracts/strk20-owner-example` (design §8): `strk20_live owner-flow`.
+  Record whether `INVALID_SIGNATURE` fails fast and how the prover spells it (§10).
+- Phase 2: `owner_address` on the one-shot methods, the narrow staleness check, desktop UI, relay.
+
+**Notes / caveats**
+- Not run against a live owner contract; no transactions were sent.
+- The native prover still writes the virtual tx (with `user_sk`) to a temp file for the CLI,
+  deleted afterwards. Unchanged by this PR.
+
+---
+
 ## 2026-11-13 — STRK20 external owners, part 2: the plan step (#48)
 
 **Did**

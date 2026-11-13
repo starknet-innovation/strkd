@@ -81,3 +81,56 @@ async fn job_counter_seeds_past_existing_records() {
 
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+/// A backend that returns a canned proof and remembers the payload it saw.
+struct Canned(std::sync::Mutex<Option<serde_json::Value>>);
+
+#[async_trait::async_trait]
+impl prover::Prover for Canned {
+    async fn prove(&self, req: prover::ProveRequest) -> Result<prover::ProveResult, String> {
+        *self.0.lock().unwrap() = Some(req.payload);
+        Ok(prover::ProveResult { proof: json!({ "proof": "0xp" }) })
+    }
+    fn kind(&self) -> &'static str {
+        "canned"
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// `enqueue_prove_unrecorded` never writes the payload (or anything else) to
+/// storage, hands the proof to `finish`, and keeps the job for its client only.
+#[tokio::test]
+async fn unrecorded_jobs_write_nothing_and_belong_to_their_client() {
+    let data_dir = temp_dir("unrecorded");
+    let backend = std::sync::Arc::new(Canned(Default::default()));
+    let state = ProverState {
+        prover: backend.clone(),
+        jobs: std::sync::Arc::new(prover::Jobs::new(0)),
+        settings: std::sync::Arc::new(prover::SettingsStore::load(data_dir.join("settings.json"))),
+        storage: std::sync::Arc::new(prover::Storage::new(data_dir.join("storage"))),
+    };
+    let secret = "0x5ec2e7";
+    let id = prover::enqueue_prove_unrecorded(
+        &state,
+        json!({ "transaction": { "calldata": [secret] } }),
+        Some("t".into()),
+        "testnet".into(),
+        Some("client-a".into()),
+        |_, res| async move { res.map(|p| json!({ "wrapped": p })).map_err(Into::into) },
+    )
+    .await;
+    let job = run_to_terminal(&state, &id).await;
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert_eq!(job.result, Some(json!({ "wrapped": { "proof": "0xp" } })));
+    assert!(job.result_expires_at_ms.is_some());
+    assert!(backend.0.lock().unwrap().is_some(), "the prover got the payload");
+    assert_eq!(state.storage.stats().records, 0);
+    assert!(state.storage.get_record(&id).is_none());
+    let on_disk = std::fs::read_dir(data_dir.join("storage")).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(on_disk, 0);
+    assert!(state.jobs.get_for(&id, "client-a").await.is_some());
+    assert!(state.jobs.get_for(&id, "client-b").await.is_none());
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

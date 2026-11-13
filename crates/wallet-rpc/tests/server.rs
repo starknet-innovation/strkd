@@ -171,6 +171,7 @@ async fn usage_endpoint_is_open_and_self_describing() {
         "companion_strk20RemoveOwner",
         "companion_strk20Plan",
         "companion_strk20DiscardPlan",
+        "companion_strk20Prove",
     ] {
         assert!(methods.iter().any(|m| m == expected), "usage doc missing method {expected}");
     }

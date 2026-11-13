@@ -16,12 +16,14 @@
 //! disk. Only a deposit's invocation leaves the machine, to the screening prover
 //! the approval prompt names.
 //!
-//! External owner contracts (#48) go through [`owners`] (enrolment) and
-//! [`plan`] (`companion_strk20Plan`: plan now, approve on-chain, prove later).
+//! External owner contracts (#48) go through [`owners`] (enrolment), [`plan`]
+//! (`companion_strk20Plan`: plan now, approve on-chain) and [`prove`]
+//! (`companion_strk20Prove`: prove the approved plan later, as a job).
 
 pub mod owners;
 pub mod paymaster;
 pub mod plan;
+pub mod prove;
 pub mod remote;
 
 use std::collections::BTreeMap;
@@ -42,6 +44,7 @@ use crate::dispatch::{
 };
 use crate::error::WalletRpcError;
 use crate::node::{NodeError, StarknetRpc};
+use crate::session::WalletSession;
 
 pub const MAINNET_POOL: &str = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
 pub const SEPOLIA_POOL: &str = "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e";
@@ -654,7 +657,13 @@ fn proving_for(ctx: &Ctx, actions: &[Action]) -> Result<Proving, WalletRpcError>
 // ── submission from the user's own account (register, deposits) ──────────────
 
 async fn pool_fee(ctx: &Ctx) -> Result<u128, WalletRpcError> {
-    let out = ctx.reader(json!("latest")).call(get_selector_from_name("get_fee_amount"), vec![]).await.map_err(map_strk20)?;
+    pool_fee_at(&ctx.node, ctx.pool).await
+}
+
+/// The pool's fee (in STRK) at `latest`.
+async fn pool_fee_at(node: &Arc<dyn StarknetRpc>, pool: Felt) -> Result<u128, WalletRpcError> {
+    let reader = NodeReader { node: node.clone(), pool, block: json!("latest") };
+    let out = reader.call(get_selector_from_name("get_fee_amount"), vec![]).await.map_err(map_strk20)?;
     let fee = out.first().copied().unwrap_or(Felt::ZERO);
     u128::try_from(fee).map_err(|_| node_err("get_fee_amount exceeds u128"))
 }
@@ -693,6 +702,33 @@ fn approve(token: Felt, spender: Felt, amount: u128) -> Call {
 /// Submit `apply_actions` (plus the ERC-20 approvals the pool will `transfer_from`)
 /// as a proof-carrying invoke from the user's account.
 async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared, deposits: &[(Felt, u128)]) -> Result<Felt, WalletRpcError> {
+    let target = SubmitTarget { session: state.session.clone(), node: ctx.node.clone(), chain: ctx.chain, pool: ctx.pool };
+    submit_from(&target, &ctx.account, prepared, deposits).await
+}
+
+/// Where and how a proved batch is submitted. Owned (no borrow of the server
+/// state), so a background proving job can submit too.
+#[derive(Clone)]
+struct SubmitTarget {
+    session: Arc<tokio::sync::Mutex<WalletSession>>,
+    node: Arc<dyn StarknetRpc>,
+    chain: ChainId,
+    pool: Felt,
+}
+
+/// Submit `apply_actions` (plus the ERC-20 approvals the pool will
+/// `transfer_from`) as a proof-carrying invoke from `submitter`, a strkd
+/// account in the caller's scope, which signs and pays the gas and the pool's
+/// fee. For an account's own batch the submitter is the account itself; for an
+/// owner's plan (`companion_strk20Prove` with `submit: "account"`) it is any
+/// in-scope strkd account, publicly linked to the owner by doing so.
+async fn submit_from(
+    target: &SubmitTarget,
+    submitter: &AccountRef,
+    prepared: &Prepared,
+    deposits: &[(Felt, u128)],
+) -> Result<Felt, WalletRpcError> {
+    let sender = Felt::from_hex(&submitter.address).map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
     if let Some(a) = &prepared.proved.screening {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         // Leave a minute for inclusion: the pool checks age against the block timestamp.
@@ -707,24 +743,24 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
     for &(token, amount) in deposits {
         *approvals.entry(token).or_default() += amount;
     }
-    let fee = pool_fee(ctx).await?;
+    let fee = pool_fee_at(&target.node, target.pool).await?;
     if fee > 0 {
         *approvals.entry(strk).or_default() += fee;
     }
-    let mut calls: Vec<Call> = approvals.into_iter().map(|(t, a)| approve(t, ctx.pool, a)).collect();
+    let mut calls: Vec<Call> = approvals.into_iter().map(|(t, a)| approve(t, target.pool, a)).collect();
     calls.push(prepared.call.clone());
 
     let calldata = wallet_core::encode_calls(&calls);
-    let nonce = ctx.node.get_nonce(&ctx.user).await.map_err(node_err)?;
-    let bounds = ctx
+    let nonce = target.node.get_nonce(&sender).await.map_err(node_err)?;
+    let bounds = target
         .node
-        .estimate_invoke_with_proof(&ctx.user, &calldata, &nonce, &prepared.proved.proof_facts, &prepared.proved.proof)
+        .estimate_invoke_with_proof(&sender, &calldata, &nonce, &prepared.proved.proof_facts, &prepared.proved.proof)
         .await
         .map_err(submit_err)?;
-    let signed = state.session.lock().await.sign_invoke_for(
-        &ctx.account,
+    let signed = target.session.lock().await.sign_invoke_for(
+        submitter,
         &calls,
-        ctx.chain,
+        target.chain,
         &InvokeV3Params {
             nonce,
             l1_gas: bounds.l1_gas,
@@ -734,8 +770,9 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
             ..InvokeV3Params::default()
         },
     )?;
-    ctx.node
-        .add_invoke(&ctx.user, &signed.calldata, &signed.signature, &nonce, &bounds, &prepared.proved.proof_facts, Some(&prepared.proved.proof))
+    target
+        .node
+        .add_invoke(&sender, &signed.calldata, &signed.signature, &nonce, &bounds, &prepared.proved.proof_facts, Some(&prepared.proved.proof))
         .await
         .map_err(submit_err)
 }

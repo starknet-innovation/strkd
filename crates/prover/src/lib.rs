@@ -11,6 +11,10 @@
 //! exposed over strkd's authenticated loopback JSON-RPC service (`wallet-rpc`)
 //! and the desktop app's IPC. The shared orchestration ([`enqueue_prove`]) and
 //! state ([`ProverState`]) live here so both callers run one code path.
+//!
+//! Payloads that carry a secret (a STRK20 proof invocation holds the viewing
+//! key in its calldata) go through [`prove_unrecorded`] or
+//! [`enqueue_prove_unrecorded`] instead, which persist nothing.
 
 pub mod config;
 pub mod jobs;
@@ -28,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 pub use config::ProverConfig;
-pub use jobs::{Activity, Job, JobStatus, Jobs};
+pub use jobs::{Activity, Job, JobFailure, JobOptions, JobStatus, Jobs};
 pub use prover::{Prover, ProveRequest, ProveResult, RemoteProver};
 pub use settings::{NetworkConfig, Settings, SettingsStore, Strk20Config};
 pub use state::ProverState;
@@ -72,7 +76,20 @@ pub async fn enqueue_prove(
     label: Option<String>,
     network: String,
 ) -> String {
-    let job_id = state.jobs.create(label.clone()).await;
+    enqueue_prove_as(state, payload, label, network, None).await
+}
+
+/// [`enqueue_prove`], with the job owned by `client_id`: [`Jobs::get_for`]
+/// shows it to that client only. The JSON-RPC handlers tag every job with the
+/// paired client that queued it.
+pub async fn enqueue_prove_as(
+    state: &ProverState,
+    payload: Value,
+    label: Option<String>,
+    network: String,
+    client_id: Option<String>,
+) -> String {
+    let job_id = state.jobs.create_with(label.clone(), JobOptions { client_id, result_ttl_ms: None }).await;
     let st = state.clone();
     let jid = job_id.clone();
     tokio::spawn(async move {
@@ -123,7 +140,10 @@ pub async fn prove_unrecorded(
     label: Option<String>,
     network: String,
 ) -> Result<Value, String> {
-    let job_id = state.jobs.create(label.clone()).await;
+    // Untagged (no client can poll it) and ephemeral: the caller already gets
+    // the proof as this function's return value.
+    let opts = JobOptions { client_id: None, result_ttl_ms: Some(UNRECORDED_RESULT_TTL_MS) };
+    let job_id = state.jobs.create_with(label.clone(), opts).await;
     state.jobs.set_status(&job_id, JobStatus::Proving).await;
     let res = state.prover.prove(ProveRequest { payload, label, network }).await;
     match &res {
@@ -131,4 +151,47 @@ pub async fn prove_unrecorded(
         Err(e) => state.jobs.fail(&job_id, e.clone()).await,
     }
     res.map(|out| out.proof)
+}
+
+/// How long an unrecorded job keeps its result after it finishes: 1 h
+/// (design-48 §5.7). [`Jobs::wipe_ephemeral`] drops it sooner.
+pub const UNRECORDED_RESULT_TTL_MS: u128 = 3_600_000;
+
+/// Queue a proof in the background **without persisting anything**: the
+/// payload and the result never reach [`Storage`], and the job is ephemeral
+/// (its result is dropped [`UNRECORDED_RESULT_TTL_MS`] after it finishes, or
+/// when the wallet locks) and owned by `client_id`. The background counterpart
+/// of [`prove_unrecorded`].
+///
+/// `finish` runs in the background task with the job id and the prover's
+/// outcome (the proof, or the backend's error text, unscrubbed); what it
+/// returns becomes the job's result or error. It is where the caller parses
+/// the proof, scrubs secrets from errors, and (optionally) submits. The
+/// payload is dropped as soon as the prover returns.
+pub async fn enqueue_prove_unrecorded<F, Fut>(
+    state: &ProverState,
+    payload: Value,
+    label: Option<String>,
+    network: String,
+    client_id: Option<String>,
+    finish: F,
+) -> String
+where
+    F: FnOnce(String, Result<Value, String>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Value, JobFailure>> + Send + 'static,
+{
+    let opts = JobOptions { client_id, result_ttl_ms: Some(UNRECORDED_RESULT_TTL_MS) };
+    let job_id = state.jobs.create_with(label.clone(), opts).await;
+    let st = state.clone();
+    let jid = job_id.clone();
+    tokio::spawn(async move {
+        st.jobs.set_status(&jid, JobStatus::Proving).await;
+        let res = st.prover.prove(ProveRequest { payload, label, network }).await;
+        let outcome = finish(jid.clone(), res.map(|out| out.proof)).await;
+        match outcome {
+            Ok(result) => st.jobs.succeed(&jid, result).await,
+            Err(f) => st.jobs.fail_with(&jid, f).await,
+        }
+    });
+    job_id
 }

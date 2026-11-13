@@ -3,7 +3,9 @@
 **Status:** Design agreed 2026-11-13 (§2). Phase 1 part 1 of 3 built (2026-11-13): owner records,
 enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11). Part 2 of 3 built
 (2026-11-13): `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 plan hash and the plan store
-(§11.1). Prove is not built yet.
+(§11.1). Part 3 of 3 built (2026-11-13): `companion_strk20Prove`, unrecorded client-scoped proving
+jobs with retention, `submit: "none" | "account"` (§11.2). Phase 1 (§9) is code-complete; the
+Sepolia live run (§8) has not been done.
 **Issue:** [#48](https://github.com/starknet-innovation/strkd/issues/48)
 **Relates to:** [`strk20-plan.md`](./strk20-plan.md), [`../code/strk20.md`](../code/strk20.md),
 [`../code/wallet-rpc.md`](../code/wallet-rpc.md), and the #49 note on channel-key disclosure
@@ -488,7 +490,12 @@ maintainer decides, because it submits transactions:
 - Verified 2026-11-13: the Sepolia pool's nonce is `0x0` at `latest` and at block 16000000, so it
   is constant. It only affects the invocation hash, not `plan_hash`.
 - Does the native prover fail fast on `INVALID_SIGNATURE`, during execution and before the
-  expensive proving phase?
+  expensive proving phase? Probably: a reverted virtual tx is reported by the prover's runner as
+  "reverted transactions are not supported … revert reason: …" (the #50 trace), which comes from
+  executing the tx, before stwo runs. Not measured. Confirm in the live run (§8, `B < A`) by timing
+  the failed job against a successful one.
+- How the native prover spells the pool's `INVALID_SIGNATURE` in the revert trace (the text, its hex
+  short string, or both). strkd matches either (§11.2); check the live failure's `error` text.
 - Is `get_tx_info().chain_id` inside the virtual OS execution the real chain id? The contract's
   SNIP-12 domain depends on it.
 - A Rust↔Cairo↔starknet.js SNIP-12 vector for `Strk20Plan` (see the krusty #36 history).
@@ -568,3 +575,62 @@ above, this section wins.
   intent, actions, `client_actions_felts`, `plan_hash`, the state snapshot (`user_sk` zeroed), the
   prover kind and submission route (`"none"`) the prompt named, the prompt, and timestamps.
   `PlanStore::get` and `PlanStore::take` (client-bound) are the API part 3 uses.
+
+### 11.2 Implementation notes (phase 1, part 3: prove)
+
+Built on branch `feat/strk20-prove-48`, stacked on part 2. Where the code differs from the text
+above, this section wins.
+
+- **Handler.** `strk20/prove.rs`, `companion_strk20Prove { plan_id, block_number?, signature?,
+  submit?, submitter_address? }`. All of §5.5 runs before a job is queued. The order is: params,
+  plan (`get`), the subject re-resolved through `ctx()` in the caller's scope, `B`, deployed and SRC5
+  at `B`, discovery at `B` and `latest`, staleness and hash re-check, prompt, pool nonce at `B`, then
+  build, sign (accounts only) and `take` in one session lock.
+- **Result.** `{ job_id, status: "queued", plan_id, plan_hash, plan_created_at, block_number,
+  subject, submit, submitter_address?, next }`. The job result is `{ call, proof }` (the
+  `call_and_proof` shape) or, after `submit: "account"`, `{ transaction_hash, submitter_address,
+  call }`.
+- **Signature.** Owners must pass `signature` (`SIGNATURE_REQUIRED`, 114); `[]` is allowed and stays
+  empty. Accounts must not (`SIGNATURE_NOT_ALLOWED`, 114). At most 256 felts. strkd never calls
+  `sign_hash_for` for an owner.
+- **`B`.** Default `head − 12`. `BLOCK_TOO_RECENT` covers both an explicit `B > head − 12` and a
+  default that is still below `plan_block`; the message gives the blocks to wait. There is no
+  separate `BLOCK_TOO_EARLY`: both cases mean "wait". `BLOCK_TOO_OLD` uses a margin of 120 blocks (`PROOF_WINDOW_MARGIN`):
+  `head − B < get_proof_validity_blocks − 120`, read at `latest`. The owner's approval must be in
+  state at `B`: wait about 12 blocks after it lands, or pass `block_number` at or after its block.
+- **Staleness.** `PLAN_STALE` drops the plan, because a moved state never comes back. A changed pool
+  setting is also `PLAN_STALE`. Bound, SRC5 and signature-param errors keep the plan, so the caller
+  can retry. The plan hash re-check (`PLAN_HASH_MISMATCH`, 163) cannot fail through the API (prove
+  takes only a `plan_id`); a unit test exercises it.
+- **Owner changes.** An owner removed between plan and prove, or re-enrolled under another
+  controller, is `OWNER_NOT_ENROLLED` (-32002).
+- **Prompts.** Prove prompts only if the prover kind differs from the plan's or `submit` is
+  `"account"`. The prompt quotes the plan prompt the user approved. The account prompt names the
+  submitter, the pool fee it pays, and that it links the submitter publicly to the owner and the
+  pool. A refused prompt keeps the plan.
+- **Submission.** `submit_from(SubmitTarget, submitter, ...)` generalises `submit_from_account`.
+  `submitter_address` defaults to the plan's account (an owner's controller) and must be in the
+  caller's scope (-32002). `submit: "relay"` is `RELAY_UNSUPPORTED` (-32601).
+- **Jobs.** `prover::enqueue_prove_unrecorded` writes neither the payload nor the result to proof
+  storage. The job is owned by the client and ephemeral: its result is dropped 1 h after it finishes
+  (`result_dropped: "expired"`) or on lock (`"wiped_on_lock"`); the status stays. The lock wipe is a
+  session lock hook that `ServerState::with_prover` installs, so every lock path runs it. A job still
+  running at the lock keeps no result (`WIPED_ON_LOCK`) and does not submit. `prove_unrecorded` (the
+  one-shot methods) is ephemeral and untagged too.
+- **Client scoping for every job.** `companion_prove` and `companion_signAndProve` jobs are now
+  tagged with their client too, and `companion_proveStatus` shows a job only to that client. It is
+  backwards compatible for clients that poll their own jobs (a re-attached client keeps its id).
+  Polling another client's job, which was the bug, now gets "unknown job". The desktop's own
+  untagged jobs are not visible over RPC. `companion_proofActivity` still lists every job's label and
+  status.
+- **Job errors.** `error` starts with the reason, and the job also has `error_reason`.
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account) when the prover's error holds
+  `INVALID_SIGNATURE` or its hex short string; `PROVING_FAILED` otherwise; `WIPED_ON_LOCK`; or the
+  submission error's reason (`SUBMIT_FAILED` when it has none). All pass through `scrub`.
+- **Still exposed, unchanged.** The native prover writes the virtual tx (with `user_sk`) to a temp
+  file for the `snip36` CLI and deletes it afterwards (`native_prover.rs`). The job's background task
+  holds a copy of `user_sk` until it finishes, to scrub errors.
+- **Live run.** `crates/wallet-rpc/examples/strk20_live.rs owner-flow <admin> <owner>
+  register | withdraw <wei> <to> | transfer <wei> <to>` enrols, plans, sends `approve_plan` from the
+  admin, waits until the approval is 12 blocks old, proves with `signature: []` and
+  `submit: "account"`, and polls. It sends transactions and was not run for this PR.
