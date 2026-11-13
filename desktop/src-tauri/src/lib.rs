@@ -821,8 +821,19 @@ async fn proof_activity(state: State<'_, DesktopState>) -> Result<Vec<Activity>,
 /// over the loopback service.
 #[tauri::command]
 async fn get_prover_settings(state: State<'_, DesktopState>) -> Result<ProverSettings, String> {
-    Ok(state.prover.settings.get().await)
+    let mut s = state.prover.settings.get().await;
+    // The testnet screener key is write-only: the UI gets a placeholder.
+    for net in [&mut s.testnet, &mut s.mainnet] {
+        if !net.strk20.screener_key.is_empty() {
+            net.strk20.screener_key = SCREENER_KEY_SET.into();
+        }
+    }
+    Ok(s)
 }
+
+/// What `get_prover_settings` shows instead of a stored screener key, and what
+/// `set_prover_settings` reads as "keep the stored key".
+const SCREENER_KEY_SET: &str = "<stored>";
 
 /// Replace + persist prover settings (backend + remote-prover config). RPC URLs
 /// are NOT taken from the caller — proving shares the wallet's RPC nodes, so we
@@ -836,7 +847,51 @@ async fn set_prover_settings(
     let wallet = crate::settings::load(&state.config_path);
     settings.testnet.rpc_url = wallet.sepolia_rpc;
     settings.mainnet.rpc_url = wallet.mainnet_rpc;
+    let current = state.prover.settings.get().await;
+    if settings.testnet.strk20.screener_key == SCREENER_KEY_SET {
+        settings.testnet.strk20.screener_key = current.testnet.strk20.screener_key;
+    }
+    if settings.mainnet.strk20.screener_key == SCREENER_KEY_SET {
+        settings.mainnet.strk20.screener_key = current.mainnet.strk20.screener_key;
+    }
+    // Pool and URLs well-formed; a local screener key only on testnet (#57).
+    wallet_rpc::strk20::screener::validate(&settings.testnet.strk20, ChainId::Sepolia)?;
+    wallet_rpc::strk20::screener::validate(&settings.mainnet.strk20, ChainId::Mainnet)?;
     state.prover.settings.update(settings).await.map_err(|e| e.to_string())
+}
+
+/// Settings → STRK20 "Check pool": read `pool` on `network`'s node (class hash
+/// against the known privacy-pool class, version, fee, screener public key)
+/// and, when a screener key is given (or `<stored>`), whether it is that
+/// pool's. Returns warnings, never the key.
+#[tauri::command]
+async fn strk20_check_pool(
+    state: State<'_, DesktopState>,
+    network: String,
+    pool: String,
+    screener_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let chain = if network == "mainnet" { ChainId::Mainnet } else { ChainId::Sepolia };
+    let node = state.server.node_for(chain).ok_or("set this network's RPC URL first")?;
+    let pool = match pool.trim() {
+        "" => wallet_rpc::strk20::pool_for(&Default::default(), chain).map_err(|e| e.message())?,
+        p => wallet_core::Felt::from_hex(p).map_err(|_| format!("{p} is not a hex felt address"))?,
+    };
+    let key = match screener_key.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(_) if chain == ChainId::Mainnet => return Err("a local screener key is testnet-only".into()),
+        Some(SCREENER_KEY_SET) => {
+            let stored = state.prover.settings.get().await.testnet.strk20.screener_key;
+            wallet_rpc::strk20::screener::local_key(&prover::Strk20Config { screener_key: stored, ..Default::default() }, chain)
+                .map_err(|e| e.message())?
+        }
+        Some(k) => wallet_rpc::strk20::screener::local_key(
+            &prover::Strk20Config { screener_key: k.to_string(), ..Default::default() },
+            chain,
+        )
+        .map_err(|e| e.message())?,
+    };
+    Ok(wallet_rpc::strk20::screener::pool_info(node.as_ref(), &pool, key.as_ref()).await)
 }
 
 /// Aggregate proof-storage usage (records + bytes).
@@ -1155,7 +1210,8 @@ pub fn run() {
             strk20_balances,
             strk20_register,
             strk20_invoke,
-            strk20_prepare
+            strk20_prepare,
+            strk20_check_pool
         ])
         .build(tauri::generate_context!())
         .expect("error while building strkd desktop")

@@ -87,6 +87,11 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `wallet_strk20Balances` | paired | **yes** | private balance per token, discovered and decrypted locally |
 | `wallet_strk20PrepareInvoke` | paired | **yes** | plan + sign + prove STRK20 actions → `{call, proof}` unsubmitted |
 | `wallet_strk20InvokeTransaction` | paired | **yes** | same, then submit (deposits from the account; private batches via the AVNU relay) → `{transaction_hash}` |
+
+The STRK20 methods use the pool set per network in Settings → STRK20 (default:
+the canonical pool). An optional `pool_address` param only asserts it; a
+mismatch is `114`. Prompts flag a non-canonical pool. See
+[`strk20.md`](./strk20.md#which-pool).
 | `companion_signAndProve` | paired | **yes** | sign the SNIP-36 **virtual tx (Tx A)** + prove it on-device in one call → `{job_id, transaction_hash}`. Requires explicit `resource_bounds` (a virtual tx carries private calldata — never fee-estimate it online). Tx A is **not** proof-carrying; the on-chain verifier tx (Tx B) is broadcast separately via `wallet_addInvokeTransaction` (its calldata is app-specific). See [`prover.md`](./prover.md) |
 
 `wallet_addInvokeTransaction`: `entry_point_selector` may be a name or a `0x…`

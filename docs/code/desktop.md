@@ -124,6 +124,8 @@ tauri's `image-png` feature.
 | `grant_permission(client_id, days)` | grant auto-approval (clamped 1–90 days) |
 | `revoke_permission(client_id)` | revoke a grant immediately |
 | `respond_approval(id, approved)` | resolve a pending approval prompt |
+| `get_prover_settings` / `set_prover_settings` | prover + STRK20 settings (`settings.json`, `0600`); a stored testnet screener key reads back as `<stored>` and is kept when `<stored>` is sent back; `set_prover_settings` validates the STRK20 fields and refuses a mainnet screener key |
+| `strk20_check_pool(network, pool, screener_key?)` | Settings → STRK20 "Check pool": class hash vs the known pool class, version, fee, screener public key, whether the screener key matches; warnings only, never the key |
 
 ## Frontend (`src/`)
 
@@ -164,6 +166,12 @@ the Starknet RPC endpoints (per network) that power broadcasting + fee
 estimation. They persist to `config.json` and `set_settings` rebuilds the node
 **at runtime via `ServerState::set_node`** — no restart. The URLs are IPC-only
 (they may embed an API key) and never exposed over the wallet's HTTP service.
+
+Its **Private balances (STRK20)** section edits each network's pool (empty =
+canonical; a set pool shows a warning that every STRK20 call uses it), deposit
+prover URL, Starkscan/AVNU keys, paymaster URL and, on Sepolia only, a test
+pool's screener key (password field, write-only, with a warning never to enter
+a real screener's key). **Check pool** runs `strk20_check_pool`.
 
 ## Build / run
 

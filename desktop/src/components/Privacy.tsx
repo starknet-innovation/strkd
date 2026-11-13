@@ -171,7 +171,7 @@ export function Privacy({ status }: { status: Status | null }) {
           </div>
           <p className="muted small">
             {kind === "shield" &&
-              "Moves public STRK from this account into the pool. Deposits are public and screened by a remote prover (see Settings)."}
+              "Moves public STRK from this account into the pool. Deposits are public and screened: by a remote prover, or on Sepolia by a test pool's screener key (see Settings)."}
             {kind === "send" &&
               "Sends shielded STRK to another registered account. Relayed by AVNU if you set a key; otherwise prepare it and submit from another account."}
             {kind === "unshield" &&

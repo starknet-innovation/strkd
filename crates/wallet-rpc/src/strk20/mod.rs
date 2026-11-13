@@ -14,10 +14,12 @@
 //! proof invocation, and never persisted, logged or returned. Proofs go through
 //! [`prover::prove_unrecorded`], which keeps the invocation (and so the key) off
 //! disk. Only a deposit's invocation leaves the machine, to the screening prover
-//! the approval prompt names.
+//! the approval prompt names, unless a testnet pool's screener key is set
+//! ([`screener`]): then the deposit is proved here too.
 
 pub mod paymaster;
 pub mod remote;
+pub mod screener;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -236,6 +238,16 @@ async fn ctx(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<
         None => prover::Strk20Config::default(),
     };
     let pool = pool_for(&cfg, chain)?;
+    // The pool is the user's choice (Settings → STRK20), never the caller's: a
+    // `pool_address` param only asserts which pool the caller expects (#57).
+    if let Some(p) = opt_param_str(params, "pool_address") {
+        if Felt::from_hex(&p).map_err(|_| invalid("pool_address: expected a felt"))? != pool {
+            return Err(invalid(format!(
+                "pool_address {p} is not this network's STRK20 pool ({pool:#x}); the pool is set by the user in \
+                 Settings → STRK20"
+            )));
+        }
+    }
     Ok(Ctx { account, user, chain, pool, node, cfg })
 }
 
@@ -246,6 +258,15 @@ impl Ctx {
 
     async fn viewing_key(&self, state: &ServerState) -> Result<Felt, WalletRpcError> {
         state.session.lock().await.strk20_viewing_key_for(&self.account, self.chain, &self.pool)
+    }
+
+    /// The pool, for approval prompts: flagged when it isn't the canonical one.
+    fn pool_label(&self) -> String {
+        if pool_for(&prover::Strk20Config::default(), self.chain).ok() == Some(self.pool) {
+            format!("pool {:#x}", self.pool)
+        } else {
+            format!("NON-CANONICAL pool {:#x}, set in Settings → STRK20", self.pool)
+        }
     }
 }
 
@@ -331,6 +352,9 @@ fn describe(intent: &Intent) -> String {
 enum Proving {
     Local,
     Remote(remote::DepositProver),
+    /// A deposit proved here and attested with the testnet pool's screener key
+    /// from Settings ([`screener`]).
+    LocalScreened(Felt),
 }
 
 struct Prepared {
@@ -409,19 +433,24 @@ async fn prepare(
         Proving::Local if prover.prover.kind() == "native" => "proved on this machine".to_string(),
         Proving::Local => "proved by your configured remote prover, which will see your viewing key".to_string(),
         Proving::Remote(p) => format!("proved by {}, which screens the depositor and will see your viewing key", p.describe()),
+        Proving::LocalScreened(sk) => {
+            screener::check_matches_pool(ctx.node.as_ref(), &ctx.pool, sk).await?;
+            let by = if prover.prover.kind() == "native" { "proved on this machine" } else { "proved by your configured remote prover" };
+            format!("{by}, screened with the test screener key from Settings → STRK20 (testnet only)")
+        }
     };
     caller
         .approve(
             state,
             method,
             format!(
-                "STRK20 on {} from {}: {}. {} ({} action(s), pool {:#x}); {}.",
+                "STRK20 on {} from {}: {}. {} ({} action(s), {}); {}.",
                 chain_name(ctx.chain),
                 ctx.account.address,
                 describe(intent),
                 where_proved,
                 plan.actions.len(),
-                ctx.pool,
+                ctx.pool_label(),
                 submission,
             ),
         )
@@ -437,8 +466,12 @@ async fn prepare(
     let signature = state.session.lock().await.sign_hash_for(&ctx.account, &invocation.hash())?;
     let tx = invocation.to_rpc_json(&signature);
 
+    let local_screener = match proving {
+        Proving::LocalScreened(sk) => Some(sk),
+        _ => None,
+    };
     let result = match proving {
-        Proving::Local => prover::prove_unrecorded(
+        Proving::Local | Proving::LocalScreened(_) => prover::prove_unrecorded(
             prover,
             json!({ "transaction": tx, "block_number": block }),
             Some(format!("STRK20 {method}")),
@@ -451,7 +484,12 @@ async fn prepare(
             _ => WalletRpcError::Unknown(scrub(&e.to_string(), user_sk)),
         })?,
     };
-    let proved = remote::parse_result(&result, &ctx.pool).map_err(|e| WalletRpcError::Unknown(scrub(&e, user_sk)))?;
+    let mut proved = remote::parse_result(&result, &ctx.pool).map_err(|e| WalletRpcError::Unknown(scrub(&e, user_sk)))?;
+    if let Some(sk) = local_screener {
+        // Signed after proving: the attestation is not proof-bound, and it
+        // expires 300 s after `issued_at`.
+        proved.screening = Some(screener::attest(ctx.node.as_ref(), ctx.chain, ctx.user, &sk).await?);
+    }
     let call = strk20::apply::apply_actions_call(ctx.pool, &proved.output, proved.screening.as_ref()).map_err(map_strk20)?;
     Ok(Prepared { call, proved })
 }
@@ -478,6 +516,9 @@ fn has_deposit(actions: &[Action]) -> bool {
 
 fn proving_for(ctx: &Ctx, actions: &[Action]) -> Result<Proving, WalletRpcError> {
     if has_deposit(actions) {
+        if let Some(sk) = screener::local_key(&ctx.cfg, ctx.chain)? {
+            return Ok(Proving::LocalScreened(sk));
+        }
         remote::DepositProver::resolve(&ctx.cfg, ctx.chain).map(Proving::Remote).map_err(WalletRpcError::Precondition)
     } else {
         Ok(Proving::Local)
@@ -595,10 +636,11 @@ pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -
             state,
             "wallet_strk20Balances",
             format!(
-                "Reveal the private (STRK20) balance of {} token(s) held by {} on {}.",
+                "Reveal the private (STRK20) balance of {} token(s) held by {} on {} ({}).",
                 tokens.len(),
                 ctx.account.address,
-                chain_name(ctx.chain)
+                chain_name(ctx.chain),
+                ctx.pool_label()
             ),
         )
         .await?;

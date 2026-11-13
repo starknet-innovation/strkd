@@ -7,6 +7,7 @@
 //! cargo run -p wallet-rpc --example strk20_live -- prepare-transfer <from> <to> <amount_wei>
 //! cargo run -p wallet-rpc --example strk20_live -- invoke <from> <json-actions>
 //! cargo run -p wallet-rpc --example strk20_live -- prepare-submit <from> <to|0x…> <amount_wei> <submitter>
+//! STRK20_SCREENER_KEY=0xCAFEBABE cargo run -p wallet-rpc --example strk20_live -- prepare-deposit <from> <amount_wei>
 //! ```
 //!
 //! `<account>`, `<from>`, `<to>` are test-seed user account indices (the
@@ -15,6 +16,12 @@
 //! (`STRK20_POOL` overrides). Proving uses the bundled native prover:
 //! `STRKD_SNIP36_BIN` / `STRKD_SNIP36_WORK_DIR` must point at it (the desktop
 //! app's `resources/prover`). Approvals are automatic.
+//!
+//! `prepare-deposit` exercises the testnet local screener (#57): it prepares a
+//! deposit (proved here, attested with `STRK20_SCREENER_KEY`, the test pool's
+//! public `0xCAFEBABE` test key) and then only **estimates** the account's
+//! approve + `apply_actions` with the proof attached. Nothing is submitted; the
+//! estimate executes `apply_actions`, so a bad attestation reverts there.
 
 use std::sync::Arc;
 
@@ -68,6 +75,7 @@ async fn main() {
     settings.testnet.strk20.pool = std::env::var("STRK20_POOL").unwrap_or_else(|_| TEST_POOL.into());
     settings.testnet.strk20.avnu_api_key = std::env::var("AVNU_API_KEY").unwrap_or_default();
     settings.testnet.strk20.deposit_prover_url = std::env::var("DEPOSIT_PROVER_URL").unwrap_or_default();
+    settings.testnet.strk20.screener_key = std::env::var("STRK20_SCREENER_KEY").unwrap_or_default();
     prover.settings.update(settings).await.unwrap();
 
     let mut state = ServerState::new(Arc::new(Mutex::new(session)), Arc::new(AutoApprover(Decision::Approve)))
@@ -129,6 +137,56 @@ async fn main() {
                 )
                 .await
             }
+        }
+        Some("prepare-deposit") => {
+            let (from, amount): (u32, u128) = (args[1].parse().unwrap(), args[2].parse().unwrap());
+            let mut prepared = rpc(
+                &state,
+                t,
+                "wallet_strk20PrepareInvoke",
+                json!({ "account_address": address(from),
+                        "actions": [{ "type": "deposit", "token": STRK, "amount": format!("{amount:#x}") }] }),
+            )
+            .await;
+            let r = prepared["result"].clone();
+            if !r.is_null() {
+                // Estimate (read-only) what InvokeTransaction would submit: approve + apply_actions.
+                let felt = |v: &Value| wallet_core::Felt::from_hex(v.as_str().unwrap()).unwrap();
+                let felts = |v: &Value| v.as_array().unwrap().iter().map(felt).collect::<Vec<_>>();
+                let pool = felt(&r["call"]["contract_address"]);
+                let user = wallet_core::Felt::from_hex(&address(from)).unwrap();
+                let calls = vec![
+                    wallet_core::Call {
+                        to: felt(&json!(STRK)),
+                        selector: wallet_core::get_selector_from_name("approve"),
+                        calldata: vec![pool, wallet_core::Felt::from(amount), wallet_core::Felt::ZERO],
+                    },
+                    wallet_core::Call {
+                        to: pool,
+                        selector: wallet_core::get_selector_from_name("apply_actions"),
+                        calldata: felts(&r["call"]["calldata"]),
+                    },
+                ];
+                let node = HttpStarknetRpc::new(RPC);
+                use wallet_rpc::StarknetRpc;
+                let nonce = node.get_nonce(&user).await.unwrap();
+                let est = node
+                    .estimate_invoke_with_proof(
+                        &user,
+                        &wallet_core::encode_calls(&calls),
+                        &nonce,
+                        &felts(&r["proof"]["proof_facts"]),
+                        r["proof"]["data"].as_str().unwrap(),
+                    )
+                    .await;
+                prepared["estimate"] = match est {
+                    Ok(b) => json!(format!("ok: {b:?}")),
+                    Err(e) => json!(format!("error: {e}")),
+                };
+                let n = r["proof"]["data"].as_str().map(str::len).unwrap_or(0);
+                prepared["result"]["proof"]["data"] = json!(format!("<{n} base64 chars>"));
+            }
+            prepared
         }
         Some("invoke") => {
             let from: u32 = args[1].parse().unwrap();

@@ -25,8 +25,8 @@ pub use class_hash::{SierraClass, SierraEntryPoint, SierraEntryPoints, CONTRACT_
 pub use domain::{Domain, AGENT_ACCOUNT_INDEX, STARKNET_COIN_TYPE, USER_ACCOUNT_INDEX};
 pub use error::{CoreError, Result};
 pub use keys::{
-    account_address, deployment_data, oz_address, public_key, sign_hash, sign_typed_data,
-    strk20_viewing_key, typed_data_message_hash,
+    account_address, deployment_data, oz_address, public_key, public_key_of_key, sign_hash,
+    sign_hash_with_key, sign_typed_data, strk20_viewing_key, typed_data_message_hash,
 };
 pub use tx::{
     declare_v3_hash, encode_calls, get_selector_from_name, invoke_v3_hash, resolve_selector,
