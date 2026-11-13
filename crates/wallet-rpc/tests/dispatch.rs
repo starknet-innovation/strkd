@@ -1888,3 +1888,177 @@ async fn sign_and_prove_rejected_maps_to_113() {
     let resp = call(&state, Some(&token), "companion_signAndProve", invoke_params(&address)).await;
     assert_eq!(err_code(&resp), 113); // USER_REFUSED
 }
+
+// ── STRK20 proving-block preconditions ───────────────────────────────────────
+
+/// A node for the STRK20 register path: the pool reports the account as not
+/// registered, the chain head is `head`, and the account has a class from
+/// block `deployed_from` on. `block_error` makes `getClassHashAt` fail with an
+/// RPC error other than "contract not found".
+struct Strk20Node {
+    head: u64,
+    deployed_from: u64,
+    block_error: bool,
+    /// The `block_id` of each `getClassHashAt` call.
+    class_hash_queries: std::sync::Mutex<Vec<Value>>,
+}
+
+#[async_trait]
+impl StarknetRpc for Strk20Node {
+    async fn raw(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        match method {
+            "starknet_blockNumber" => Ok(json!(self.head)),
+            // Every pool view (`get_public_key`, ...) reads zero: not registered.
+            "starknet_call" => Ok(json!(["0x0"])),
+            "starknet_getClassHashAt" => {
+                self.class_hash_queries.lock().unwrap().push(params["block_id"].clone());
+                if self.block_error {
+                    return Err(NodeError::Rpc(r#"{"code":24,"message":"Block not found"}"#.into()));
+                }
+                match params["block_id"]["block_number"].as_u64() {
+                    Some(b) if b >= self.deployed_from => Ok(json!("0x1234")),
+                    _ => Err(NodeError::Rpc(r#"{"code":20,"message":"Contract not found"}"#.into())),
+                }
+            }
+            m => Err(NodeError::Rpc(format!("{m}: unexpected in this test"))),
+        }
+    }
+    async fn get_nonce(&self, _: &Felt) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_invoke(&self, _: &Felt, _: &[Felt], _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_invoke(
+        &self,
+        _: &Felt,
+        _: &[Felt],
+        _: &[Felt],
+        _: &Felt,
+        _: &FeeBounds,
+        _: &[Felt],
+        _: Option<&str>,
+    ) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn is_deployed(&self, _: &Felt) -> Result<bool, NodeError> {
+        unimplemented!()
+    }
+    async fn balance_of(&self, _: &Felt, _: &Felt) -> Result<u128, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_deploy_account(
+        &self,
+        _: &Felt,
+        _: &Felt,
+        _: &[Felt],
+        _: &Felt,
+    ) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_deploy_account(
+        &self,
+        _: &Felt,
+        _: &[Felt],
+        _: &Felt,
+        _: &[Felt],
+        _: &FeeBounds,
+    ) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_declare(
+        &self,
+        _: &Felt,
+        _: &Felt,
+        _: &Value,
+        _: &Felt,
+    ) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_declare(
+        &self,
+        _: &Felt,
+        _: &Felt,
+        _: &Value,
+        _: &[Felt],
+        _: &Felt,
+        _: &FeeBounds,
+    ) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+}
+
+fn strk20_node(head: u64, deployed_from: u64, block_error: bool) -> Arc<Strk20Node> {
+    Arc::new(Strk20Node {
+        head,
+        deployed_from,
+        block_error,
+        class_hash_queries: Default::default(),
+    })
+}
+
+/// Run `companion_strk20Register` against `node`, with an approver that
+/// refuses the register prompt: a call that passes the preconditions stops at
+/// the prompt with 113, before anything is proved.
+async fn strk20_register_with(tag: &str, node: Arc<Strk20Node>) -> Response {
+    let (approver, mut rx) = ChannelApprover::new(16);
+    tokio::spawn(async move {
+        while let Some(pending) = rx.recv().await {
+            let decision = if pending.request.method == "companion_strk20Register" {
+                Decision::Reject
+            } else {
+                Decision::Approve
+            };
+            let _ = pending.respond.send(decision);
+        }
+    });
+    let dir = std::env::temp_dir().join(format!("strkd-rpc-strk20-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pstate = Arc::new(prover::ProverState {
+        prover: Arc::new(StubProver),
+        jobs: Arc::new(prover::Jobs::new(0)),
+        settings: Arc::new(prover::SettingsStore::load(dir.join("settings.json"))),
+        storage: Arc::new(prover::Storage::new(dir.join("storage"))),
+    });
+    let state = Arc::new(
+        ServerState::new(Arc::new(Mutex::new(make_session(false))), Arc::new(approver))
+            .with_prover(pstate),
+    );
+    state.set_node(ChainId::Sepolia, Some(node));
+    let token = pair(&state, "app").await;
+    call(&state, Some(&token), "companion_strk20Register", json!({})).await
+}
+
+/// #50: registering right after deploying the account. Proofs run 12 blocks
+/// behind the head, where the account doesn't exist yet: the call says so up
+/// front (-32006), before prompting, instead of failing in the prover.
+#[tokio::test]
+async fn strk20_register_refuses_an_account_not_deployed_at_the_proving_block() {
+    // Deployed at block 995; head 1000 → proving block 988.
+    let node = strk20_node(1000, 995, false);
+    let resp = strk20_register_with("undeployed", node.clone()).await;
+    assert_eq!(err_code(&resp), -32006, "{:?}", resp.error);
+    let msg = resp.error.unwrap().message;
+    assert!(msg.contains("not deployed at reference block 988"), "{msg}");
+    assert!(msg.contains("12 blocks behind") && msg.contains("about a minute"), "{msg}");
+    assert_eq!(
+        *node.class_hash_queries.lock().unwrap(),
+        vec![json!({ "block_number": 988 })]
+    );
+}
+
+/// Deployed at the proving block: the check passes and the call reaches the
+/// approval prompt (refused here, so nothing is proved).
+#[tokio::test]
+async fn strk20_register_passes_the_check_once_deployed_at_the_proving_block() {
+    let resp = strk20_register_with("deployed", strk20_node(1000, 988, false)).await;
+    assert_eq!(err_code(&resp), 113, "{:?}", resp.error);
+}
+
+/// Any other failure of that lookup is a node error, not a deploy-timing hint.
+#[tokio::test]
+async fn strk20_register_reports_other_node_errors_as_node_errors() {
+    let resp = strk20_register_with("node-error", strk20_node(1000, 0, true)).await;
+    assert_eq!(err_code(&resp), -32004, "{:?}", resp.error);
+    assert!(resp.error.unwrap().message.contains("Block not found"));
+}

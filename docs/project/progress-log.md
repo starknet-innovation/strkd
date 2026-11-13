@@ -8,6 +8,32 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 register right after deploy (#50)
+
+**Did**
+- STRK20 proofs run at head − 12 (`PROVING_LAG`). An account deployed within
+  the last 12 blocks doesn't exist there, so `companion_strk20Register` right
+  after `companion_deployAccount` reverted in the prover, and the 300-char cut
+  of the prover's stderr hid the revert reason.
+- `strk20::prepare` now calls `starknet_getClassHashAt` at the proving block
+  before the approval prompt. `CONTRACT_NOT_FOUND` (code 20) returns `-32006`
+  "account … is not deployed at reference block N … retry in about a minute";
+  any other lookup failure stays a node error (`-32004`).
+- `classify_prover_error` recognises "Reverted transactions are not supported"
+  and returns the full revert reason. Raw prover errors are bounded at about
+  4,000 chars, keeping head and tail; the cuts never split a hex value, so the
+  wallet-rpc viewing-key scrub still matches whole values.
+
+**Verify**
+- `cargo test --locked -p prover -p wallet-rpc` → all green (3 new dispatch
+  tests `strk20_register_*`, 3 new `snip36` tests).
+- `cargo clippy --locked -p prover -p wallet-rpc --all-targets -- -D warnings`.
+
+**Notes / caveats**
+- Not live-tested: no transaction was submitted for this fix.
+
+---
+
 ## 2026-11-13 — Prover pin v1.4.2 (PROOF1 → V2 / PROOF2)
 
 **Did**
