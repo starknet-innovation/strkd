@@ -500,16 +500,29 @@ maintainer decides, because it submits transactions:
   signature: Span<felt252>) -> felt252`, as in the §5.3 sketch.
 - Verified 2026-11-13: the Sepolia pool's nonce is `0x0` at `latest` and at block 16000000, so it
   is constant. It only affects the invocation hash, not `plan_hash`.
-- Does the native prover fail fast on `INVALID_SIGNATURE`, during execution and before the
-  expensive proving phase? Probably: a reverted virtual tx is reported by the prover's runner as
-  "reverted transactions are not supported … revert reason: …" (the #50 trace), which comes from
-  executing the tx, before stwo runs. Not measured. Confirm in the live run (§8, `B < A`) by timing
-  the failed job against a successful one.
-- How the native prover spells the pool's `INVALID_SIGNATURE` in the revert trace (the text, its hex
-  short string, or both). strkd matches either (§11.2); check the live failure's `error` text.
-- Is `get_tx_info().chain_id` inside the virtual OS execution the real chain id? The contract's
-  SNIP-12 domain depends on it.
-- A Rust↔Cairo↔starknet.js SNIP-12 vector for `Strk20Plan` (see the krusty #36 history).
+- Verified live 2026-11-13 (Sepolia, test pool `0x03016a…6323`, owner contract
+  `0x01f03e…27f4`; progress log "STRK20 #48 live test"): **the native prover fails fast on
+  `INVALID_SIGNATURE`.** Three rejected owner jobs (register approved at `A` but proved at
+  `B = A − 1`; register never approved; withdraw never approved) failed 3.3–3.6 s after the job
+  started. The approved register (proved, then submitted) took 14.3 s, and an approved withdraw
+  proved without submitting took 12.9 s. The rejection comes from executing the virtual tx, before
+  stwo runs.
+- Verified live 2026-11-13: the native prover's error holds **both** spellings: the text
+  `INVALID_SIGNATURE` and its hex short string, after strkd's own "the transaction reverted while
+  it was proved" prefix. (This was read through a local, uncommitted check that wrote only three
+  booleans, because strkd no longer echoes prover output.) strkd reports
+  `error_reason: "OWNER_SIGNATURE_REJECTED"` with the fixed message "the pool's signature check
+  failed (INVALID_SIGNATURE) when the prover executed the batch: the owner contract did not
+  validate the batch at reference block `B` …".
+- Verified live 2026-11-13: **`get_tx_info().chain_id` inside the virtual OS is the real chain
+  id.** The owner contract's `is_custom_signature_valid` builds the SNIP-12 domain from
+  `tx_info.chain_id` and returns `VALIDATED` only for an approved hash. The only hashes approved were
+  ones strkd computed for `SN_SEPOLIA`. An approved register (`B = A + 1`) and an approved withdraw
+  both proved, and the register was accepted on-chain. If the chain id inside the virtual OS were
+  anything else, the contract would have computed a different hash, found it unapproved, and
+  rejected both.
+- Done in #53: a Rust↔Cairo↔starknet.js SNIP-12 vector for `Strk20Plan`
+  (`crates/wallet-core/tests/fixtures/strk20-plan-vector.json`).
 - AVNU relay: quote lifetime and how to fix the fee withdraw at plan time (phase 2).
 - **Can an owner contract publish a secret through an L2→L1 message?** Checked against the deployed
   class (starknet-privacy `4026da7`), 2026-11-13. **No, as far as the pool and strkd go.**
