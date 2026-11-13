@@ -331,7 +331,9 @@ async fn check_nonce(http: &reqwest::Client, rpc: &str, tx: &Value, block: u64) 
 /// Runs the CLI in its own process group (unix) with a timeout
 /// (`STRKD_PROVE_TIMEOUT_SECS`, default 900): on timeout or failure the whole
 /// group is killed, so the runner the CLI spawns can't outlive the job and leak
-/// its port. Recognized failures get a friendly message via `classify_prover_error`.
+/// its port. The group is also killed if this future is dropped while the CLI
+/// runs (a cancelled job: the wallet locked). Recognized failures get a
+/// friendly message via `classify_prover_error`.
 pub(crate) async fn run_and_parse(
     mut cmd: tokio::process::Command,
     dir: &std::path::Path,
@@ -356,8 +358,15 @@ pub(crate) async fn run_and_parse(
             unsafe { libc::kill(-pg, libc::SIGKILL) };
         }
     };
+    // Kills the group if this future is dropped mid-wait (cancellation);
+    // disarmed once the CLI has exited, after which the paths below decide.
+    #[cfg(unix)]
+    let mut on_drop = GroupKiller(pgid);
 
-    let output = match tokio::time::timeout(std::time::Duration::from_secs(secs), child.wait_with_output()).await {
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(secs), child.wait_with_output()).await;
+    #[cfg(unix)]
+    on_drop.disarm();
+    let output = match waited {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(format!("prover wait failed: {e}")),
         Err(_) => {
@@ -376,9 +385,70 @@ pub(crate) async fn run_and_parse(
     parse_outputs(dir)
 }
 
+/// SIGKILLs a process group when dropped, unless disarmed.
+#[cfg(unix)]
+struct GroupKiller(Option<i32>);
+
+#[cfg(unix)]
+impl GroupKiller {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for GroupKiller {
+    fn drop(&mut self) {
+        if let Some(pg) = self.0 {
+            // SAFETY: plain syscall on a process group we spawned and still own
+            // (its leader has not been reaped yet: we were still waiting on it).
+            unsafe { libc::kill(-pg, libc::SIGKILL) };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{bounded, classify_prover_error, MAX_PROVER_ERROR_CHARS};
+
+    /// Dropping `run_and_parse` mid-run (a cancelled job) kills the CLI and
+    /// the children it spawned (the runner), not just the direct child.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_running_prove_kills_its_process_group() {
+        let dir = std::env::temp_dir().join(format!("strkd-snip36-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("grandchild.pid");
+        let mut cmd = tokio::process::Command::new("sh");
+        // A background grandchild (the "runner") plus a waiting parent.
+        cmd.arg("-c").arg(format!("sleep 60 & echo $! > {}; wait", pidfile.display()));
+        let run = super::run_and_parse(cmd, &dir, "test");
+        let pid = tokio::select! {
+            _ = run => panic!("the command should still be running"),
+            pid = async {
+                loop {
+                    if let Some(p) = std::fs::read_to_string(&pidfile).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
+                        break p;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => pid,
+        };
+        // `run` was dropped by the select. The grandchild must be gone.
+        let mut gone = false;
+        for _ in 0..200 {
+            // SAFETY: signal 0 only probes for the process.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            if !alive {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone, "grandchild {pid} survived the cancelled prove");
+    }
 
     #[test]
     fn unsupported_protocol_version_is_actionable() {

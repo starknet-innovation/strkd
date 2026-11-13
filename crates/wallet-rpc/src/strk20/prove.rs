@@ -25,8 +25,9 @@ use wallet_core::{address_hex, get_selector_from_name, AccountRef, ChainId, Felt
 use super::plan::{client_id, plan_hash, StoredPlan};
 use super::{
     block_number, call_and_proof, chain_name, ctx, describe, discover_state, ensure_deployed_at,
-    hex, invalid, map_strk20, node_err, owners, pool_fee_at, remote, same_state, scrub,
-    submit_from, where_proved, Caller, Ctx, Prepared, Proving, Subject, SubmitTarget, PROVING_LAG,
+    hex, invalid, map_strk20, node_err, owners, pool_fee_at, prover_identity, remote,
+    safe_prover_error, same_state, scrub, submit_from, where_proved, Caller, Ctx, Prepared,
+    Proving, Subject, SubmitGuard, SubmitTarget, PROVING_LAG,
 };
 use crate::dispatch::{normalize_address, param_str, prover_network, prover_or_err, ServerState};
 use crate::error::WalletRpcError;
@@ -67,7 +68,7 @@ struct Meta {
     pool: Felt,
     plan_block: u64,
     intent: Intent,
-    prover_kind: String,
+    prover_id: String,
     submission: &'static str,
     plan_hash: Felt,
     /// The plan prompt as the user saw it, quoted when prove prompts again.
@@ -85,7 +86,7 @@ impl Meta {
             pool: p.pool,
             plan_block: p.plan_block,
             intent: p.intent.clone(),
-            prover_kind: p.prover_kind.clone(),
+            prover_id: p.prover_id.clone(),
             submission: p.submission,
             plan_hash: p.plan_hash,
             plan_prompt: p.prompt.clone(),
@@ -168,7 +169,8 @@ fn reference_block(
 ) -> Result<u64, WalletRpcError> {
     let newest = head.saturating_sub(PROVING_LAG);
     let too_recent = |b: u64| {
-        let wait = (b + PROVING_LAG).saturating_sub(head);
+        // `b` can be any caller-supplied u64.
+        let wait = b.saturating_add(PROVING_LAG).saturating_sub(head);
         WalletRpcError::Precondition(format!(
             "reference block {b} is less than {PROVING_LAG} blocks behind the chain head ({head}): proofs read \
              state at least {PROVING_LAG} blocks back. Retry in {wait} block(s)."
@@ -303,7 +305,7 @@ fn prove_prompt(
     plan_id: &str,
     ctx: &Ctx,
     meta: &Meta,
-    prover_kind: &str,
+    prover_id: &str,
     where_proved: &str,
     submitter: Option<&AccountRef>,
     pool_fee: u128,
@@ -317,10 +319,10 @@ fn prove_prompt(
         chain_name(ctx.chain),
         describe(&meta.intent),
     );
-    if prover_kind != meta.prover_kind {
+    if prover_id != meta.prover_id {
         text.push_str(&format!(
-            " The prover changed since the plan was approved (then: {}, now: {prover_kind}).",
-            meta.prover_kind
+            " The prover changed since the plan was approved (then: {}, now: {prover_id}).",
+            meta.prover_id
         ));
     }
     match submitter {
@@ -357,42 +359,17 @@ fn failure(reason: &str, message: String) -> prover::JobFailure {
     }
 }
 
-/// `INVALID_SIGNATURE` as a Cairo short string, as a prover revert trace
-/// spells it in hex (`0x494e56414c49445f5349474e4154555245`).
-const INVALID_SIGNATURE_HEX: &str = "494e56414c49445f5349474e4154555245";
-
-/// Whether a prover error says the pool's signature check failed.
-fn is_invalid_signature(text: &str) -> bool {
-    text.contains("INVALID_SIGNATURE") || text.to_ascii_lowercase().contains(INVALID_SIGNATURE_HEX)
-}
-
-/// A prover error as a job failure, scrubbed of `user_sk`.
-fn prover_failure(err: &str, user_sk: Felt, owner: bool, block: u64) -> prover::JobFailure {
-    let text = scrub(err, user_sk);
-    if is_invalid_signature(&text) {
-        let (reason, why) = if owner {
-            (
-                "OWNER_SIGNATURE_REJECTED",
-                format!(
-                    "the owner contract did not validate the batch at reference block {block}: it had not approved \
-                     plan_hash at or before that block, or the signature was not one it accepts"
-                ),
-            )
-        } else {
-            (
-                "INVALID_SIGNATURE",
-                "the account's signature was not accepted".to_string(),
-            )
-        };
-        return failure(
-            reason,
-            format!(
-                "the pool's signature check failed (INVALID_SIGNATURE) when the prover executed the batch: {why}. \
-                 The plan was consumed: make a new plan. Prover output: {text}"
-            ),
-        );
-    }
-    failure("PROVING_FAILED", format!("proving failed: {text}"))
+/// A prover error as a job failure: a reason and fixed text, never the
+/// prover's own output (see [`safe_prover_error`]).
+fn prover_failure(err: &str, owner: bool, block: u64) -> prover::JobFailure {
+    let (reason, message) = safe_prover_error(err, owner, block);
+    let message = match reason {
+        "OWNER_SIGNATURE_REJECTED" | "INVALID_SIGNATURE" => {
+            format!("{message}. The plan was consumed: make a new plan.")
+        }
+        _ => message,
+    };
+    failure(reason, message)
 }
 
 // ── the handler ──────────────────────────────────────────────────────────────
@@ -503,9 +480,9 @@ pub async fn prove(
         Submit::Account => Some(resolve_submitter(state, caller, submitter_param, &ctx).await?),
         Submit::None => None,
     };
-    let prover_kind = prover.prover.kind();
+    let prover_id = prover_identity(prover, ctx.chain).await;
     let submission = submit.as_str();
-    if prover_kind != meta.prover_kind || submission != meta.submission {
+    if prover_id != meta.prover_id || submission != meta.submission {
         let fee = match submitter {
             Some(_) => pool_fee_at(&ctx.node, ctx.pool).await?,
             None => 0,
@@ -514,7 +491,7 @@ pub async fn prove(
             &plan_id,
             &ctx,
             &meta,
-            prover_kind,
+            &prover_id,
             &where_proved(prover, &Proving::Local),
             submitter.as_ref(),
             fee,
@@ -565,35 +542,41 @@ pub async fn prove(
     let pool = ctx.pool;
     let owner = meta.is_owner();
     let jobs = prover.jobs.clone();
+    let scope = caller.scope();
     let route = submitter.clone().map(|s| {
         let target = SubmitTarget {
             session: state.session.clone(),
             node: ctx.node.clone(),
             chain: ctx.chain,
             pool,
+            guard: None,
         };
         (target, s)
     });
     let finish = move |job_id: String, res: Result<Value, String>| async move {
-        let result = res.map_err(|e| prover_failure(&e, user_sk, owner, block))?;
-        let proved = remote::parse_result(&result, &pool).map_err(|e| {
+        // `user_sk` stays in this task only to scrub submission errors.
+        let result = res.map_err(|e| prover_failure(&e, owner, block))?;
+        let proved = remote::parse_result(&result, &pool).map_err(|_| {
             failure(
                 "PROVING_FAILED",
-                scrub(&format!("unexpected prover result: {e}"), user_sk),
+                "the prover's result could not be read (its text is withheld)".into(),
             )
         })?;
         let call = strk20::apply::apply_actions_call(pool, &proved.output, None)
             .map_err(|e| failure("PROVING_FAILED", scrub(&e.to_string(), user_sk)))?;
         let prepared = Prepared { call, proved };
-        let Some((target, submitter)) = route else {
+        let Some((mut target, submitter)) = route else {
             return Ok(call_and_proof(&prepared, false));
         };
-        if jobs.is_wiped(&job_id) {
-            return Err(failure(
-                "WIPED_ON_LOCK",
-                "the wallet locked while this job ran, so the batch was not submitted".into(),
-            ));
-        }
+        // Checked here, and again under the session lock right before
+        // signing (a lock and a quick unlock while the node is queried).
+        let guard = SubmitGuard {
+            jobs: jobs.clone(),
+            job_id,
+            scope,
+        };
+        guard.check_wiped().map_err(|e| failure("WIPED_ON_LOCK", e_text(&e)))?;
+        target.guard = Some(guard);
         let hash = submit_from(&target, &submitter, &prepared, &[])
             .await
             .map_err(|e| {
@@ -644,6 +627,15 @@ pub async fn prove(
         out["submitter_address"] = json!(s.address);
     }
     Ok(out)
+}
+
+/// An error's message without the `REASON: ` prefix `with_reason` adds.
+fn e_text(e: &WalletRpcError) -> String {
+    let m = e.message();
+    match e.reason() {
+        Some(r) => m.strip_prefix(&format!("{r}: ")).unwrap_or(&m).to_string(),
+        None => m,
+    }
 }
 
 /// A discovery error, scrubbed of `user_sk` (node errors quote calldata).
@@ -700,28 +692,35 @@ mod tests {
     }
 
     #[test]
-    fn invalid_signature_is_recognised_in_text_and_hex() {
-        assert!(is_invalid_signature(
-            "revert reason: ... ('INVALID_SIGNATURE')"
-        ));
-        assert!(is_invalid_signature("0x494E56414C49445F5349474E4154555245"));
-        assert!(!is_invalid_signature("transaction too large to prove"));
+    fn reference_block_never_overflows_on_a_huge_block_number() {
+        let e = reference_block(1000, Some(u64::MAX), 900, 450).unwrap_err();
+        assert_eq!(e.reason(), Some("BLOCK_TOO_RECENT"));
+        assert!(e.message().contains(&format!("Retry in {} block", u64::MAX - 1000)), "{}", e.message());
+        let e = reference_block(5, Some(u64::MAX - 3), 0, 450).unwrap_err();
+        assert_eq!(e.reason(), Some("BLOCK_TOO_RECENT"));
+    }
+
+    #[test]
+    fn prover_failures_carry_a_reason_and_no_prover_text() {
         let sk =
             Felt::from_hex("0x2f6c0b3c1a9e5d4f8b7a6e5d4c3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29")
                 .unwrap();
+        // The secret, encoded so no scrubbing would find it.
+        let encoded: String = format!("{sk:#x}").chars().rev().collect();
         let f = prover_failure(
-            &format!("calldata [{sk:#x}] ('INVALID_SIGNATURE')"),
-            sk,
+            &format!("calldata [{sk:#x}] {encoded} ('INVALID_SIGNATURE')"),
             true,
             77,
         );
         assert_eq!(f.reason.as_deref(), Some("OWNER_SIGNATURE_REJECTED"));
         assert!(f.message.starts_with("OWNER_SIGNATURE_REJECTED: "));
         assert!(f.message.contains("reference block 77"));
-        assert!(!f.message.contains(&format!("{sk:#x}")), "{}", f.message);
-        let f = prover_failure("boom", sk, true, 77);
+        assert!(f.message.contains("make a new plan"));
+        assert!(!f.message.contains(&format!("{sk:#x}")) && !f.message.contains(&encoded), "{}", f.message);
+        let f = prover_failure(&format!("boom {encoded}"), true, 77);
         assert_eq!(f.reason.as_deref(), Some("PROVING_FAILED"));
-        let f = prover_failure("INVALID_SIGNATURE", sk, false, 77);
+        assert!(!f.message.contains(&encoded) && !f.message.contains("boom"), "{}", f.message);
+        let f = prover_failure("INVALID_SIGNATURE", false, 77);
         assert_eq!(f.reason.as_deref(), Some("INVALID_SIGNATURE"));
     }
 
@@ -763,7 +762,7 @@ mod tests {
             client_actions_felts: felts,
             plan_hash: hash,
             state: snapshot(false),
-            prover_kind: "native".into(),
+            prover_id: "native".into(),
             submission: "none",
             prompt: String::new(),
             created_at_ms: 0,

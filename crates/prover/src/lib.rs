@@ -14,7 +14,9 @@
 //!
 //! Payloads that carry a secret (a STRK20 proof invocation holds the viewing
 //! key in its calldata) go through [`prove_unrecorded`] or
-//! [`enqueue_prove_unrecorded`] instead, which persist nothing.
+//! [`enqueue_prove_unrecorded`] instead, which write nothing to [`storage`].
+//! The native backend still hands the payload to the `snip36` CLI through a
+//! private temp file while it runs (see [`native_prover`]).
 
 pub mod config;
 pub mod jobs;
@@ -44,6 +46,9 @@ pub use storage::{ProofRecord, ProofSummary, Storage, StorageStats};
 /// settings change applies on restart). Both backends are real — there is no
 /// mock; an unconfigured backend fails a prove with a clear error.
 pub fn build_prover_state(data_dir: PathBuf, cfg: &ProverConfig) -> ProverState {
+    // A crash or kill mid-prove leaves the native prover's temp dir (which
+    // holds the transaction, and for STRK20 its viewing key) behind.
+    native_prover::remove_stale_workdirs(&std::env::temp_dir());
     let settings = Arc::new(SettingsStore::load(data_dir.join("settings.json")));
     let storage = Arc::new(Storage::new(data_dir.join("storage")));
     // Seed the job counter past existing records so ids (and `<job_id>.json`
@@ -130,10 +135,12 @@ pub async fn enqueue_prove_as(
     job_id
 }
 
-/// Prove and wait, **without persisting anything**. For payloads that carry a
-/// secret — a STRK20 proof invocation has the account's viewing key in its
-/// calldata — so they must never reach [`Storage`]. The job still shows in the
-/// activity feed (label, status, timing); its result is the proof only.
+/// Prove and wait, **without persisting anything** to [`Storage`]. For payloads
+/// that carry a secret — a STRK20 proof invocation has the account's viewing
+/// key in its calldata. The job still shows in the activity feed (label,
+/// status, timing); its result is the proof only. If the wallet locks while it
+/// runs ([`Jobs::wipe_ephemeral`]), the prover is stopped and this returns an
+/// error.
 pub async fn prove_unrecorded(
     state: &ProverState,
     payload: Value,
@@ -145,12 +152,41 @@ pub async fn prove_unrecorded(
     let opts = JobOptions { client_id: None, result_ttl_ms: Some(UNRECORDED_RESULT_TTL_MS) };
     let job_id = state.jobs.create_with(label.clone(), opts).await;
     state.jobs.set_status(&job_id, JobStatus::Proving).await;
-    let res = state.prover.prove(ProveRequest { payload, label, network }).await;
+    let Some(res) = prove_or_cancel(state, &job_id, ProveRequest { payload, label, network }).await else {
+        state.jobs.fail_with(&job_id, wiped_failure()).await;
+        return Err(WIPED_MESSAGE.into());
+    };
     match &res {
         Ok(out) => state.jobs.succeed(&job_id, out.proof.clone()).await,
         Err(e) => state.jobs.fail(&job_id, e.clone()).await,
     }
     res.map(|out| out.proof)
+}
+
+/// Why a stopped job has no result (also the error [`prove_unrecorded`]
+/// returns then).
+pub const WIPED_MESSAGE: &str = "the wallet locked while this job ran, so proving was stopped";
+
+fn wiped_failure() -> JobFailure {
+    JobFailure { reason: Some("WIPED_ON_LOCK".into()), message: format!("WIPED_ON_LOCK: {WIPED_MESSAGE}") }
+}
+
+/// Run the prover, unless the job's cancel signal fires first (the wallet
+/// locked): then the prover's future is dropped — the native backend kills its
+/// subprocess group and removes its temp dir — and this returns `None`.
+async fn prove_or_cancel(
+    state: &ProverState,
+    job_id: &str,
+    req: ProveRequest,
+) -> Option<Result<ProveResult, String>> {
+    let prove = state.prover.prove(req);
+    match state.jobs.cancel_signal(job_id) {
+        Some(signal) => tokio::select! {
+            res = prove => Some(res),
+            _ = signal.notified() => None,
+        },
+        None => Some(prove.await),
+    }
 }
 
 /// How long an unrecorded job keeps its result after it finishes: 1 h
@@ -166,8 +202,16 @@ pub const UNRECORDED_RESULT_TTL_MS: u128 = 3_600_000;
 /// `finish` runs in the background task with the job id and the prover's
 /// outcome (the proof, or the backend's error text, unscrubbed); what it
 /// returns becomes the job's result or error. It is where the caller parses
-/// the proof, scrubs secrets from errors, and (optionally) submits. The
+/// the proof, turns errors into safe text, and (optionally) submits. The
 /// payload is dropped as soon as the prover returns.
+///
+/// If the wallet locks while the prover runs, the prover is stopped (its
+/// future dropped: the native backend kills the `snip36` process group and
+/// removes its temp dir), `finish` never runs, and the job fails with
+/// `WIPED_ON_LOCK`. What stays exposed: while the native prover runs, the
+/// payload sits in a `0600` file inside a `0700` temp dir (removed when the
+/// prover returns or is stopped, and at the next start after a crash), and the
+/// `snip36` process holds it in memory.
 pub async fn enqueue_prove_unrecorded<F, Fut>(
     state: &ProverState,
     payload: Value,
@@ -186,7 +230,11 @@ where
     let jid = job_id.clone();
     tokio::spawn(async move {
         st.jobs.set_status(&jid, JobStatus::Proving).await;
-        let res = st.prover.prove(ProveRequest { payload, label, network }).await;
+        let Some(res) = prove_or_cancel(&st, &jid, ProveRequest { payload, label, network }).await else {
+            drop(finish);
+            st.jobs.fail_with(&jid, wiped_failure()).await;
+            return;
+        };
         let outcome = finish(jid.clone(), res.map(|out| out.proof)).await;
         match outcome {
             Ok(result) => st.jobs.succeed(&jid, result).await,

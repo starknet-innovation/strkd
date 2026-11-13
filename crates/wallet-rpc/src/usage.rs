@@ -175,7 +175,9 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
             "owner_contracts": "A deployed contract that advertises SRC5 is_custom_signature_valid \
 (interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \
 the contract itself to approve each spend. Enrol it with companion_strk20AddOwner (always prompts, even under a \
-grant); strkd then holds its viewing key, derived from one of your accounts (the controller). List with \
+grant); strkd then holds its viewing key, derived from one of your accounts (the controller). The contract's code \
+sees that key and the channel keys of every batch while it is proved (the pool passes them to its check), so enrol \
+only contracts whose code you trust. List with \
 companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Then PLAN a batch with \
 companion_strk20Plan {owner_address, register:true | actions:[…]}: strkd fixes the actions (signs and proves \
 nothing) and returns plan_hash, the SNIP-12 digest of typed_data (companion_typedDataHash reproduces it with \
@@ -186,8 +188,9 @@ approval lands, or pass block_number ≥ the approval's block. Plans also work f
 (account_address); strkd signs those at prove time. owner_address on the wallet_strk20* methods still returns \
 -32601, and owner_address together with account_address is a 114.",
             "plans": "A plan lives in memory only: bound to the client that made it, expires_at (Unix ms) after \
-ttl_secs (default 3600, max 86400), and wiped when the wallet locks or restarts. One live plan per owner and pool, \
-4 per client, 32 in all (else -32006 PLAN_LIMIT). By default you get plan_hash, typed_data and a summary (tokens, \
+ttl_secs (default 3600, max 86400), and wiped when the wallet locks or restarts. One live plan per owner and pool \
+for your client (another client's plans don't count, and their plans race yours on the same notes: the second to \
+land fails), 4 per client, 32 in all (else -32006 PLAN_LIMIT). By default you get plan_hash, typed_data and a summary (tokens, \
 amounts, recipients, action count, pool fee), not the actions. reveal_actions:true asks the user separately (a grant \
 never covers it) and returns client_actions + client_actions_felts: they hold channel keys, which disclose every \
 past and future payment on those channels, irrevocably (they cannot spend). If the user refuses, the plan still \
@@ -263,7 +266,7 @@ nothing about the job is written to proof storage."
               "note": "Poll a proving job until status is succeeded (result holds the proof) or failed (error explains why). You see only the jobs your own client queued: any other job_id, including another client's, → error 114 (unknown job). STRK20 prove jobs keep their result 1 h after finishing (result_expires_at_ms) and drop it when the wallet locks (result_dropped says which)." },
             { "method": "companion_proofActivity", "auth": true, "prompts": false,
               "params": "{}", "returns": "{ activity: Activity[] }",
-              "note": "Recent proving activity (most-recent first) — the same feed the desktop Proving tab shows." },
+              "note": "Recent proving activity (most-recent first) of the jobs your own client queued." },
             { "method": "companion_signAndProve", "auth": true, "prompts": true,
               "params": "{ account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }",
               "returns": "{ job_id, status: \"queued\", transaction_hash, next }",
@@ -315,7 +318,7 @@ normal invoke." },
             { "method": "companion_strk20Prove", "auth": true, "prompts": "only if the prover changed since the plan or submit is \"account\"",
               "params": "{ plan_id, block_number?, signature?: [felt…], submit?: \"none\"|\"account\", submitter_address? }",
               "returns": "{ job_id, status: \"queued\", plan_id, plan_hash, plan_created_at, block_number, subject, submit, submitter_address?, next }",
-              "note": "Proves a stored plan against reference block B (default head − 12; must be ≤ head − 12, ≥ plan_block, and young enough that the proof lands inside the pool's proof window, keeping 120 blocks in hand). The owner's on-chain approval must be at or before B. Checks run first, synchronously: plan (PLAN_NOT_FOUND 114), subject still enrolled (OWNER_NOT_ENROLLED -32002), BLOCK_TOO_RECENT / BLOCK_BEFORE_PLAN / BLOCK_TOO_OLD (-32006), OWNER_NOT_DEPLOYED / OWNER_NO_CUSTOM_VALIDATION at B (-32006), PLAN_STALE (-32006: the subject's private state moved since the plan; the plan is dropped). Owner plans need signature (missing → 114 SIGNATURE_REQUIRED; passed verbatim, strkd never signs for an owner); account plans are signed by strkd (a signature → 114 SIGNATURE_NOT_ALLOWED). submit:\"relay\" → -32601 RELAY_UNSUPPORTED. The plan is consumed when the job is queued. Poll companion_proveStatus: result {call, proof} (submit none) or {transaction_hash, submitter_address, call} (account); a failed job has error + error_reason (OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK, or a submission reason). The job is never written to proof storage; its result is dropped 1 h after it finishes or when the wallet locks." },
+              "note": "Proves a stored plan against reference block B (default head − 12; must be ≤ head − 12, ≥ plan_block, and young enough that the proof lands inside the pool's proof window, keeping 120 blocks in hand). The owner's on-chain approval must be at or before B. Checks run first, synchronously: plan (PLAN_NOT_FOUND 114), subject still enrolled (OWNER_NOT_ENROLLED -32002), BLOCK_TOO_RECENT / BLOCK_BEFORE_PLAN / BLOCK_TOO_OLD (-32006), OWNER_NOT_DEPLOYED / OWNER_NO_CUSTOM_VALIDATION at B (-32006), PLAN_STALE (-32006: the subject's private state moved since the plan; the plan is dropped). Owner plans need signature (missing → 114 SIGNATURE_REQUIRED; passed verbatim, strkd never signs for an owner); account plans are signed by strkd (a signature → 114 SIGNATURE_NOT_ALLOWED). submit:\"relay\" → -32601 RELAY_UNSUPPORTED. The plan is consumed when the job is queued. Poll companion_proveStatus: result {call, proof} (submit none) or {transaction_hash, submitter_address, call} (account); a failed job has error + error_reason (OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK, SUBMITTER_NOT_IN_SCOPE, or a submission reason); error is fixed text by class, never the prover's own output or a revert reason (contract code chooses those, and could put secrets in them). The job is never written to proof storage; its result is dropped 1 h after it finishes or when the wallet locks." },
             { "method": "companion_strk20DiscardPlan", "auth": true, "prompts": false,
               "params": "{ plan_id }", "returns": "true",
               "note": "Drops one of your plans (it is wiped). Unknown, expired, already discarded or another client's → 114 with data.reason PLAN_NOT_FOUND." },

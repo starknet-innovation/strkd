@@ -56,11 +56,15 @@ Submissions from the account approve it alongside the deposits; the AVNU relay
 passes it on in its fee withdraw. A deposit is checked against the account's
 public balance before the screening prover is called.
 
-**Prover errors.** A local proving failure comes back as `163` (unknown error) with the
-prover's own error, bounded to about 4,000 chars (head and tail kept, cut
-between words) and scrubbed of the viewing key. When the virtual transaction
-reverts, the message carries the full revert reason
-(`prover::snip36::classify_prover_error`).
+**Prover errors.** A local proving failure comes back as `163` (unknown error)
+with a `data.reason` (`PROVING_FAILED`, `INVALID_SIGNATURE`, `WIPED_ON_LOCK`) and
+a fixed message picked by the prefix strkd itself wrote
+(`strk20::safe_prover_error`): "the batch reverted…", "too large…", "RPC
+throttled…", and so on. The prover's own text, and so the revert reason, is
+never returned or logged: the virtual transaction carries the viewing key and
+channel keys, and contract code it runs chooses the revert text (#48 review).
+To debug a revert, run `snip36 prove virtual-os` by hand with a test seed.
+Locking the wallet stops a local prove that is still running.
 
 ## External owners (#48)
 
@@ -88,7 +92,15 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
      registered key is the derived one, else `OWNER_KEY_MISMATCH`.
 
   It then always prompts, even under a grant, and stores the record. The result
-  includes the viewing public key and `registered`.
+  includes the viewing public key and `registered`. The prompt says the
+  contract's code is trusted with the owner's viewing key and the channel keys
+  of every batch: the pool passes the whole `compile_actions` call to
+  `is_custom_signature_valid` during virtual execution, so a malicious contract
+  could leak them (in its revert text, which strkd withholds, or in its own
+  storage writes and events, which stay in the virtual block). Enrol only
+  contracts whose code you trust. The label keeps no control or Unicode format
+  characters (bidi overrides and isolates, zero-width, BOM, tags:
+  `dispatch::display_text`); pairing client names get the same treatment.
 - **`Ctx`.** The STRK20 context has a subject: an account, or an enrolled owner
   with its controller. `owner_address` resolves an owner in scope (else
   `OWNER_NOT_ENROLLED`, `-32002`). Passing `owner_address` together with
@@ -133,12 +145,16 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   lock (from RPC idle, the desktop, or tests) drops it, and a restart starts
   empty. Plans are keyed by a 128-bit random hex `plan_id` and bound to the
   client that made them; any other client gets `PLAN_NOT_FOUND` (114), the same
-  as for an unknown, expired or discarded id. Caps: one live plan per (subject,
-  chain, pool), 4 per client, 32 in all (`PLAN_LIMIT`, `-32006`). The TTL is
+  as for an unknown, expired or discarded id. Caps: one live plan per (client,
+  subject, chain, pool), 4 per client, 32 in all (`PLAN_LIMIT`, `-32006`). The
+  one-plan cap is per client so one client can't block another (or learn that
+  it holds a plan); two clients' plans for one subject race on the same notes,
+  and the second to land fails (`PLAN_STALE`, or on-chain). The TTL is
   1 h by default and 24 h at most; expired plans are swept on every access. A
   stored plan keeps the subject, controller, chain, pool, intent, actions,
   felts, `plan_hash`, `plan_block`, the discovered state with `user_sk`
-  zeroed, the prover kind and submission route the prompt named, and the
+  zeroed, the prover (kind, plus the URL for a remote prover) and submission
+  route the prompt named, and the
   prompt. Dropping a plan overwrites its felts (best effort, no `unsafe`).
   `companion_strk20DiscardPlan { plan_id }` drops one without a prompt.
 - **Accounts.** Plans work for strkd accounts too (no SRC5 check). For them
@@ -168,7 +184,8 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
      is dropped. `serialize_actions(actions)` must equal the stored felts and
      re-hash to `plan_hash`, else `PLAN_HASH_MISMATCH` (163, cannot happen
      through the API).
-  7. A prompt only if the prover kind differs from the plan's or
+  7. A prompt only if the prover differs from the plan's (kind, or a remote
+     prover's URL: `prover_identity`) or
      `submit: "account"` (§5.6). The account prompt names the submitter, the
      pool fee it pays, and the public link it makes to the owner.
   8. The pool nonce at `B`, `ProofInvocation::new` from the stored actions,
@@ -185,11 +202,18 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   `wallet_strk20PrepareInvoke`) or, for `submit: "account"`, submits through
   `submit_from` from the submitter (default: the owner's controller, or the
   account itself) and returns `{ transaction_hash, submitter_address, call }`.
-  It does not submit if the wallet locked while the job ran. Errors carry
-  `error_reason`: `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE`
-  (account) when the prover's error shows the pool's `INVALID_SIGNATURE`
-  (text or its hex short string), `PROVING_FAILED` otherwise, `WIPED_ON_LOCK`,
-  or a submission reason. Every job error goes through `scrub`.
+  It does not submit if the wallet locked while the job ran: the lock cancels
+  the prove (the native prover's process group is killed and its temp dir
+  removed), and a job already submitting re-checks, under the session lock
+  right before signing and again before broadcasting, that it was not wiped and
+  that the submitter is still in the client's scope (`SubmitGuard`:
+  `WIPED_ON_LOCK`, `SUBMITTER_NOT_IN_SCOPE`). Errors carry `error_reason`:
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account) when the
+  prover's error shows the pool's `INVALID_SIGNATURE` (text or its hex short
+  string), `PROVING_FAILED` otherwise, `WIPED_ON_LOCK`, or a submission
+  reason. Prover errors become fixed text (see **Prover errors**); submission
+  errors go through `scrub`. `companion_proveStatus` for a STRK20 job is
+  logged without its `result` and `error` (`dispatch::redact_for_log`).
 - **Submission from another account.** `submit_from_account` is now a wrapper
   around `submit_from(SubmitTarget, submitter, prepared, deposits)`, which owns
   its handles (session, node, chain, pool) so a background job can submit. The

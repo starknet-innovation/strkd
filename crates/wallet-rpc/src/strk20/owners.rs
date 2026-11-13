@@ -18,7 +18,7 @@ use super::{
     address_param, chain_and_pool, ctx, hex, invalid, is_contract_not_found, map_strk20, node_err,
     not_enrolled, scrub, Caller, Ctx, Subject,
 };
-use crate::dispatch::{chain_name, persist_registry, ServerState};
+use crate::dispatch::{chain_name, display_text, persist_registry, ServerState};
 use crate::error::WalletRpcError;
 use crate::node::NodeError;
 
@@ -106,11 +106,8 @@ pub async fn add_owner(
         .ok_or_else(|| invalid("missing 'owner_address'"))?;
     let label: String = match params.get("label") {
         None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(MAX_LABEL_CHARS)
-            .collect(),
+        // No control or invisible format (bidi, zero-width) characters.
+        Some(Value::String(s)) => display_text(s, MAX_LABEL_CHARS),
         Some(_) => return Err(invalid("label: expected a string")),
     };
     // The controller: `account_address` (or the default), resolved and scoped
@@ -201,7 +198,9 @@ pub async fn add_owner(
             format!(
                 "Enrol contract {owner} as a STRK20 owner on {}, pool {pool_hex}, controlled by your account {}.{label_note} \
                  strkd will derive and hold a private key for this contract's private notes. strkd cannot check who \
-                 controls this contract; its own signature check decides every spend. {}",
+                 controls this contract; its own signature check decides every spend. The contract's code also sees \
+                 that key and the private channel keys of every batch while it is proved (the pool hands them to \
+                 its check), so it could leak them: enrol only a contract whose code you trust. {}",
                 chain_name(ctx.chain),
                 ctx.account.address,
                 if registered.is_some() {

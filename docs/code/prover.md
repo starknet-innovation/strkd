@@ -76,7 +76,8 @@ Paired callers only. The first three change no wallet state, so they don't promp
   client gets "unknown job" (114), the same answer as for a missing id. Before
   #48 part 3, any paired client could poll any job by its sequential id.
   Untagged jobs (the desktop's own) are not visible over RPC.
-- `companion_proofActivity` → recent activity feed
+- `companion_proofActivity` → recent activity feed of the caller's own jobs
+  (`Jobs::recent_activity_for`; the desktop IPC feed lists all)
 - `companion_signAndProve { account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }`
   → `{ job_id, status, transaction_hash, next }` — **approval-gated**; signs the
   virtual tx itself, then proves it (below).
@@ -93,21 +94,36 @@ it must never reach `Storage`. Two paths keep it off disk:
   result to `Storage`. The job is owned by `client_id` and ephemeral
   (`UNRECORDED_RESULT_TTL_MS`, 1 h after it finishes). `finish(job_id, outcome)`
   runs in the background task and turns the prover's outcome into the job's
-  result or `JobFailure { reason, message }`; the caller scrubs secrets there.
-  The payload is dropped as soon as the prover returns.
+  result or `JobFailure { reason, message }`; the caller makes errors safe
+  there (wallet-rpc returns only fixed text for STRK20). The payload is dropped
+  as soon as the prover returns.
 
 **Wiped on lock.** `ServerState::with_prover` adds a lock hook to the session
 (`WalletSession::add_lock_hook`), so every lock, by any path (desktop button,
 auto-lock, tests), calls `Jobs::wipe_ephemeral`: finished ephemeral results are
 dropped (`result_dropped: "wiped_on_lock"`), and running ephemeral jobs finish
 without a result (`error_reason: "WIPED_ON_LOCK"`; `Jobs::is_wiped` lets a job
-stop before submitting). `Jobs` uses a plain mutex, never held across an
+stop before submitting). A running ephemeral job is also **cancelled**: each
+has a `Jobs::cancel_signal` (`tokio::sync::Notify`, a stored permit) that the
+wipe fires, and `prove_or_cancel` then drops the prover's future, so `finish`
+never runs. Dropping the native backend's future kills the `snip36` process
+group (`snip36::GroupKiller`, armed while the CLI runs) and removes its temp
+dir (`native_prover::WorkDir`'s `Drop`). `prove_unrecorded` returns
+`WIPED_MESSAGE` then. `Jobs` uses a plain mutex, never held across an
 `.await`, so the hook can run from the synchronous lock path.
 
-**Known exposure, unchanged:** the native backend writes the transaction (and
-so the viewing key) to `$TMPDIR/strkd-prove-<pid>-<n>/tx_a.json` for the
-`snip36` CLI and deletes the directory when the CLI exits. A remote backend
-sees the whole payload.
+**Remaining exposure:** the `snip36` CLI reads the transaction only from a file
+(`--tx-json`; no stdin option in `--help` as of the v1.4.2 bundle; its source
+reads the path once with `read_to_string`, so `/dev/stdin` might work but is
+untested). The native backend writes the transaction (and so the viewing key
+and, for STRK20, the batch's channel keys) to
+`$TMPDIR/strkd-prove-<pid>-<n>/tx_a.json`: the dir is created `0700` and the
+file `0600` (`create_new`), and the dir is removed when the CLI exits, when the
+prove is cancelled by a lock, and, after a crash or kill, at the next prover
+start (`remove_stale_workdirs`, which skips dirs whose pid is still alive).
+While a prove runs, the file is readable by the same OS user (and root), and
+the `snip36` process holds the payload in memory. A remote backend sees the
+whole payload.
 
 For SNIP-36 the `companion_prove` `payload` is `{ transaction: <signed invoke-v3>,
 block_number? }` and the proof comes back as `{ proof (base64 STWO), proof_facts,

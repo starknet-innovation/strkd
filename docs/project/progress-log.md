@@ -8,6 +8,55 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 #48 part 3: security-review fixes
+
+**Did**
+- STRK20 prover errors no longer echo the prover. A malicious owner contract could panic with the
+  viewing key or a channel key, encoded so scrubbing misses it.
+  - `strk20::safe_prover_error` maps every error, on the job and the one-shot path, to a reason
+    plus fixed text, picked by the prefix strkd wrote.
+  - `redact_for_log` drops `result` and `error` from `companion_proveStatus` for STRK20 jobs.
+  - The enrolment prompt, the usage doc and design §6 say the owner contract's code is trusted
+    with the viewing key and channel keys.
+- Native prover temp file: the dir is `0700` and the file `0600` (`create_new`), and the dir is
+  removed on drop.
+  - A wallet lock cancels running ephemeral jobs (`Jobs::cancel_signal`). The `snip36` process
+    group is killed and the dir removed; `finish` never runs; the job fails with `WIPED_ON_LOCK`.
+  - Stale `strkd-prove-<deadpid>-*` dirs are removed at prover start.
+- Submission re-checks, under the session lock right before signing, that the job wasn't wiped and
+  that the submitter is still in scope (`SubmitGuard`, `SUBMITTER_NOT_IN_SCOPE`).
+- Arithmetic on outside input saturates: `block_number` + 12, and the deposit, fee and attestation
+  sums.
+- The one-plan cap is per client, and its message no longer mentions other clients.
+- `dispatch::display_text` strips control and Unicode format (Cf) characters from owner labels and
+  client names.
+- Prove prompts again when a remote prover's URL changed since the plan (`prover_identity`).
+- `companion_proofActivity` lists only the caller's jobs.
+- Design note §10: L2→L1 messages from an owner contract can't be published. The pool requires
+  `message_to_l1_hashes == [its own]`, and `proof_facts` carries hashes only. §11.3 lists the fixes.
+
+**Decisions**
+- Errors are classified by prefix only. Text after the prefix can be chosen by contract code. The
+  one exception is `INVALID_SIGNATURE` anywhere in the text, and it only chooses the reason.
+- Revert detail is gone for STRK20 errors. That is the price of not leaking. Debug with `snip36`
+  run by hand on a test seed.
+- No stdin for the tx: `snip36 prove virtual-os --help` (v1.4.2 bundle) has only `--tx-json
+  <path>`. Its source reads the path once, so `/dev/stdin` may work; it was not tried, because
+  running the bundled binary was out of scope.
+
+**Verify**
+- `cargo test --locked` → green.
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` (from a copy) → green.
+
+**Next / Resume**
+- Decide on the native preflight that refuses an empty `signature`: it breaks owner plans proved
+  with `signature: []` (design §11.3).
+- Sepolia live run (design §8), unchanged.
+
+**Notes / caveats**
+- No transactions sent; test seeds only.
+
 ## 2026-11-13 — STRK20 external owners, part 3: the prove step (#48)
 
 **Did**

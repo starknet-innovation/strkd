@@ -7,14 +7,19 @@
 //! Jobs can also be **ephemeral** ([`JobOptions::result_ttl_ms`]): their result
 //! is dropped that long after the job finishes, and [`Jobs::wipe_ephemeral`]
 //! drops it at once (the wallet calls it when it locks). The status stays.
+//! A running ephemeral job is also **cancelled** by the wipe: its
+//! [`Jobs::cancel_signal`] fires, and the proving task drops the prover's
+//! future (the native backend then kills its subprocess and removes its temp
+//! files).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::Notify;
 
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -117,6 +122,9 @@ pub struct Activity {
     pub started_at_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The client that queued the job (see [`Job::client_id`]). Never serialized.
+    #[serde(skip)]
+    pub client_id: Option<String>,
 }
 
 const ACTIVITY_CAP: usize = 100;
@@ -128,6 +136,8 @@ struct Inner {
     /// Ephemeral jobs that were running when [`Jobs::wipe_ephemeral`] ran:
     /// they finish without a result.
     wiped_running: std::collections::HashSet<String>,
+    /// Cancellation signals of ephemeral jobs that have not finished yet.
+    cancels: HashMap<String, Arc<Notify>>,
 }
 
 /// The job store. Its lock is a plain mutex, never held across an `.await`,
@@ -174,6 +184,9 @@ impl Jobs {
         let mut g = self.lock();
         let now = now_ms();
         g.jobs.values_mut().for_each(|j| j.expire(now));
+        if job.result_ttl_ms.is_some() {
+            g.cancels.insert(job_id.clone(), Arc::new(Notify::new()));
+        }
         g.jobs.insert(job_id.clone(), job.clone());
         push_activity(&mut g, &job);
         job_id
@@ -242,8 +255,16 @@ impl Jobs {
         self.lock().wiped_running.contains(job_id)
     }
 
+    /// An ephemeral job's cancellation signal: it fires (a stored permit, so
+    /// a later `notified().await` completes too) when [`Self::wipe_ephemeral`]
+    /// runs while the job is unfinished. `None` for other jobs and finished ones.
+    pub fn cancel_signal(&self, job_id: &str) -> Option<Arc<Notify>> {
+        self.lock().cancels.get(job_id).cloned()
+    }
+
     /// Drop every ephemeral result now, and make running ephemeral jobs finish
-    /// without one. Synchronous: the wallet calls it from its lock path.
+    /// without one: each one's [`Self::cancel_signal`] fires, so its proving
+    /// task stops the prover. Synchronous: the wallet calls it from its lock path.
     pub fn wipe_ephemeral(&self) {
         let mut g = self.lock();
         let mut running = Vec::new();
@@ -257,17 +278,29 @@ impl Jobs {
                 }
             }
         }
+        for id in &running {
+            if let Some(n) = g.cancels.get(id) {
+                n.notify_one();
+            }
+        }
         g.wiped_running.extend(running);
     }
 
-    /// Most-recent-first activity for the UI feed.
+    /// Most-recent-first activity for the UI feed (every job: desktop IPC).
     pub async fn recent_activity(&self) -> Vec<Activity> {
         let g = self.lock();
         g.activity.iter().rev().cloned().collect()
     }
+
+    /// Most-recent-first activity of the jobs `client_id` queued (JSON-RPC).
+    pub async fn recent_activity_for(&self, client_id: &str) -> Vec<Activity> {
+        let g = self.lock();
+        g.activity.iter().rev().filter(|a| a.client_id.as_deref() == Some(client_id)).cloned().collect()
+    }
 }
 
 fn finish(inner: &mut Inner, job_id: &str, outcome: Result<Value, JobFailure>) {
+    inner.cancels.remove(job_id);
     let Some(j) = inner.jobs.get_mut(job_id) else { return };
     let now = now_ms();
     j.finished_at_ms = Some(now);
@@ -295,6 +328,7 @@ fn push_activity(inner: &mut Inner, job: &Job) {
         status: job.status,
         started_at_ms: job.started_at_ms,
         label: job.label.clone(),
+        client_id: job.client_id.clone(),
     });
     while inner.activity.len() > ACTIVITY_CAP {
         inner.activity.pop_front();
@@ -363,5 +397,35 @@ mod tests {
         assert!(!jobs.is_wiped(&running));
         // Non-ephemeral results are untouched.
         assert_eq!(jobs.get(&kept).await.unwrap().result, Some(json!(2)));
+    }
+
+    #[tokio::test]
+    async fn wiping_fires_the_cancel_signal_of_running_ephemeral_jobs_only() {
+        let jobs = Jobs::new(0);
+        let running = jobs.create_with(None, owned("c", Some(3_600_000))).await;
+        let kept = jobs.create_with(None, owned("c", None)).await;
+        assert!(jobs.cancel_signal(&kept).is_none());
+        let signal = jobs.cancel_signal(&running).expect("ephemeral jobs have a signal");
+        jobs.wipe_ephemeral();
+        // The permit is stored: waiting after the wipe still completes.
+        tokio::time::timeout(std::time::Duration::from_secs(1), signal.notified()).await.expect("cancelled");
+        // A finished job has no signal left.
+        jobs.fail(&running, "x".into()).await;
+        assert!(jobs.cancel_signal(&running).is_none());
+    }
+
+    #[tokio::test]
+    async fn activity_is_filtered_per_client() {
+        let jobs = Jobs::new(0);
+        let a = jobs.create_with(Some("A".into()), owned("c1", None)).await;
+        let b = jobs.create_with(Some("B".into()), owned("c2", None)).await;
+        let _untagged = jobs.create(Some("desk".into())).await;
+        let c1: Vec<String> = jobs.recent_activity_for("c1").await.into_iter().map(|x| x.job_id).collect();
+        assert_eq!(c1, vec![a]);
+        let c2: Vec<String> = jobs.recent_activity_for("c2").await.into_iter().map(|x| x.job_id).collect();
+        assert_eq!(c2, vec![b]);
+        assert_eq!(jobs.recent_activity().await.len(), 3);
+        let s = serde_json::to_string(&jobs.recent_activity().await).unwrap();
+        assert!(!s.contains("c1") && !s.contains("client_id"), "{s}");
     }
 }
