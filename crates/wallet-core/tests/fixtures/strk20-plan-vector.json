@@ -1,0 +1,41 @@
+{
+  "_provenance": "SNIP-12 rev 1 Strk20Plan approval-hash vector for issue #48 (docs/project/design-48-strk20-external-owner.md §5.3). This file is the single source of truth. It is reproduced independently in Rust/krusty-kms (crates/wallet-core/tests/strk20_plan_vector.rs), starknet.js (conformance/verify.mjs) and Cairo/OpenZeppelin (contracts/strk20-owner-example/tests/test_owner.cairo, which must carry the same constants). client_actions_felts are opaque felts standing in for a serialized Span<ClientAction> (compile_actions calldata[2..], length prefix included); they are not a valid action list. Public, made-up values: no keys.",
+  "inputs": {
+    "chain_id": "SN_SEPOLIA",
+    "chain_id_felt": "0x534e5f5345504f4c4941",
+    "pool": "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e",
+    "owner": "0x0712d1ab5b6e5d3e3c0b2a1f9e8d7c6b5a4938271605f4e3d2c1b0a998877665",
+    "client_actions_felts": ["0x2", "0x7", "0x2a", "0x3", "0x1"]
+  },
+  "actions_hash": "0x03342f4106e584ae6fa004f9a518687fa0160dfd61720b8aae0edf25fe89f84a",
+  "type_hash": "0x035ab6743c4f282adfa4275ad5c9b3f7e15e33def33bdadc084b94eb369b8b66",
+  "account_address": "0x0712d1ab5b6e5d3e3c0b2a1f9e8d7c6b5a4938271605f4e3d2c1b0a998877665",
+  "typed_data": {
+    "types": {
+      "StarknetDomain": [
+        { "name": "name", "type": "shortstring" },
+        { "name": "version", "type": "shortstring" },
+        { "name": "chainId", "type": "shortstring" },
+        { "name": "revision", "type": "shortstring" }
+      ],
+      "Strk20Plan": [
+        { "name": "pool", "type": "ContractAddress" },
+        { "name": "owner", "type": "ContractAddress" },
+        { "name": "actions_hash", "type": "felt" }
+      ]
+    },
+    "primaryType": "Strk20Plan",
+    "domain": {
+      "name": "strkd.Strk20Plan",
+      "version": "1",
+      "chainId": "SN_SEPOLIA",
+      "revision": "1"
+    },
+    "message": {
+      "pool": "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e",
+      "owner": "0x0712d1ab5b6e5d3e3c0b2a1f9e8d7c6b5a4938271605f4e3d2c1b0a998877665",
+      "actions_hash": "0x03342f4106e584ae6fa004f9a518687fa0160dfd61720b8aae0edf25fe89f84a"
+    }
+  },
+  "plan_hash": "0x062a76d34a73ac201527a84ddcf018608bf9443c3daf8597c539304ff5ce3301"
+}
