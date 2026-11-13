@@ -2594,8 +2594,8 @@ async fn plan_for_an_owner_prompts_signs_nothing_and_returns_a_reproducible_hash
     assert_eq!(prompts.len(), 1);
     let text = &prompts[0];
     let pool = format!("{:#x}", sepolia_pool());
-    for want in [OWNER, "\"vault\"", &controller, "SN_SEPOLIA", "2 action(s)", &pool, "approve this plan on-chain", "Nothing is signed"] {
-        assert!(text.contains(want), "prompt lacks {want:?}: {text}");
+    for (i, want) in [OWNER, "\"vault\"", &controller, "SN_SEPOLIA", "2 action(s)", &pool, "approve this plan on-chain", "Nothing is signed"].iter().enumerate() {
+        assert!(text.contains(want), "prompt lacks expected item #{i}");
     }
     assert!(prompted(&approver, REVEAL).is_empty());
 
@@ -2787,7 +2787,7 @@ async fn plans_work_for_strkd_accounts() {
     assert_eq!(p["controller"], json!(account));
     assert_eq!(typed_data_hash(&state, &token, &p).await, felt_of(&p["plan_hash"]));
     let text = &prompted(&approver, PLAN)[0];
-    assert!(text.contains("strkd signs with this account") && text.contains(&account), "{text}");
+    assert!(text.contains("strkd signs with this account") && text.contains(&account), "prompt lacks the signing account ({} chars)", text.len());
     assert!(node.src5_blocks().is_empty());
     assert!(node.methods().iter().all(|m| m != "starknet_getNonce"));
 }
