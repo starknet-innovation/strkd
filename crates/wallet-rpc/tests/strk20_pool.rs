@@ -233,6 +233,9 @@ fn deposit() -> Value {
     json!({ "actions": [{ "type": "deposit", "token": STRK, "amount": "0xde0b6b3a7640000" }] })
 }
 
+// Assertion messages carry method names and lengths only, never prompt text or
+// addresses.
+
 /// Every STRK20 method reads the configured pool, never the canonical one.
 #[tokio::test]
 async fn every_method_reads_the_configured_pool() {
@@ -255,7 +258,7 @@ async fn every_method_reads_the_configured_pool() {
         })
         .await;
         let r = h.call(method, params).await;
-        assert_eq!(code(&r), want, "{method}: {:?}", r.error);
+        assert_eq!(code(&r), want, "{method}");
         let read = node.pools_read();
         assert!(!read.is_empty(), "{method}: read no pool");
         assert!(read.iter().all(|c| *c == pool), "{method}: read {read:?}");
@@ -271,13 +274,31 @@ async fn prompts_flag_a_non_canonical_pool() {
     assert_eq!(code(&h.call("companion_strk20Register", json!({})).await), 113);
     let custom = format!("NON-CANONICAL pool {:#x}", felt(TEST_POOL));
     for m in ["wallet_strk20Balances", "companion_strk20Register"] {
-        assert!(h.prompt(m).contains(&custom), "{m}: {}", h.prompt(m));
+        assert!(h.prompt(m).contains(&custom), "{m}");
     }
 
     let h = harness("prompt-canonical", PoolNode::new(false, screener_public_key()), &["companion_strk20Register"], |_| {}).await;
     assert_eq!(code(&h.call("companion_strk20Register", json!({})).await), 113);
     let p = h.prompt("companion_strk20Register");
-    assert!(p.contains(&format!("pool {:#x}", felt(SEPOLIA_POOL))) && !p.contains("NON-CANONICAL"), "{p}");
+    assert!(p.contains(&format!("pool {:#x}", felt(SEPOLIA_POOL))) && !p.contains("NON-CANONICAL"), "prompt len {}", p.len());
+}
+
+/// The plan step (#48) reads the configured pool, flags it in its prompt, and
+/// takes the same `pool_address` assertion.
+#[tokio::test]
+async fn plan_uses_and_flags_the_configured_pool() {
+    let node = PoolNode::new(false, screener_public_key());
+    let h = harness("plan", node.clone(), &["companion_strk20Plan"], use_test_pool).await;
+    let r = h.call("companion_strk20Plan", json!({ "pool_address": SEPOLIA_POOL, "register": true })).await;
+    assert_eq!(code(&r), 114);
+    assert!(node.pools_read().is_empty());
+
+    let r = h.call("companion_strk20Plan", json!({ "pool_address": TEST_POOL, "register": true })).await;
+    assert_eq!(code(&r), 113);
+    let read = node.pools_read();
+    assert!(!read.is_empty() && read.iter().all(|c| *c == felt(TEST_POOL)), "{} reads", read.len());
+    let p = h.prompt("companion_strk20Plan");
+    assert!(p.contains(&format!("NON-CANONICAL pool {:#x}", felt(TEST_POOL))), "prompt len {}", p.len());
 }
 
 /// A caller can't point strkd at another contract: `pool_address` must be the
@@ -290,13 +311,13 @@ async fn pool_address_param_must_match_the_configured_pool() {
         params["tokens"] = json!([STRK]);
         params["pool_address"] = json!(SEPOLIA_POOL);
         let r = h.call(method, params).await;
-        assert_eq!(code(&r), 114, "{method}: {:?}", r.error);
+        assert_eq!(code(&r), 114, "{method}");
         assert!(r.error.unwrap().message.contains("Settings → STRK20"));
     }
     assert!(h.prompts.lock().unwrap().iter().all(|(m, _)| m == "companion_requestPairing"));
     // The configured pool, in any spelling, passes.
     let r = h.call("companion_strk20Register", json!({ "pool_address": "0x3016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323" })).await;
-    assert_eq!(code(&r), 113, "{:?}", r.error);
+    assert_eq!(code(&r), 113);
 }
 
 /// The full local-screener deposit: proved by the (stub) local prover, attested
@@ -312,12 +333,12 @@ async fn local_screener_attests_a_testnet_deposit() {
     })
     .await;
     let r = h.call("wallet_strk20InvokeTransaction", deposit()).await;
-    assert!(r.error.is_none(), "{:?}", r.error);
+    assert!(r.error.is_none());
     assert_eq!(r.result.as_ref().unwrap()["transaction_hash"], json!("0xabc"));
 
     let prompt = h.prompt("wallet_strk20InvokeTransaction");
-    assert!(prompt.contains("proved on this machine, screened with the test screener key"), "{prompt}");
-    assert!(prompt.contains("NON-CANONICAL pool"), "{prompt}");
+    assert!(prompt.contains("proved on this machine, screened with the test screener key"), "prompt len {}", prompt.len());
+    assert!(prompt.contains("NON-CANONICAL pool"), "prompt len {}", prompt.len());
 
     // apply_actions is the last call: its calldata ends with Some(attestation).
     let submitted = node.submitted.lock().unwrap().clone();
@@ -353,9 +374,9 @@ async fn a_screener_key_for_another_pool_is_refused_up_front() {
     })
     .await;
     let r = h.call("wallet_strk20InvokeTransaction", deposit()).await;
-    assert_eq!(code(&r), -32006, "{:?}", r.error);
+    assert_eq!(code(&r), -32006);
     let msg = r.error.unwrap().message;
-    assert!(msg.contains("not pool") && !msg.to_lowercase().contains("cafebabe"), "{msg}");
+    assert!(msg.contains("not pool") && !msg.to_lowercase().contains("cafebabe"), "message len {}", msg.len());
     assert!(h.prompt("wallet_strk20InvokeTransaction").is_empty());
     assert!(node.submitted.lock().unwrap().is_empty());
 }
@@ -372,11 +393,11 @@ async fn a_mainnet_screener_key_is_refused() {
     let mut params = deposit();
     params["chainId"] = json!("0x534e5f4d41494e"); // SN_MAIN
     let r = h.call("wallet_strk20InvokeTransaction", params.clone()).await;
-    assert_eq!(code(&r), -32006, "{:?}", r.error);
+    assert_eq!(code(&r), -32006);
     assert!(r.error.unwrap().message.contains("testnet-only"));
     // PrepareInvoke takes the same path.
     let r = h.call("wallet_strk20PrepareInvoke", params).await;
-    assert_eq!(code(&r), -32006, "{:?}", r.error);
+    assert_eq!(code(&r), -32006);
     assert!(h.prompt("wallet_strk20InvokeTransaction").is_empty());
     assert!(node.submitted.lock().unwrap().is_empty());
 }

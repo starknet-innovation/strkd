@@ -21,6 +21,11 @@ pub struct ProveRequest {
     pub label: Option<String>,
     /// `mainnet` or `testnet` (drives which settings/prover are used).
     pub network: String,
+    /// Accept an empty `signature` array. Only strkd's own STRK20 paths set
+    /// this: an external owner contract defines what its signature means
+    /// (`is_custom_signature_valid`), and `[]` is valid for some owners. The
+    /// field must still be present, so the prover still never signs.
+    pub allow_empty_signature: bool,
 }
 
 /// The proof the backend produced. Opaque to the core.

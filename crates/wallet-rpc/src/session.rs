@@ -14,13 +14,15 @@
 use serde::{Deserialize, Serialize};
 use wallet_core::{
     address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_hash, sign_invoke_v3,
-    sign_typed_data, strk20_viewing_key, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
+    sign_typed_data, strk20_owner_viewing_key, strk20_viewing_key, AccountContract, AccountRef, Call, ChainId, CoreError,
+    DeploymentData, Domain,
     EncryptedVault,
-    Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature,
+    Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature, Strk20Owner,
 };
 use zeroize::Zeroizing;
 
 use crate::error::WalletRpcError;
+use crate::strk20::plan::PlanStore;
 
 /// The plaintext payload stored (encrypted) in the vault.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,12 +36,22 @@ struct Unlocked {
     mnemonic: Zeroizing<String>,
     vault_passphrase: Zeroizing<String>,
     registry: Registry,
+    /// STRK20 plans (#48 §5.4). They hold channel keys, so they live and die
+    /// with the unlocked state: every lock, by any path, drops (and wipes)
+    /// them. Never persisted.
+    strk20_plans: PlanStore,
 }
+
+/// Something to run whenever the session locks (by any path).
+pub type LockHook = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// A wallet session, locked or unlocked, bound to a network.
 pub struct WalletSession {
     chain: ChainId,
     unlocked: Option<Unlocked>,
+    /// Run on every [`WalletSession::lock`]: wipes in-memory state held outside
+    /// the session, such as STRK20 proving results (#48 §5.7).
+    lock_hooks: Vec<LockHook>,
 }
 
 /// Decrypt the on-disk vault with a **freshly supplied** passphrase and return
@@ -103,6 +115,7 @@ impl WalletSession {
         WalletSession {
             chain,
             unlocked: None,
+            lock_hooks: Vec::new(),
         }
     }
 
@@ -121,7 +134,9 @@ impl WalletSession {
                 mnemonic: Zeroizing::new(mnemonic.into()),
                 vault_passphrase: Zeroizing::new(vault_passphrase.into()),
                 registry,
+                strk20_plans: PlanStore::default(),
             }),
+            lock_hooks: Vec::new(),
         }
     }
 
@@ -135,13 +150,23 @@ impl WalletSession {
             mnemonic: Zeroizing::new(contents.mnemonic),
             vault_passphrase: Zeroizing::new(vault_passphrase.to_string()),
             registry: contents.registry,
+            strk20_plans: PlanStore::default(),
         });
         Ok(())
     }
 
-    /// Drop the unlocked state, wiping the mnemonic.
+    /// Drop the unlocked state, wiping the mnemonic and every STRK20 plan, and
+    /// run the lock hooks (which drop STRK20 proving results).
     pub fn lock(&mut self) {
         self.unlocked = None;
+        for hook in &self.lock_hooks {
+            hook();
+        }
+    }
+
+    /// Run `hook` on every future [`Self::lock`], by any path.
+    pub fn add_lock_hook(&mut self, hook: LockHook) {
+        self.lock_hooks.push(hook);
     }
 
     pub fn is_locked(&self) -> bool {
@@ -162,6 +187,11 @@ impl WalletSession {
             .as_ref()
             .map(|u| &u.registry)
             .ok_or(WalletRpcError::Locked)
+    }
+
+    /// The in-memory STRK20 plan store, if unlocked (#48 §5.4).
+    pub(crate) fn strk20_plans(&mut self) -> Result<&mut PlanStore, WalletRpcError> {
+        self.unlocked.as_mut().map(|u| &mut u.strk20_plans).ok_or(WalletRpcError::Locked)
     }
 
     fn require_unlocked(&self) -> Result<&Unlocked, WalletRpcError> {
@@ -242,6 +272,52 @@ impl WalletSession {
         let u = self.require_unlocked()?;
         strk20_viewing_key(&u.mnemonic, account.domain, account.index, None, &chain.as_felt(), pool)
             .map_err(WalletRpcError::from)
+    }
+
+    /// The STRK20 viewing key strkd holds for the external owner contract
+    /// `owner`, derived from `controller`'s key and scoped to `pool` on `chain`
+    /// (`wallet_core::strk20_owner_viewing_key`; design note #48 §3.2).
+    ///
+    /// Same handling as [`Self::strk20_viewing_key_for`]: a secret, never
+    /// logged, persisted or returned over RPC.
+    pub fn strk20_owner_viewing_key_for(
+        &self,
+        controller: &AccountRef,
+        chain: ChainId,
+        pool: &Felt,
+        owner: &Felt,
+    ) -> Result<Felt, WalletRpcError> {
+        let u = self.require_unlocked()?;
+        strk20_owner_viewing_key(&u.mnemonic, controller.domain, controller.index, None, &chain.as_felt(), pool, owner)
+            .map_err(WalletRpcError::from)
+    }
+
+    /// Add a STRK20 owner record to the in-memory registry. Returns false if the
+    /// owner is already enrolled on that chain and pool in the record's scope.
+    /// Persist with [`Self::reseal`]; undo with [`Self::rollback_strk20_owner`].
+    pub fn add_strk20_owner(&mut self, owner: Strk20Owner) -> Result<bool, WalletRpcError> {
+        let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
+        Ok(u.registry.add_strk20_owner(owner))
+    }
+
+    /// Remove the STRK20 owner record for `owner` on `(chain, pool)` in the
+    /// scope `client_id`, returning it. Undo by re-adding it.
+    pub fn remove_strk20_owner(
+        &mut self,
+        owner: &str,
+        chain: ChainId,
+        pool: &str,
+        client_id: Option<&str>,
+    ) -> Result<Option<Strk20Owner>, WalletRpcError> {
+        let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
+        Ok(u.registry.remove_strk20_owner(owner, chain, pool, client_id))
+    }
+
+    /// Undo [`Self::add_strk20_owner`] when persistence fails.
+    pub fn rollback_strk20_owner(&mut self, owner: &Strk20Owner) {
+        if let Some(u) = self.unlocked.as_mut() {
+            u.registry.remove_strk20_owner(&owner.owner, owner.chain, &owner.pool, owner.client_id.as_deref());
+        }
     }
 
     /// Sign an already-computed hash with the account's key and serialize the

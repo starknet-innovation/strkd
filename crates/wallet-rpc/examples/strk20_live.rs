@@ -8,7 +8,18 @@
 //! cargo run -p wallet-rpc --example strk20_live -- invoke <from> <json-actions>
 //! cargo run -p wallet-rpc --example strk20_live -- prepare-submit <from> <to|0x…> <amount_wei> <submitter>
 //! STRK20_SCREENER_KEY=0xCAFEBABE cargo run -p wallet-rpc --example strk20_live -- prepare-deposit <from> <amount_wei>
+//! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> register
+//! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> withdraw <amount_wei> <to|0x…>
+//! cargo run -p wallet-rpc --example strk20_live -- owner-flow <admin> <owner> transfer <amount_wei> <to|0x…>
 //! ```
+//!
+//! `owner-flow` (#48) runs plan → approve → prove for an external owner
+//! contract (`contracts/strk20-owner-example`, deployed with `admin` = test
+//! account `<admin>` and `pool` = the pool used here): it enrols `<owner>` with
+//! `<admin>` as controller, plans, sends `approve_plan(plan_hash)` from
+//! `<admin>`, waits until the approval is 12 blocks old, then proves with
+//! `signature: []` and `submit: "account"` (submitted from `<admin>`) and polls
+//! the job. It SENDS TRANSACTIONS (the approval and the submission).
 //!
 //! `<account>`, `<from>`, `<to>` are test-seed user account indices (the
 //! published BIP-39 all-`abandon` vector; never real keys) already deployed and
@@ -188,16 +199,82 @@ async fn main() {
             }
             prepared
         }
+        Some("owner-flow") => owner_flow(&state, t, &args).await,
         Some("invoke") => {
             let from: u32 = args[1].parse().unwrap();
             let actions: Value = serde_json::from_str(&args[2]).unwrap();
             rpc(&state, t, "wallet_strk20InvokeTransaction", json!({ "account_address": address(from), "actions": actions })).await
         }
         _ => {
-            eprintln!("usage: strk20_live balances <i> | prepare-transfer <from> <to> <wei> | invoke <from> <json-actions>");
+            eprintln!("usage: strk20_live balances <i> | prepare-transfer <from> <to> <wei> | invoke <from> <json-actions> | owner-flow <admin> <owner> register|withdraw <wei> <to>|transfer <wei> <to>");
             return;
         }
     };
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+/// `owner-flow <admin> <owner> register | withdraw <wei> <to> | transfer <wei> <to>`.
+async fn owner_flow(state: &ServerState, t: Option<&str>, args: &[String]) -> Value {
+    let admin = address(args[1].parse().unwrap());
+    let owner = args[2].clone();
+    let enrol = rpc(state, t, "companion_strk20AddOwner", json!({ "owner_address": owner, "account_address": admin })).await;
+    eprintln!("enrol: {enrol}");
+    let mut plan_params = json!({ "owner_address": owner });
+    match args[3].as_str() {
+        "register" => plan_params["register"] = json!(true),
+        kind @ ("withdraw" | "transfer") => {
+            let amount: u128 = args[4].parse().unwrap();
+            plan_params["actions"] = json!([{ "type": kind, "token": STRK, "amount": format!("{amount:#x}"),
+                                              "recipient": addr_arg(&args[5]) }]);
+        }
+        other => panic!("unknown owner-flow intent {other}"),
+    }
+    let plan = rpc(state, t, "companion_strk20Plan", plan_params).await;
+    let Some(plan_id) = plan["result"]["plan_id"].as_str().map(str::to_string) else { return plan };
+    let plan_hash = plan["result"]["plan_hash"].as_str().unwrap().to_string();
+    eprintln!("plan {plan_id}: plan_hash {plan_hash}, summary {}", plan["result"]["summary"]);
+
+    let approve = rpc(
+        state,
+        t,
+        "wallet_addInvokeTransaction",
+        json!({ "account_address": admin, "submit": true,
+                "calls": [{ "contract_address": owner, "entry_point": "approve_plan", "calldata": [plan_hash] }] }),
+    )
+    .await;
+    let Some(tx) = approve["result"]["transaction_hash"].as_str().map(str::to_string) else { return approve };
+    eprintln!("approve_plan tx {tx}");
+    let node = HttpStarknetRpc::new(RPC);
+    let approved_at = loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let r = wallet_rpc::StarknetRpc::raw(&node, "starknet_getTransactionReceipt", json!({ "transaction_hash": tx })).await;
+        if let Some(b) = r.ok().and_then(|r| r["block_number"].as_u64()) {
+            break b;
+        }
+    };
+    eprintln!("approved in block {approved_at}; waiting until it is 12 blocks old");
+    loop {
+        let head = wallet_rpc::StarknetRpc::raw(&node, "starknet_blockNumber", json!([])).await.ok().and_then(|v| v.as_u64());
+        if head.is_some_and(|h| h >= approved_at + 12) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+
+    let proved = rpc(state, t, "companion_strk20Prove", json!({ "plan_id": plan_id, "signature": [], "submit": "account" })).await;
+    let Some(job_id) = proved["result"]["job_id"].as_str().map(str::to_string) else { return proved };
+    eprintln!("prove queued: {proved}");
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let mut job = rpc(state, t, "companion_proveStatus", json!({ "job_id": job_id })).await;
+        let status = job["result"]["status"].as_str().unwrap_or_default().to_string();
+        if status == "succeeded" || status == "failed" || job["error"].is_object() {
+            if let Some(d) = job.pointer_mut("/result/result/proof/data") {
+                let n = d.as_str().map(str::len).unwrap_or(0);
+                *d = json!(format!("<{n} base64 chars>"));
+            }
+            return job;
+        }
+    }
 }

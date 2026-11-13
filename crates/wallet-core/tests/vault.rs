@@ -116,6 +116,17 @@ fn seed_and_registry_seal_cycle() {
     assert_eq!(restored.registry.scoped_for(Some("other")).count(), 0);
 }
 
+/// #48: STRK20 owner records are an additive registry field. A registry written
+/// before them loads with none, and one without owners serializes exactly as
+/// before (no `strk20_owners` key), so older builds can still read it.
+#[test]
+fn registry_without_strk20_owners_is_unchanged_on_disk() {
+    let old = r#"{"accounts":[{"domain":"user","index":0,"address":"0x0123","label":"Main"}]}"#;
+    let reg: Registry = serde_json::from_str(old).unwrap();
+    assert!(reg.strk20_owners.is_empty());
+    assert!(!serde_json::to_string(&reg).unwrap().contains("strk20_owners"));
+}
+
 /// A vault from an older format must be reported as *unsupported*, not as a bad
 /// passphrase — even when the passphrase is correct.
 ///

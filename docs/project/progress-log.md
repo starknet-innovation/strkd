@@ -46,8 +46,260 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 - A submitted deposit via the desktop Private tab or `strk20_live invoke`.
 
 **Notes / caveats**
-- Expected conflicts with the #48 stack (#54–#56) in `strk20/mod.rs` (`ctx`,
-  `prepare`, `proving_for`, balances prompt) and `usage.rs` (one line).
+- Merged over the #48 stack (plan/prove split, owner subjects): the local
+  screener applies to the one-shot deposit methods only; plan/prove deposits
+  still return DEPOSIT_UNSUPPORTED. Plan/prove/enrol prompts flag a
+  non-canonical pool too, and `companion_strk20Plan` accepts `pool_address`.
+
+---
+
+## 2026-11-13 — STRK20 #48 part 3: security-review fixes
+
+**Did**
+- STRK20 prover errors no longer echo the prover. A malicious owner contract could panic with the
+  viewing key or a channel key, encoded so scrubbing misses it.
+  - `strk20::safe_prover_error` maps every error, on the job and the one-shot path, to a reason
+    plus fixed text, picked by the prefix strkd wrote.
+  - `redact_for_log` drops `result` and `error` from `companion_proveStatus` for STRK20 jobs.
+  - The enrolment prompt, the usage doc and design §6 say the owner contract's code is trusted
+    with the viewing key and channel keys.
+- Native prover temp file: the dir is `0700` and the file `0600` (`create_new`), and the dir is
+  removed on drop.
+  - A wallet lock cancels running ephemeral jobs (`Jobs::cancel_signal`). The `snip36` process
+    group is killed and the dir removed; `finish` never runs; the job fails with `WIPED_ON_LOCK`.
+  - Stale `strkd-prove-<deadpid>-*` dirs are removed at prover start.
+- Submission re-checks, under the session lock right before signing, that the job wasn't wiped and
+  that the submitter is still in scope (`SubmitGuard`, `SUBMITTER_NOT_IN_SCOPE`).
+- Arithmetic on outside input saturates: `block_number` + 12, and the deposit, fee and attestation
+  sums.
+- The one-plan cap is per client, and its message no longer mentions other clients.
+- `dispatch::display_text` strips control and Unicode format (Cf) characters from owner labels and
+  client names.
+- Prove prompts again when a remote prover's URL changed since the plan (`prover_identity`).
+- `companion_proofActivity` lists only the caller's jobs.
+- Design note §10: L2→L1 messages from an owner contract can't be published. The pool requires
+  `message_to_l1_hashes == [its own]`, and `proof_facts` carries hashes only. §11.3 lists the fixes.
+
+**Decisions**
+- Errors are classified by prefix only. Text after the prefix can be chosen by contract code. The
+  one exception is `INVALID_SIGNATURE` anywhere in the text, and it only chooses the reason.
+- Revert detail is gone for STRK20 errors. That is the price of not leaking. Debug with `snip36`
+  run by hand on a test seed.
+- No stdin for the tx: `snip36 prove virtual-os --help` (v1.4.2 bundle) has only `--tx-json
+  <path>`. Its source reads the path once, so `/dev/stdin` may work; it was not tried, because
+  running the bundled binary was out of scope.
+
+**Verify**
+- `cargo test --locked` → green.
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` (from a copy) → green.
+
+**Next / Resume**
+- Decide on the native preflight that refuses an empty `signature`: it breaks owner plans proved
+  with `signature: []` (design §11.3).
+- Sepolia live run (design §8), unchanged.
+
+**Notes / caveats**
+- No transactions sent; test seeds only.
+
+## 2026-11-13 — STRK20 external owners, part 3: the prove step (#48)
+
+**Did**
+- `companion_strk20Prove { plan_id, block_number?, signature?, submit?, submitter_address? }`
+  (`strk20/prove.rs`). It runs every §5.5 check synchronously: plan, subject still in scope, `B`
+  bounds, deployed and SRC5 at `B`, discovery at `B` and `latest` against the plan's snapshot, plan
+  hash re-check. Then it consumes the plan and queues a proving job, polled with
+  `companion_proveStatus`. The result is `{ call, proof }`, or `{ transaction_hash,
+  submitter_address, call }` with `submit: "account"`.
+- Owners: the caller's `signature` felts go into the virtual tx verbatim, and strkd never signs.
+  Accounts: strkd signs the invocation hash with the account key.
+- `prover::enqueue_prove_unrecorded`: a background proof that writes nothing to proof storage,
+  owned by one client, with its result dropped 1 h after it finishes or when the wallet locks
+  (a session lock hook installed by `ServerState::with_prover`).
+- Every proving job is now client-scoped (`Jobs::get_for`): `companion_proveStatus` answers
+  "unknown job" for another client's job, including `companion_prove` and
+  `companion_signAndProve` jobs.
+- `submit_from` generalises `submit_from_account` so any in-scope strkd account can submit an
+  owner's proof. The relay is refused (`RELAY_UNSUPPORTED`).
+- Prover errors that show the pool's `INVALID_SIGNATURE` fail the job with `error_reason`
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account). Everything is scrubbed.
+- `strk20_live owner-flow` example command for the manual Sepolia run. Usage doc, code docs and
+  design note §10 and §11.2 updated.
+
+**Decisions**
+- Client scoping applies to all jobs, not only STRK20 ones. It is compatible for clients that poll
+  their own jobs (re-attach keeps the id) and closes the "any paired client can poll any job" hole.
+- `BLOCK_TOO_RECENT` also covers "the head hasn't moved 12 blocks past the plan yet"; there is no
+  separate `BLOCK_TOO_EARLY`. `BLOCK_TOO_OLD` keeps 120 blocks of the pool's window in hand.
+- `PLAN_STALE` drops the plan; bound, SRC5 and param errors keep it.
+- Job wipe-on-lock is a `WalletSession` lock hook, so every lock path (desktop button, auto-lock,
+  tests) runs it with no change in the desktop crate. `Jobs` moved to a plain mutex so the hook can
+  run synchronously.
+
+**Verify**
+- `cargo test --locked` → green across the workspace (15 new prove dispatch tests, 5 unit tests in
+  `strk20/prove.rs`, 3 in `prover/src/jobs.rs`, 1 in `prover/tests/enqueue.rs`).
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` and `cargo test --locked` → green.
+
+**Next / Resume**
+- Sepolia live run with `contracts/strk20-owner-example` (design §8): `strk20_live owner-flow`.
+  Record whether `INVALID_SIGNATURE` fails fast and how the prover spells it (§10).
+- Phase 2: `owner_address` on the one-shot methods, the narrow staleness check, desktop UI, relay.
+
+**Notes / caveats**
+- Not run against a live owner contract; no transactions were sent.
+- The native prover still writes the virtual tx (with `user_sk`) to a temp file for the CLI,
+  deleted afterwards. Unchanged by this PR.
+
+---
+
+## 2026-11-13 — STRK20 external owners, part 2: the plan step (#48)
+
+**Did**
+- `companion_strk20Plan` plans a register, transfer or withdraw batch for an
+  enrolled owner or a strkd account, prompts once (a grant covers it), stores
+  the plan and returns `plan_hash` with its SNIP-12 `typed_data` and a summary.
+  It signs nothing and proves nothing. `companion_strk20DiscardPlan` drops a
+  plan without a prompt.
+- `plan_at_reference` is the shared first half of `prepare()` (reference block,
+  deployed check, double discovery, one draw of `OsRandomness`, `UserLinkage`).
+  For an owner it also checks SRC5 at the reference block. The existing
+  one-shot methods behave as before.
+- `strk20::plan::plan_hash` is the single implementation of the §5.3 hash. Its
+  unit test reproduces PR #53's vector exactly (`actions_hash 0x03342f41…f84a`,
+  `plan_hash 0x062a76d3…3301`), and dispatch tests check
+  `companion_typedDataHash` gives the same digest.
+- `reveal_actions: true` adds a separate prompt that a grant never covers,
+  worded from the #49 finding: the actions carry channel keys, which disclose
+  every past and future payment on those channels, irrevocably, and cannot
+  spend. The request log redacts the revealed actions.
+- `PlanStore` (in the unlocked session): 128-bit random ids bound to the
+  client, TTL 1 h (max 24 h), one live plan per (owner, pool), 4 per client,
+  32 in all. Plans are wiped on lock, discard and expiry, and gone after a
+  restart.
+- `strk20::hashes::poseidon_hash_many`, usage-doc entries, docs, and the design
+  note's Cairo sketch now uses `version() = 1`.
+
+**Decisions**
+- The store lives inside `WalletSession`'s unlocked state instead of directly
+  on `ServerState`, so every lock path drops it with no extra hook (§11.1).
+- Plans also work for strkd accounts, as §2.1 says. Deposits are refused for
+  both (`DEPOSIT_UNSUPPORTED`): plan/prove proves locally.
+- New reason `ALREADY_REGISTERED` for `register: true` on a registered subject.
+- Felt wiping is best effort with `black_box`: `starknet-types-core`'s zeroize
+  support needs a feature that would change `Cargo.lock`.
+
+**Verify**
+- `cargo test --locked` → green across the workspace (11 new plan dispatch
+  tests, 5 new unit tests in `strk20/plan.rs`).
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+
+**Next / Resume**
+- #48 part 3: `companion_strk20Prove` (prove-time checks §5.5, `submit: "none" |
+  "account"`, `enqueue_prove_unrecorded`, client-scoped jobs with retention).
+
+**Notes / caveats**
+- Not run against a live owner contract; no transactions were sent.
+- The caller's signature for an owner is supplied at prove time; strkd never
+  signs for an owner.
+
+---
+
+## 2026-11-13 — STRK20 external owners, part 1: enrolment and key derivation (#48)
+
+**Did**
+- `wallet_core::strk20_owner_viewing_key` signs
+  `starknet_keccak("strkd.strk20.owner.v1:<chain>:<pool>:<owner>")` with the
+  controller account's key (RFC 6979) and folds the signature with krusty's
+  `fold_strk20_viewing_key`. It is a sibling of `strk20_viewing_key`, and
+  `WalletSession::strk20_owner_viewing_key_for` wraps it.
+- `Strk20Owner` records live in `Registry.strk20_owners`, an additive serde
+  field. They are sealed and persisted through the new
+  `dispatch::persist_registry`, which also handles agent-account creation now.
+  Scoping follows the account rule.
+- Three new methods:
+  - `companion_strk20AddOwner` checks that the owner is deployed, that it
+    advertises SRC5 `0x2eb9…ded`, and that any existing pool registration uses
+    the derived key. It then always prompts (`Caller::approve_always`, which
+    skips grants) and records the owner.
+  - `companion_strk20ListOwners` lists the owners in scope.
+  - `companion_strk20RemoveOwner` forgets an owner after a gated prompt.
+- The STRK20 `Ctx` now has a `Subject` (an account, or an owner with its
+  controller). `owner_address` together with `account_address` is a 114. The
+  existing one-shot methods refuse owners with `-32601` until phase 2.
+- Error objects can carry `data: { reason }`, set with
+  `WalletRpcError::with_reason`. The code is unchanged and the message gets a
+  `REASON: ` prefix. Errors without a reason serialize as before.
+- Design note: recorded that the deployed pool class has the custom-validation
+  path and that the pool nonce is constant (verified 2026-11-13). Added §11,
+  implementation notes.
+
+**Decisions**
+- Added `OWNER_ALREADY_ENROLLED` (-32006), which is not in the note's §7 table.
+  Enrolling a strkd account address as an owner is a 114.
+- `RemoveOwner` goes through the gated prompt, so a grant can cover it. Removal
+  signs and reveals nothing, and the key can be derived again.
+- A `starknet_call` JSON-RPC error on `supports_interface` (a revert, or no
+  such entry point) counts as "no SRC5". Transport failures stay `-32004`.
+
+**Verify**
+- `cargo test --locked` → green across the workspace. This adds 3 owner-key
+  tests in wallet-core, 1 vault test, 11 owner dispatch tests, 2 session tests
+  and 2 `error.rs` unit tests.
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+
+**Next / Resume**
+- #48 part 2: `companion_strk20Plan` (SNIP-12 `Strk20Plan` hash,
+  `reveal_actions`, `PlanStore`). Part 3: prove, client-bound jobs, `submit`.
+
+**Notes / caveats**
+- The owner-key vectors use the test seed only. The starknet.js conformance
+  vector for the owner key is still to do (§8).
+- Nothing was submitted on chain.
+
+## 2026-11-13 — Reference STRK20 owner contract + Strk20Plan vector (#48)
+
+**Did**
+- `contracts/strk20-owner-example/`: a Scarb project (scarb 2.18.0, snforge
+  0.60.0, OpenZeppelin as pinned by the pool at starknet-privacy `4026da7`).
+  It is the owner contract from design note §5.3. It advertises SRC5 for the
+  custom-validation id. `is_custom_signature_valid` returns `VALIDATED` only for one
+  `compile_actions` call to the stored pool, for this owner, whose
+  `Strk20Plan` hash an admin approved. `is_valid_signature` always returns 0.
+  `approve_plan`/`revoke_plan` are admin-only and emit events. No upgrade path
+  and no funds.
+- A SNIP-12 `Strk20Plan` vector in
+  `crates/wallet-core/tests/fixtures/strk20-plan-vector.json`. Rust/krusty
+  (`tests/strk20_plan_vector.rs`), starknet.js (`conformance/verify.mjs`) and
+  Cairo/OZ (`test_owner.cairo`) all reproduce
+  `plan_hash = 0x062a76d3…5ce3301`. The Rust test also fails if the Cairo
+  constants drift from the JSON.
+- CI job `owner-contract`: `scarb fmt --check`, `scarb build`, `snforge test`.
+
+**Decisions**
+- The domain `version` is the felt `1`, not the shortstring `'1'` (`0x31`).
+  starknet.js and krusty encode the typed-data string `"1"` as the number 1,
+  the same as `revision`. The first Cairo draft used `'1'` and the vector caught
+  the mismatch. strkd's typed data must keep `"version": "1"`.
+- The contract ignores `signature` and `additional_data`: the on-chain approval
+  is the authorisation. There is no approval expiry, because `get_block_number`
+  inside the virtual block is unverified. Revoke instead.
+
+**Verify**
+- `cd contracts/strk20-owner-example && scarb build && snforge test` → 26 passed.
+- `cargo test --locked -p wallet-core` and
+  `cargo clippy --locked -p wallet-core --all-targets -- -D warnings`.
+- `cd conformance && npm ci && npm run verify`.
+
+**Next / Resume**
+- strkd side of #48 (enrolment, `companion_strk20Plan`/`Prove`). Its
+  `plan_hash` must reproduce this vector.
+- Manual Sepolia live run with this contract (design §8). Nothing has been
+  deployed.
+
+**Notes / caveats**
+- Not audited. Not deployed. No transaction was sent.
 
 ---
 

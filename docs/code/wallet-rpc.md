@@ -19,7 +19,7 @@ It holds **no key material**: all signing goes through
 | `error.rs` | `WalletRpcError` + mapping to standard `wallet_rpc.json` codes (and JSON-RPC reserved codes for transport/lock conditions). |
 | `auth.rs` | `ClientStore`: pairing, per-client bearer tokens (only SHA-256 hashes stored), `ClientKind` (Agent/App), time-bounded auto-approval grants (`grant`/`revoke_grant`/`list`), **persisted** to `clients.json` (`open`/`persist`). |
 | `approval.rs` | The `Approver` trait + `AutoApprover` (tests) and `ChannelApprover` (real UI). Carries only public info in a prompt. |
-| `session.rs` | `WalletSession`: holds the unlocked mnemonic + vault passphrase + registry; performs deployment-data, typed-data signing, invoke signing, user/agent-account creation, and re-sealing. |
+| `session.rs` | `WalletSession`: holds the unlocked mnemonic + vault passphrase + registry (and the in-memory STRK20 plan store, dropped on lock); runs its lock hooks on every lock (`with_prover` adds one that wipes STRK20 proving results); performs deployment-data, typed-data signing, invoke signing, user/agent-account creation, and re-sealing. |
 | `log.rs` | `RequestLog` — SQLite-backed (file or in-memory), with full-payload redaction toggle. |
 | `store.rs` | `VaultStore` — atomic on-disk `vault.bin` load/save (temp + rename, `0600`). |
 | `node.rs` | `StarknetRpc` trait + `HttpStarknetRpc` (reqwest JSON-RPC): nonce, fee estimate, broadcast, deploy-status, deploy-account. |
@@ -81,9 +81,15 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `companion_requestGrant` | paired | **yes (always)** | agent asks for an auto-approval window (1–90 days); always prompts (escalation is never auto-approved) |
 | `companion_requestFunding` | paired (agent) | **yes** | sign a STRK transfer **manager → agent's own account** (sign-only) |
 | `companion_prove` | paired | no | on-device proof of an **already-signed** payload (`{payload, network?, label?}`) → `{job_id}`; the `prover` crate holds no keys. Returns `-32601` if no prover is wired |
-| `companion_proveStatus` | paired | no | poll a proving job by `job_id` → status + `result`/`error` |
-| `companion_proofActivity` | paired | no | recent proving activity feed (desktop Proving tab) |
+| `companion_proveStatus` | paired | no | poll a proving job by `job_id` → status + `result`/`error`(+`error_reason`). Only the client that queued the job sees it; any other id is 114 "unknown job" |
+| `companion_proofActivity` | paired | no | recent proving activity feed of the calling client's jobs (the desktop's Proving tab reads every job over IPC) |
 | `companion_strk20Register` | paired | **yes** | register the account's STRK20 viewing key (+ self-channel), proved locally, submitted from the account → `{transaction_hash}`. See [`strk20.md`](./strk20.md) |
+| `companion_strk20AddOwner` | paired | **yes (always)** | enrol an external contract with SRC5 `is_custom_signature_valid` as a STRK20 owner (#48). Checks deployed, SRC5, and that any existing pool registration uses the key the controller derives. A grant never covers it → `{owner_address, chain, pool, controller, label, registered, viewing_public_key}` |
+| `companion_strk20ListOwners` | paired | no | the owners in the caller's scope (an agent: those it enrolled; an app: the user's) |
+| `companion_strk20RemoveOwner` | paired | **yes** | forget an owner record on the active or given chain's pool → `true` |
+| `companion_strk20Plan` | paired | **yes** (+ **always** for `reveal_actions`) | plan a STRK20 batch for an owner or an account without signing or proving it (#48) → `{plan_id, plan_version, expires_at, plan_block, plan_hash, actions_hash, typed_data, summary, …}`; `client_actions` only after the separate `reveal_actions` prompt. See [`strk20.md`](./strk20.md#external-owners-48) |
+| `companion_strk20DiscardPlan` | paired | no | drop one of the caller's plans → `true`; else `PLAN_NOT_FOUND` |
+| `companion_strk20Prove` | paired | only if the prover changed since the plan, or `submit: "account"` | check and consume a plan, then queue an unrecorded proving job (#48) → `{job_id, status: "queued", block_number, …}`; poll `companion_proveStatus` → `{call, proof}` or `{transaction_hash, submitter_address, call}`. Owners: the caller's `signature` is used verbatim; accounts: strkd signs |
 | `wallet_strk20Balances` | paired | **yes** | private balance per token, discovered and decrypted locally |
 | `wallet_strk20PrepareInvoke` | paired | **yes** | plan + sign + prove STRK20 actions → `{call, proof}` unsubmitted |
 | `wallet_strk20InvokeTransaction` | paired | **yes** | same, then submit (deposits from the account; private batches via the AVNU relay) → `{transaction_hash}` |
@@ -226,7 +232,31 @@ node_probe`.)
   writes `vault.bin` **atomically** (temp + rename, `0600`). If the write fails,
   the in-memory add is **rolled back** (`rollback_account`) so memory and disk
   never diverge. With no store configured (e.g. tests), the change is in-memory
-  only.
+  only. `dispatch::persist_registry` does this for every registry change: agent
+  accounts, and STRK20 owner records (`companion_strk20AddOwner` /
+  `RemoveOwner`, rolled back with `rollback_strk20_owner` or a re-add).
+- **Machine-readable error reasons (`data.reason`):** an error built with
+  `WalletRpcError::with_reason("UPPER_SNAKE")` keeps its code, gets the message
+  prefix `UPPER_SNAKE: `, and its JSON-RPC error object gains
+  `data: { "reason": "UPPER_SNAKE" }`. Errors without a reason serialize exactly
+  as before (no `data` member), so existing clients are unaffected. Current
+  reasons: `OWNER_NOT_DEPLOYED`, `OWNER_NO_CUSTOM_VALIDATION`,
+  `OWNER_KEY_MISMATCH`, `OWNER_ALREADY_ENROLLED`, `ALREADY_REGISTERED`,
+  `PLAN_LIMIT`, `PLAN_STALE`, `BLOCK_TOO_RECENT`, `BLOCK_BEFORE_PLAN`,
+  `BLOCK_TOO_OLD` (`-32006`), `OWNER_NOT_ENROLLED` (`-32002`),
+  `PLAN_NOT_FOUND`, `SIGNATURE_REQUIRED`, `SIGNATURE_NOT_ALLOWED` (114),
+  `DEPOSIT_UNSUPPORTED`, `RELAY_UNSUPPORTED` (`-32601`) and
+  `PLAN_HASH_MISMATCH` (163). Proving jobs carry the same idea as
+  `error_reason` on the job (`OWNER_SIGNATURE_REJECTED`, `INVALID_SIGNATURE`,
+  `PROVING_FAILED`, `WIPED_ON_LOCK`, `SUBMITTER_NOT_IN_SCOPE`, or a submission
+  reason). The #48 design
+  note's §7 has the table.
+- **Proving jobs are client-scoped:** `companion_prove`, `companion_signAndProve`
+  and `companion_strk20Prove` tag each job with the calling client's id, and
+  `companion_proveStatus` reads with `Jobs::get_for`, so a client sees only its
+  own jobs (others are "unknown job", 114). Before #48 part 3, job ids were
+  sequential (`p{n}`) and any paired client could poll any job.
+  `companion_proofActivity` lists only the caller's jobs too (#48 review).
 - **No secrets in logs/prompts:** `ApprovalRequest` carries only public info.
   The request log (`log.rs`) persists timestamp, method, caller label, network,
   decision, outcome, error code, and latency; with `full_payloads` on (default,
@@ -234,7 +264,14 @@ node_probe`.)
   **never** stores seed/key/passphrase/raw tokens — bearer tokens ride the
   header and only the resolved client label/id is logged. Redaction is
   centralized in `RequestLog::record`, and `set_full_payloads(false)` drops the
-  params/result columns for subsequent rows (spec §9). The store is SQLite
+  params/result columns for subsequent rows (spec §9). One result is redacted
+  even with full payloads on: `companion_strk20Plan`'s `client_actions` and
+  `client_actions_felts` (channel keys) are logged as `"<redacted>"`
+  (`dispatch::redact_for_log`), and so are `result` and `error` of
+  `companion_proveStatus` for a STRK20 job (label `STRK20 …`; status and
+  `error_reason` stay). STRK20 prover errors are fixed text in the first place
+  (`strk20::safe_prover_error`), so neither the caller nor the log sees revert
+  text that contract code chose. The store is SQLite
   (file-backed in production via `ServerState::with_log`, in-memory by default /
   in tests); inserts are synchronous under the log mutex — fine at wallet
   request rates, movable to a writer task if throughput ever demands it.
@@ -265,7 +302,10 @@ node_probe`.)
 | `tests/server.rs` (3) | real loopback HTTP via reqwest: `port.lock` written with bound port, public call, unauth rejected (118), pair → bearer-authed call; **403 without `X-Companion-Client`; 403 when `Origin` present**. |
 | `tests/log.rs` (5) | SQLite log: newest-first ordering, full-payloads on keeps params/result, off redacts them but keeps the summary, toggle applies to subsequent rows, file-backed persistence across reopen. |
 | `tests/persistence.rs` (2) | agent-account creation re-seals + writes `vault.bin`; the account survives a reopen + unlock cycle; wrong passphrase can't open the persisted vault. |
-| `tests/session.rs` (3) | `create_user_account` derives a user-domain account and grows the registry; fails when locked; `sign_deploy_account_for` produces a hash/signature + deployment fields matching the account. |
+| `tests/session.rs` (3) | `create_user_account` derives a user-domain account and grows the registry; fails when locked; `sign_deploy_account_for` produces a hash/signature + deployment fields matching the account. Also: STRK20 owner records survive reseal + unlock, with per-scope duplicates refused and rollback; the owner key comes from the controller and differs from its own key. |
+| `tests/dispatch.rs` (STRK20 owners) | `companion_strk20AddOwner` happy path (prompt shown, only the public key returned), registered under the derived key, prompts even under a grant, not deployed, no SRC5 (false and revert), key mismatch, param validation; scoping (agent B can't list, use or remove agent A's owner); remove (prompted, refused keeps it); `owner_address` + `account_address` → 114; errors without a reason have no `data`. |
+| `tests/dispatch.rs` (STRK20 plans) | `companion_strk20Plan` for an owner: one prompt naming owner/label/controller/chain/action count/pool/on-chain approval, no pool-nonce read and no proving job (nothing signed), SRC5 re-checked at `plan_block`, `plan_hash` reproduced by `companion_typedDataHash`, no actions without `reveal_actions`; `reveal_actions` prompts even under a grant, returns felts whose Poseidon is `actions_hash`, and the log redacts them; a refused reveal still returns the plan; a grant covers the plan prompt and a refused plan is not stored; one plan per owner + discard; TTL expiry and validation; another client gets `PLAN_NOT_FOUND`; lock wipes plans; accounts; SRC5 gone / unregistered / already registered; param validation. Unit tests in `strk20/plan.rs`: PR #53's SNIP-12 vector, hash bindings, store caps/expiry/client binding, wipe on drop. |
+| `tests/dispatch.rs` (STRK20 prove) | `companion_strk20Prove` with a mock node (`ProveNode`) and a recording stub prover: owner happy path (caller signature verbatim in the virtual tx, empty signature stays empty, pool nonce read at `B`, `{call, proof}` result, no prompt, nothing in proof storage, plan consumed, job invisible to another client); account plans signed under the account key over the rebuilt invocation hash; `SIGNATURE_REQUIRED` / `SIGNATURE_NOT_ALLOWED` / malformed signatures; `PLAN_STALE` drops the plan; `BLOCK_TOO_RECENT` / `BLOCK_BEFORE_PLAN` / `BLOCK_TOO_OLD` and the default `B`; SRC5 gone at `B`; owner removed → `OWNER_NOT_ENROLLED`; another client → `PLAN_NOT_FOUND`; lock wipes results (status kept, 1 h TTL reported); `submit: "account"` prompts (link named) and submits from the controller; refused prompt keeps the plan; relay refused; prover-kind change and remote-URL change prompt (same URL doesn't); `INVALID_SIGNATURE` → `OWNER_SIGNATURE_REJECTED` with no prover text; revert text carrying an encoded secret reaches neither `proveStatus` nor the request log, and STRK20 job results aren't logged; a lock + quick unlock while submitting stops before signing (`WIPED_ON_LOCK`, nothing broadcast); a submitter that left scope doesn't sign (`SUBMITTER_NOT_IN_SCOPE`); a `u64::MAX` `block_number` is `BLOCK_TOO_RECENT`; `companion_prove` jobs and `companion_proofActivity` client-scoped; a second client can plan for the same owner; labels and client names lose format characters. Unit tests in `strk20/prove.rs`: `B` bounds, signature-text detection and scrubbing, params, plan tamper/staleness detection. |
 | `tests/clients.rs` (2) | pairings + grants survive reopen (token still verifies, grant still active); raw token never persisted (hash only); revoke persists. |
 | `tests/server.rs` (+1) | `GET /` usage doc is open (no auth/headers), 200, self-describing (lists pairing + funding methods); `/usage` alias. |
 

@@ -1,14 +1,19 @@
 # STRK20 for an external contract owner, with a plan/prove split — design note
 
-**Status:** Design agreed 2026-11-13 (§2). Nothing is built.
+**Status:** Design agreed 2026-11-13 (§2). Phase 1 part 1 of 3 built (2026-11-13): owner records,
+enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11). Part 2 of 3 built
+(2026-11-13): `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 plan hash and the plan store
+(§11.1). Part 3 of 3 built (2026-11-13): `companion_strk20Prove`, unrecorded client-scoped proving
+jobs with retention, `submit: "none" | "account"` (§11.2). Phase 1 (§9) is code-complete; the
+Sepolia live run (§8) has not been done. Security-review fixes on part 3 (2026-11-13, §11.3).
 **Issue:** [#48](https://github.com/starknet-innovation/strkd/issues/48)
 **Relates to:** [`strk20-plan.md`](./strk20-plan.md), [`../code/strk20.md`](../code/strk20.md),
 [`../code/wallet-rpc.md`](../code/wallet-rpc.md), and the #49 note on channel-key disclosure
 (`design-49-strk20-channel-disclosure.md`, drafted in parallel).
 
 Line references are to `main` at `c1163ee`. Pool references are to the privacy contracts vendored
-in bramble (`bramble/vendor/starknet-privacy`, `b40bf10`, 2026-09-15). Whether the deployed pool
-class has the same custom-validation path is still to be checked (§10).
+in bramble (`bramble/vendor/starknet-privacy`, `b40bf10`, 2026-09-15). Verified 2026-11-13: the
+deployed pool class has the same custom-validation path (§10).
 
 ---
 
@@ -212,9 +217,10 @@ The owner approves a SNIP-12 (revision 1) message hash, which strkd's existing
 `typed_data_message_hash` computes (`wallet-core/src/keys.rs:158`):
 
 ```
-domain  = StarknetDomain { name: 'strkd.Strk20Plan', version: '1', chainId, revision: '1' }
+domain  = StarknetDomain { name: 'strkd.Strk20Plan', version: 1, chainId, revision: 1 }
 type    = Strk20Plan { pool: ContractAddress, owner: ContractAddress, actions_hash: felt }
 message = { pool, owner, actions_hash = poseidon_hash_many(client_actions_felts) }
+          // client_actions_felts = compile_actions calldata[2..], Span length prefix included
 plan_hash = SNIP-12 message hash with account_address = owner
 ```
 
@@ -241,7 +247,9 @@ impl StructHashImpl of StructHash<Strk20Plan> {
 }
 impl SNIP12MetadataImpl of SNIP12Metadata {
     fn name() -> felt252 { 'strkd.Strk20Plan' }
-    fn version() -> felt252 { '1' }
+    // The felt 1, not the shortstring '1' (0x31): krusty and starknet.js encode
+    // the typed-data string "1" as a number, like "revision": "1" (PR #53 vector).
+    fn version() -> felt252 { 1 }
 }
 
 fn is_custom_signature_valid(self: @ContractState, calls: Span<Call>,
@@ -358,9 +366,19 @@ These are design claims. Each needs verification before anyone relies on it.
 - **Where the viewing key goes.**
   - It sits in the virtual tx calldata (`invocation.rs:43-44`). Local proving keeps it on the
     machine. A remote prover sees it.
-  - The owner contract sees it during virtual execution. Writes and events in the virtual block
-    never reach L1. The pool rejects any extra L2→L1 message (`privacy.cairo:842`).
-  - Nothing is simulated through the node. The proving payload is never persisted (§5.7).
+  - The owner contract sees it during virtual execution, and every channel key of the batch with
+    it: the pool passes the whole `compile_actions` call to `is_custom_signature_valid`. **The
+    owner contract's code is therefore trusted with the owner's viewing key and channel keys**, by
+    pool design. Enrol only contracts whose code you trust; the enrolment prompt says so.
+  - Ways such a contract could try to leak them, and what stops each:
+    - Its revert text. strkd never returns, logs or stores the prover's text for STRK20 jobs, only
+      a reason and a fixed message (§11.3).
+    - Writes and events in the virtual block. They never reach L1 or L2 state.
+    - An L2→L1 message. The pool's `apply_actions` accepts a proof only if its message hashes are
+      exactly `[the pool's own message]`, so such a proof can't be applied, and only hashes are in
+      `proof_facts` anyway (§10).
+  - Nothing is simulated through the node. The proving payload never reaches proof storage (§5.7).
+    The native prover's private temp file is the one exception (§11.3).
 - **A leaked key costs privacy, not funds.** The contract's check decides every spend, so a
   leaked `user_sk` exposes the owner's notes but cannot spend them. That holds only if both
   `is_custom_signature_valid` and the fallback `is_valid_signature` are strict.
@@ -383,7 +401,8 @@ These are design claims. Each needs verification before anyone relies on it.
   - strkd cannot stop an intermediary from showing the on-chain approver a different action list.
     Approvers who need certainty use `reveal_actions` and recompute the hash.
 - **Denial of service.** Plans and job results are capped, expire, and are wiped on lock. Each
-  owner can have only one plan at a time.
+  client can have only one plan per owner at a time. The cap is per client, so one client can't
+  block another's planning or learn that it has a plan (§11.3).
 - **Linkage.**
   - Registering an owner is public.
   - The on-chain approval links the contract, by timing, to an upcoming pool action.
@@ -464,13 +483,254 @@ maintainer decides, because it submits transactions:
 
 ## 10. Still open: verify before relying on this
 
-- Does the deployed pool class (`0x6d163f2b…cf83`, Sepolia and mainnet) contain the SRC5
-  custom-validation path from the vendored source?
-- Does the pool's nonce stay constant? It only affects the invocation hash, not `plan_hash`, but
-  check that the pool never sends real transactions.
+- Verified 2026-11-13: the deployed pool class
+  `0x6d163f2b27df0f53c5b0d019366261ba8034af1bef949dee920a60fe58bcf83` (Sepolia pool
+  `0x03ce2d…3a3e` and mainnet pool `0x040337…812a`) rebuilds byte-for-byte (scarb 2.18.0,
+  `scarb --release build -p privacy`) from starknet-privacy commit `4026da7` (version `'2.1'`).
+  Its `assert_valid_signature` (`packages/privacy/src/utils.cairo:385-420` at `4026da7`) accepts
+  the first of:
+  1. SRC5 `supports_interface(0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded)`
+     and `is_custom_signature_valid(calls, additional_data = [], signature)` returns `VALIDATED`.
+     The call goes through a safe dispatcher, so a panic counts as not accepted.
+  2. `is_valid_signature(tx_hash, signature)`.
+  3. `is_valid_signature(SNIP-12 CallSet hash(user_addr, calls, []), signature)`.
+
+  Otherwise it fails with `INVALID_SIGNATURE`. The interface takes three arguments:
+  `is_custom_signature_valid(calls: Span<Call>, additional_data: Span<felt252>,
+  signature: Span<felt252>) -> felt252`, as in the §5.3 sketch.
+- Verified 2026-11-13: the Sepolia pool's nonce is `0x0` at `latest` and at block 16000000, so it
+  is constant. It only affects the invocation hash, not `plan_hash`.
 - Does the native prover fail fast on `INVALID_SIGNATURE`, during execution and before the
-  expensive proving phase?
+  expensive proving phase? Probably: a reverted virtual tx is reported by the prover's runner as
+  "reverted transactions are not supported … revert reason: …" (the #50 trace), which comes from
+  executing the tx, before stwo runs. Not measured. Confirm in the live run (§8, `B < A`) by timing
+  the failed job against a successful one.
+- How the native prover spells the pool's `INVALID_SIGNATURE` in the revert trace (the text, its hex
+  short string, or both). strkd matches either (§11.2); check the live failure's `error` text.
 - Is `get_tx_info().chain_id` inside the virtual OS execution the real chain id? The contract's
   SNIP-12 domain depends on it.
 - A Rust↔Cairo↔starknet.js SNIP-12 vector for `Strk20Plan` (see the krusty #36 history).
 - AVNU relay: quote lifetime and how to fix the fee withdraw at plan time (phase 2).
+- **Can an owner contract publish a secret through an L2→L1 message?** Checked against the deployed
+  class (starknet-privacy `4026da7`), 2026-11-13. **No, as far as the pool and strkd go.**
+  - In virtual execution, `__execute__` sends one message, the pool's own
+    (`send_message_to_server`, `utils.cairo:439-447`: `[class_hash, ...server_actions]` to
+    address 0). The owner contract can send more from `is_custom_signature_valid`.
+  - On-chain, `apply_actions` → `validate_proof` (`privacy.cairo:803-843`) reads `ProofFacts` from
+    `tx_info.proof_facts` and asserts
+    `message_to_l1_hashes == [compute_message_hash(actions, pool)]` (`:841-842`,
+    `INVALID_PROOF_MSG`). One extra message makes the proof unusable. With `submit: "account"`, fee
+    estimation reverts and strkd broadcasts nothing.
+  - `proof_facts` carries only message **hashes** (Poseidon over from, to and payload), never
+    payloads. The viewing key and channel keys are full-entropy felts, so a hash of them gives
+    nothing away.
+  - strkd uses only the pool's message: `remote::parse_result` (`remote.rs:256-260`) picks the
+    message whose `from_address` is the pool and builds `apply_actions` from its payload. The raw
+    `l2_to_l1_messages` the prover returns stay in the job's background task and are dropped. A job
+    result's `call` holds only the pool's payload.
+  - With `submit: "none"`, the caller gets `proof_facts`, which would include the extra hash. It is
+    a hash, and the proof can't be applied anyway.
+  - **Still open:** whether the SNIP-36 proof blob itself (`proof`, which an `apply_actions`
+    invoke publishes) reveals parts of the execution trace, i.e. whether the stwo proof is
+    zero-knowledge. That question is about the pool's design, not owners: `user_sk` and the
+    channel keys are in the witness of every STRK20 proof. Not determinable from this code.
+
+## 11. Implementation notes (phase 1, part 1)
+
+Built on branch `feat/strk20-owners-48`. Where the code differs from the text above, this
+section wins.
+
+- **Records.** `wallet_core::Strk20Owner` lives in `Registry.strk20_owners`, an additive field
+  that is absent from vaults without owners. One record per `(owner, chain, pool, scope)`. Two
+  scopes can hold records for the same owner, but only the one whose controller derives the
+  registered key can pass enrolment once the owner is registered.
+- **Key.** `wallet_core::strk20_owner_viewing_key` (with `strk20_owner_viewing_key_message` and
+  `STRK20_OWNER_KEY_TAG`), built on krusty's `sign_stark_hash` and `fold_strk20_viewing_key`. The
+  known-answer vectors are in `wallet-core/tests/strk20.rs`. The message hashes were reproduced
+  independently. The starknet.js conformance vector is still to do.
+- **`Ctx`.** It now carries a `Subject`: `Account` or `Owner(Strk20Owner)`. `ctx.account` is
+  always the strkd account whose key is used, which for an owner is its controller.
+  `ctx.viewing_key()` picks the derivation. `ctx.account_only(method)` refuses an owner on the
+  existing one-shot methods with `-32601` until phase 2.
+- **Enrolment extras.** Two additions to §3.3:
+  - `OWNER_ALREADY_ENROLLED` (-32006) when the owner is already enrolled in the caller's scope.
+  - Enrolling a strkd account address as an owner is a 114.
+
+  Enrolment calls `supports_interface` with `starknet_call` at `latest`. A JSON-RPC error from the
+  node (a revert, or no such entry point) counts as "not supported". A transport failure stays
+  `-32004`. On 2026-11-13 the Sepolia node answered `supports_interface` on contracts without
+  it (STRK, the pool) with JSON-RPC error 21, "Requested entry point does not exist".
+- **List and remove.** `companion_strk20ListOwners` returns the owners in scope on every chain and
+  pool. `companion_strk20RemoveOwner { owner_address, chainId? }` works on the active or given
+  chain's current pool. It goes through the gated prompt, so a grant can cover it, because it
+  signs and reveals nothing.
+- **`data.reason`.** `WalletRpcError::with_reason(&'static str)` wraps any error. The code stays
+  the same, the message gets a `REASON: ` prefix, and the error object gets `data: { reason }`.
+  Errors without a reason serialize exactly as before.
+
+### 11.1 Implementation notes (phase 1, part 2: plan)
+
+Built on branch `feat/strk20-plan-48`, stacked on part 1. Where the code differs from the text
+above, this section wins.
+
+- **Shared pipeline.** `plan_at_reference` (`strk20/mod.rs`) is the first half of `prepare()`:
+  reference block, deployed at `B`, discovery at `B` and `latest` with `same_state`, `planner::plan`
+  with `OsRandomness` drawn once, and the `UserLinkage` check. `prepare()` calls it and is
+  otherwise unchanged. For an owner it also checks SRC5 at `B`, and an owner that is not deployed at
+  `B` gets `OWNER_NOT_DEPLOYED`.
+- **Store location.** The `PlanStore` lives in the unlocked `WalletSession` rather than directly on
+  `ServerState`. Every lock path (RPC auto-lock, the desktop's two direct `session.lock()` calls,
+  tests) then drops the plans without a separate hook, and nothing can read a plan while locked
+  (`-32001`). It is still in memory only and empty after a restart.
+- **Wiping.** Dropping a plan (discard, expiry, lock) overwrites its felts. `starknet-types-core`'s
+  `zeroize` support sits behind its `secret-felt` feature, which would change `Cargo.lock`, so the
+  overwrite uses `black_box` and no `unsafe`. It is best effort: copies made while serializing a
+  revealed result are not wiped. `StoredPlan` has no `Debug`.
+- **Params.** Exactly one of `register: true` or `actions` (else 114). `deposit` actions are
+  refused for accounts as well as owners (`DEPOSIT_UNSUPPORTED`, `-32601`): plan/prove proves
+  locally, and deposits need a screening prover. `ttl_secs` is an integer from 1 to 86400.
+- **Registered state.** `register: true` on a subject that is already registered fails with
+  `ALREADY_REGISTERED` (-32006, new). Transfers and withdrawals for an unregistered subject fail
+  in the planner with 118, as today.
+- **Accounts.** Plans work for strkd accounts (§2.1). There is no SRC5 check, `owner` in the result
+  and in the typed data is the account address, and the prompt says strkd signs at prove time.
+- **Result.** Adds `subject` (`"owner"` or `"account"`), `controller`, `actions_hash` and, when
+  `reveal_actions` was asked, `actions_revealed`. `expires_at` is Unix milliseconds, like a
+  grant's. `summary` holds `description`, `register`, `transfers`, `withdrawals`, `action_count`,
+  `notes_spent`, `change`, `pool`, `pool_fee` and `pool_fee_token`.
+- **Prompts.** The plan prompt uses method `companion_strk20Plan`. The reveal prompt uses
+  `companion_strk20Plan (reveal_actions)` so the desktop and tests can tell them apart. It runs
+  after the plan is stored; refusing it returns the plan with `actions_revealed: false`.
+- **Caps.** The one-per-(owner, pool) cap holds across clients. When another client holds the
+  plan, the error says so without its id.
+- **Log.** `dispatch::redact_for_log` replaces `client_actions` and `client_actions_felts` in the
+  logged result with `"<redacted>"`, even with full payloads on.
+- **Stored for prove.** Subject, controller `AccountRef`, `user`, chain, pool, `plan_block`,
+  intent, actions, `client_actions_felts`, `plan_hash`, the state snapshot (`user_sk` zeroed), the
+  prover kind and submission route (`"none"`) the prompt named, the prompt, and timestamps.
+  `PlanStore::get` and `PlanStore::take` (client-bound) are the API part 3 uses.
+
+### 11.2 Implementation notes (phase 1, part 3: prove)
+
+Built on branch `feat/strk20-prove-48`, stacked on part 2. Where the code differs from the text
+above, this section wins.
+
+- **Handler.** `strk20/prove.rs`, `companion_strk20Prove { plan_id, block_number?, signature?,
+  submit?, submitter_address? }`. All of §5.5 runs before a job is queued. The order is: params,
+  plan (`get`), the subject re-resolved through `ctx()` in the caller's scope, `B`, deployed and SRC5
+  at `B`, discovery at `B` and `latest`, staleness and hash re-check, prompt, pool nonce at `B`, then
+  build, sign (accounts only) and `take` in one session lock.
+- **Result.** `{ job_id, status: "queued", plan_id, plan_hash, plan_created_at, block_number,
+  subject, submit, submitter_address?, next }`. The job result is `{ call, proof }` (the
+  `call_and_proof` shape) or, after `submit: "account"`, `{ transaction_hash, submitter_address,
+  call }`.
+- **Signature.** Owners must pass `signature` (`SIGNATURE_REQUIRED`, 114); `[]` is allowed and stays
+  empty. Accounts must not (`SIGNATURE_NOT_ALLOWED`, 114). At most 256 felts. strkd never calls
+  `sign_hash_for` for an owner.
+- **`B`.** Default `head − 12`. `BLOCK_TOO_RECENT` covers both an explicit `B > head − 12` and a
+  default that is still below `plan_block`; the message gives the blocks to wait. There is no
+  separate `BLOCK_TOO_EARLY`: both cases mean "wait". `BLOCK_TOO_OLD` uses a margin of 120 blocks (`PROOF_WINDOW_MARGIN`):
+  `head − B < get_proof_validity_blocks − 120`, read at `latest`. The owner's approval must be in
+  state at `B`: wait about 12 blocks after it lands, or pass `block_number` at or after its block.
+- **Staleness.** `PLAN_STALE` drops the plan, because a moved state never comes back. A changed pool
+  setting is also `PLAN_STALE`. Bound, SRC5 and signature-param errors keep the plan, so the caller
+  can retry. The plan hash re-check (`PLAN_HASH_MISMATCH`, 163) cannot fail through the API (prove
+  takes only a `plan_id`); a unit test exercises it.
+- **Owner changes.** An owner removed between plan and prove, or re-enrolled under another
+  controller, is `OWNER_NOT_ENROLLED` (-32002).
+- **Prompts.** Prove prompts only if the prover kind differs from the plan's or `submit` is
+  `"account"`. The prompt quotes the plan prompt the user approved. The account prompt names the
+  submitter, the pool fee it pays, and that it links the submitter publicly to the owner and the
+  pool. A refused prompt keeps the plan.
+- **Submission.** `submit_from(SubmitTarget, submitter, ...)` generalises `submit_from_account`.
+  `submitter_address` defaults to the plan's account (an owner's controller) and must be in the
+  caller's scope (-32002). `submit: "relay"` is `RELAY_UNSUPPORTED` (-32601).
+- **Jobs.** `prover::enqueue_prove_unrecorded` writes neither the payload nor the result to proof
+  storage. The job is owned by the client and ephemeral: its result is dropped 1 h after it finishes
+  (`result_dropped: "expired"`) or on lock (`"wiped_on_lock"`); the status stays. The lock wipe is a
+  session lock hook that `ServerState::with_prover` installs, so every lock path runs it. A job still
+  running at the lock keeps no result (`WIPED_ON_LOCK`) and does not submit. `prove_unrecorded` (the
+  one-shot methods) is ephemeral and untagged too.
+- **Client scoping for every job.** `companion_prove` and `companion_signAndProve` jobs are now
+  tagged with their client too, and `companion_proveStatus` shows a job only to that client. It is
+  backwards compatible for clients that poll their own jobs (a re-attached client keeps its id).
+  Polling another client's job, which was the bug, now gets "unknown job". The desktop's own
+  untagged jobs are not visible over RPC. `companion_proofActivity` still lists every job's label and
+  status.
+- **Job errors.** `error` starts with the reason, and the job also has `error_reason`.
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account) when the prover's error holds
+  `INVALID_SIGNATURE` or its hex short string; `PROVING_FAILED` otherwise; `WIPED_ON_LOCK`; or the
+  submission error's reason (`SUBMIT_FAILED` when it has none). All pass through `scrub`.
+- **Still exposed, unchanged.** The native prover writes the virtual tx (with `user_sk`) to a temp
+  file for the `snip36` CLI and deletes it afterwards (`native_prover.rs`). The job's background task
+  holds a copy of `user_sk` until it finishes, to scrub errors.
+- **Live run.** `crates/wallet-rpc/examples/strk20_live.rs owner-flow <admin> <owner>
+  register | withdraw <wei> <to> | transfer <wei> <to>` enrols, plans, sends `approve_plan` from the
+  admin, waits until the approval is 12 blocks old, proves with `signature: []` and
+  `submit: "account"`, and polls. It sends transactions and was not run for this PR.
+
+### 11.3 Security-review fixes (part 3)
+
+An independent review of `981c83e` found the items below; all are fixed on
+`feat/strk20-prove-48`. Where this section differs from §11.2, this section wins.
+
+- **Prover text never leaves strkd (medium).** A malicious owner contract could panic with
+  `user_sk` or a channel key, encoded so that scrubbing misses it. That revert text used to reach
+  `companion_proveStatus.error`, the one-shot methods' errors and the SQLite request log.
+  - Now `strk20::safe_prover_error` turns every STRK20 prover error, on both the job and the
+    one-shot `prepare()` path, into a reason plus fixed text.
+  - The text is picked by the **prefix** strkd itself wrote (`classify_prover_error`'s messages,
+    the prover crate's own), so nothing the contract chose decides what is shown. The only match
+    inside the text is `INVALID_SIGNATURE`, and that only picks the reason.
+  - Unreadable prover results also get fixed text.
+  - `redact_for_log` drops `result` and `error` from `companion_proveStatus` for STRK20 jobs
+    (label `STRK20 …`); the status and `error_reason` stay.
+  - The enrolment prompt, the usage doc and §6 say the contract's code is trusted with these keys.
+  - Cost: a revert's detail is no longer shown, so debugging means running `snip36` by hand with a
+    test seed.
+- **Temp file (medium-low).** The `snip36` CLI has no stdin option, so the native prover still
+  writes the tx JSON. Now:
+  - The dir is created `0700` and the file `0600` with `create_new` (`native_prover::WorkDir`).
+    The dir is removed on drop.
+  - A wallet lock cancels running ephemeral jobs: `Jobs::cancel_signal` is a `Notify` the wipe
+    fires, and the job's task drops the prover's future. `run_and_parse`'s `GroupKiller` then
+    SIGKILLs the CLI's process group (the runner too), and `WorkDir` removes the dir. `finish` never
+    runs, and the job fails with `WIPED_ON_LOCK`. The one-shot `prove_unrecorded` is cancelled the
+    same way.
+  - `build_prover_state` removes stale `strkd-prove-<pid>-*` dirs whose pid is dead.
+  - The doc on `enqueue_prove_unrecorded` states what stays exposed: the file is readable by the
+    same OS user while the prove runs.
+- **Lock, then quick unlock, could still submit (low).** `submit_from` now takes a `SubmitGuard`
+  for background jobs. Under the session lock, right before `sign_invoke_for`, it checks that the
+  job was not wiped and that the submitter is still in the client's scope
+  (`SUBMITTER_NOT_IN_SCOPE`, `-32002`). It re-checks the wipe before `add_invoke`.
+- **Overflow (low).** `reference_block` uses `saturating_add` for a caller's `block_number`. A scan
+  of `strk20/` found three more sums of outside input, in older code that this stack reuses. All
+  three now saturate:
+  - deposit amounts plus the pool fee in `check_public_funds`;
+  - the same sums for the approvals in `submit_from`;
+  - a screening attestation's `issued_at` plus its maximum age.
+
+  `ttl_secs` is capped at 86400 before `* 1000`, and the signature length is capped before use.
+- **Plan-slot squatting (low).** The one-plan cap is per (client, subject, chain, pool). Another
+  client is neither blocked nor told about other clients' plans. Two clients' plans for one owner
+  race on the same notes: the second to prove gets `PLAN_STALE`, or reverts on-chain.
+- **Labels (low).** `dispatch::display_text` drops control characters and Unicode format
+  characters: the Cf category (bidi embeddings, overrides and isolates, zero-width characters,
+  the BOM, tags, and so on) and U+2028/2029. It applies to owner labels and to pairing client
+  names, which every prompt's client label shows.
+- **Info.**
+  - A remote prover's URL change between plan and prove now prompts. The plan stores
+    `prover_identity` (the kind, plus `at <url>` for a remote prover) rather than only the kind.
+  - `companion_proofActivity` lists only the caller's jobs (`Jobs::recent_activity_for`). The
+    desktop's IPC feed still lists every job.
+  - The example contract's README (PR #53) now says to revoke approvals after use, that
+    third-party owner contracts must never accept controller signatures as plan approval, and that
+    the pool in its sncast example must match the pool strkd uses.
+- **Empty owner signatures.** The native prover's preflight refused a transaction with an empty
+  `signature` ("transaction is not signed"), so an owner plan proved with `signature: []` failed on
+  the native backend (the stub prover in the dispatch tests didn't catch it). Fixed: `ProveRequest`
+  has `allow_empty_signature`, set only by strkd's own unrecorded STRK20 paths
+  (`prove_unrecorded`, `enqueue_prove_unrecorded`). The `signature` field must still be an array,
+  so the prover still never signs. `companion_prove` (recorded jobs) keeps requiring a non-empty
+  signature.

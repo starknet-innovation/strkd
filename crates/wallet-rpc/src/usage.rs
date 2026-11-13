@@ -171,8 +171,40 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
                 "3. Read: wallet_strk20Balances {tokens:[…]} → [{token, balance}] (hex, base units). Notes become spendable ~12 blocks after they land.",
                 "4. Send privately / unshield: wallet_strk20InvokeTransaction {actions:[{type:\"transfer\", token, amount, recipient}, {type:\"withdraw\", token, amount, recipient}]} (needs the AVNU key) — or wallet_strk20PrepareInvoke with the same actions → {call, proof}, then submit from another account: wallet_addInvokeTransaction {account_address:<other>, calls:[call], proof_facts:proof.proof_facts, proof:proof.data, submit:true}.",
                 "Amounts are felts in base units (0x…). The recipient of a transfer must be registered (else 118). Not supported yet: transfer amount \"OPEN\", invoke and shadow_account_invoke actions (-32601).",
-                "Pool: the user picks it per network in Settings → STRK20 (default: the canonical pool); you can't. Every STRK20 method accepts an optional pool_address that only asserts which pool you expect: a mismatch is 114, nothing runs. On a testnet pool the user deployed, deposits may be screened by a local test screener key instead of a remote prover."
-            ]
+                "Pool: the user picks it per network in Settings → STRK20 (default: the canonical pool); you can't. The STRK20 methods (and companion_strk20Plan) accept an optional pool_address that only asserts which pool you expect: a mismatch is 114, nothing runs. On a testnet pool the user deployed, deposits may be screened by a local test screener key instead of a remote prover."
+            ],
+            "owner_contracts": "A deployed contract that advertises SRC5 is_custom_signature_valid \
+(interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \
+the contract itself to approve each spend. Enrol it with companion_strk20AddOwner (always prompts, even under a \
+grant); strkd then holds its viewing key, derived from one of your accounts (the controller). The contract's code \
+sees that key and the channel keys of every batch while it is proved (the pool passes them to its check), so enrol \
+only contracts whose code you trust. List with \
+companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Then PLAN a batch with \
+companion_strk20Plan {owner_address, register:true | actions:[…]}: strkd fixes the actions (signs and proves \
+nothing) and returns plan_hash, the SNIP-12 digest of typed_data (companion_typedDataHash reproduces it with \
+account_address = the owner). The owner contract approves plan_hash on-chain; then PROVE it with \
+companion_strk20Prove {plan_id, signature:[…]} → {job_id} and poll companion_proveStatus. The owner's approval \
+must be in state at or before the reference block B, which defaults to head − 12: wait about 12 blocks after the \
+approval lands, or pass block_number ≥ the approval's block. Plans also work for your own accounts \
+(account_address); strkd signs those at prove time. owner_address on the wallet_strk20* methods still returns \
+-32601, and owner_address together with account_address is a 114.",
+            "plans": "A plan lives in memory only: bound to the client that made it, expires_at (Unix ms) after \
+ttl_secs (default 3600, max 86400), and wiped when the wallet locks or restarts. One live plan per owner and pool \
+for your client (another client's plans don't count, and their plans race yours on the same notes: the second to \
+land fails), 4 per client, 32 in all (else -32006 PLAN_LIMIT). By default you get plan_hash, typed_data and a summary (tokens, \
+amounts, recipients, action count, pool fee), not the actions. reveal_actions:true asks the user separately (a grant \
+never covers it) and returns client_actions + client_actions_felts: they hold channel keys, which disclose every \
+past and future payment on those channels, irrevocably (they cannot spend). If the user refuses, the plan still \
+comes back with actions_revealed:false.",
+            "prove": "companion_strk20Prove runs every check before queueing (errors come back at once with \
+data.reason), consumes the plan, and queues a proving job only your client can poll. strkd never signs for an \
+owner: signature is the felts its is_custom_signature_valid reads, passed verbatim (required; [] if it only checks \
+the on-chain approval). submit:\"none\" (default) → result {call, proof}, submit it yourself like \
+wallet_strk20PrepareInvoke's; submit:\"account\" → strkd submits from submitter_address (default: the owner's \
+controller), which pays the gas and the pool fee and is publicly linked to the owner → result {transaction_hash, \
+submitter_address, call}. A rejected owner signature fails the job with error_reason OWNER_SIGNATURE_REJECTED; the \
+plan is spent either way, so make and approve a new one. Results are kept 1 h and dropped when the wallet locks; \
+nothing about the job is written to proof storage."
         },
 
         "methods": [
@@ -231,11 +263,11 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
               "note": "On-device proving companion. Hand it an opaque, ALREADY-SIGNED payload; it proves locally and returns the proof — it never signs and holds no key material. For SNIP-36 the payload is { transaction: <signed invoke-v3>, block_number? }; the proof comes back as { proof (base64 STWO), proof_facts, l2_to_l1_messages }, which you feed into wallet_addInvokeTransaction (proof_facts at sign time, proof on submit). Returns a job id immediately — poll companion_proveStatus. Needs the native prover (bundled) or a configured remote prover + a per-network RPC, set in the desktop Settings; an unconfigured backend fails with a clear error (no mock/fake proof). Proving is local-only: no separate open port, and settings/keys are never exposed here. SIZE LIMIT: one tx's trace may use at most 2^20 rows in any AIR component (≈1M Cairo steps; ECDSA/keccak-heavy code hits it much sooner since ec_op/keccak are emulated in Cairo) — a protocol constant of the PROOF1 verifier the network accepts, not a machine limit. Over it, the job fails with 'transaction too large to prove'; split the work across separate txs (calls inside one tx share one trace)." },
             { "method": "companion_proveStatus", "auth": true, "prompts": false,
               "params": "{ job_id }",
-              "returns": "{ job_id, status: queued|proving|succeeded|failed, started_at_ms, label?, result?, error? }",
-              "note": "Poll a proving job until status is succeeded (result holds the proof) or failed (error explains why). Unknown job_id → error 114." },
+              "returns": "{ job_id, status: queued|proving|succeeded|failed, started_at_ms, label?, result?, error?, error_reason?, finished_at_ms?, result_expires_at_ms?, result_dropped?: \"expired\"|\"wiped_on_lock\" }",
+              "note": "Poll a proving job until status is succeeded (result holds the proof) or failed (error explains why). You see only the jobs your own client queued: any other job_id, including another client's, → error 114 (unknown job). STRK20 prove jobs keep their result 1 h after finishing (result_expires_at_ms) and drop it when the wallet locks (result_dropped says which)." },
             { "method": "companion_proofActivity", "auth": true, "prompts": false,
               "params": "{}", "returns": "{ activity: Activity[] }",
-              "note": "Recent proving activity (most-recent first) — the same feed the desktop Proving tab shows." },
+              "note": "Recent proving activity (most-recent first) of the jobs your own client queued." },
             { "method": "companion_signAndProve", "auth": true, "prompts": true,
               "params": "{ account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }",
               "returns": "{ job_id, status: \"queued\", transaction_hash, next }",
@@ -270,6 +302,27 @@ normal invoke." },
             { "method": "companion_strk20Register", "auth": true, "prompts": true,
               "params": "{ account_address?, chainId? }", "returns": "{ transaction_hash }",
               "note": "Registers the account's STRK20 viewing key with the pool and opens its channel to itself, proved on this machine and submitted from the account (registration is public: it links the address to the pool). Once per account and pool; -32006 if already registered." },
+            { "method": "companion_strk20AddOwner", "auth": true, "prompts": true,
+              "params": "{ owner_address, account_address?, label?, chainId? }",
+              "returns": "{ owner_address, chain, pool, controller: { address, domain, index }, label, registered, viewing_public_key }",
+              "note": "Enrols an external contract as a STRK20 owner for the active (or given) chain's pool. account_address picks the controller (default: your first account); strkd derives the owner's viewing key from it and never returns the key, only its public key. ALWAYS prompts, even under a grant. Errors carry data.reason: OWNER_NOT_DEPLOYED (-32006, no contract at the address), OWNER_NO_CUSTOM_VALIDATION (-32006, supports_interface(0x2eb9…ded) is not true), OWNER_KEY_MISMATCH (-32006, already registered with the pool under a key this controller does not derive: it cannot be enrolled), OWNER_ALREADY_ENROLLED (-32006). An agent only ever sees owners it enrolled." },
+            { "method": "companion_strk20ListOwners", "auth": true, "prompts": false,
+              "params": "{}", "returns": "[{ owner_address, chain, pool, controller: { address, domain, index }, label }]",
+              "note": "The owners you enrolled (an app client: the user's). No prompt." },
+            { "method": "companion_strk20RemoveOwner", "auth": true, "prompts": true,
+              "params": "{ owner_address, chainId? }", "returns": "true",
+              "note": "Forgets an owner on the active (or given) chain's pool. Approval-gated (a grant covers it). Nothing on chain changes, and enrolling again derives the same key. Unknown or not yours → -32002 with data.reason OWNER_NOT_ENROLLED." },
+            { "method": "companion_strk20Plan", "auth": true, "prompts": true,
+              "params": "{ owner_address | account_address, register?: bool, actions?: [STRK20_ACTION…], reveal_actions?: bool, ttl_secs?, chainId? }",
+              "returns": "{ plan_id, plan_version: 1, expires_at, plan_block, chain_id, pool, owner, subject: \"owner\"|\"account\", controller, plan_hash, actions_hash, typed_data, summary: { description, register, transfers, withdrawals, action_count, notes_spent, change, pool, pool_fee, pool_fee_token }, actions_revealed?, client_actions?, client_actions_felts? }",
+              "note": "Plans a batch WITHOUT signing or proving it: register:true (register the viewing key + open the self-channel) or transfer/withdraw actions (deposits → -32601 DEPOSIT_UNSUPPORTED). State is read 12 blocks behind the head (plan_block). plan_hash = SNIP-12 rev 1 message hash of typed_data (StarknetDomain {name: \"strkd.Strk20Plan\", version: \"1\", chainId, revision: \"1\"}, Strk20Plan {pool, owner, actions_hash}) with account_address = owner, where actions_hash = poseidon(client_actions_felts) = poseidon(compile_actions calldata[2..]). For an owner contract, it must approve plan_hash on-chain before the proof is built. Approval-gated (a grant covers it); reveal_actions adds a separate prompt a grant never covers. Errors (data.reason): OWNER_NOT_ENROLLED (-32002), OWNER_NO_CUSTOM_VALIDATION / OWNER_NOT_DEPLOYED at plan_block (-32006), ALREADY_REGISTERED (-32006, register:true on a registered owner/account), PLAN_LIMIT (-32006); 118 not registered, 119 insufficient private balance, 120 privacy leak." },
+            { "method": "companion_strk20Prove", "auth": true, "prompts": "only if the prover changed since the plan or submit is \"account\"",
+              "params": "{ plan_id, block_number?, signature?: [felt…], submit?: \"none\"|\"account\", submitter_address? }",
+              "returns": "{ job_id, status: \"queued\", plan_id, plan_hash, plan_created_at, block_number, subject, submit, submitter_address?, next }",
+              "note": "Proves a stored plan against reference block B (default head − 12; must be ≤ head − 12, ≥ plan_block, and young enough that the proof lands inside the pool's proof window, keeping 120 blocks in hand). The owner's on-chain approval must be at or before B. Checks run first, synchronously: plan (PLAN_NOT_FOUND 114), subject still enrolled (OWNER_NOT_ENROLLED -32002), BLOCK_TOO_RECENT / BLOCK_BEFORE_PLAN / BLOCK_TOO_OLD (-32006), OWNER_NOT_DEPLOYED / OWNER_NO_CUSTOM_VALIDATION at B (-32006), PLAN_STALE (-32006: the subject's private state moved since the plan; the plan is dropped). Owner plans need signature (missing → 114 SIGNATURE_REQUIRED; passed verbatim, strkd never signs for an owner); account plans are signed by strkd (a signature → 114 SIGNATURE_NOT_ALLOWED). submit:\"relay\" → -32601 RELAY_UNSUPPORTED. The plan is consumed when the job is queued. Poll companion_proveStatus: result {call, proof} (submit none) or {transaction_hash, submitter_address, call} (account); a failed job has error + error_reason (OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK, SUBMITTER_NOT_IN_SCOPE, or a submission reason); error is fixed text by class, never the prover's own output or a revert reason (contract code chooses those, and could put secrets in them). The job is never written to proof storage; its result is dropped 1 h after it finishes or when the wallet locks." },
+            { "method": "companion_strk20DiscardPlan", "auth": true, "prompts": false,
+              "params": "{ plan_id }", "returns": "true",
+              "note": "Drops one of your plans (it is wiped). Unknown, expired, already discarded or another client's → 114 with data.reason PLAN_NOT_FOUND." },
             { "method": "wallet_strk20Balances", "auth": true, "prompts": true,
               "params": "{ tokens: [address…], account_address?, chainId? }", "returns": "[{ token, balance }]",
               "note": "Private balance per token (hex, base units), read from the pool and decrypted locally — no indexer sees the viewing key. Approval-gated: it reveals private balances. 118 if the account isn't registered." },
@@ -295,6 +348,7 @@ commitment comes with shadow-account invokes.",
         },
 
         "errors": {
+            "data.reason": "Some errors also carry error.data = { reason: \"UPPER_SNAKE\" }, a stable machine-readable reason (the message starts with it too). The code is unchanged; branch on data.reason when present. Current reasons: OWNER_NOT_DEPLOYED, OWNER_NO_CUSTOM_VALIDATION, OWNER_KEY_MISMATCH, OWNER_ALREADY_ENROLLED, ALREADY_REGISTERED, PLAN_LIMIT, PLAN_STALE, BLOCK_TOO_RECENT, BLOCK_BEFORE_PLAN, BLOCK_TOO_OLD (-32006); OWNER_NOT_ENROLLED (-32002); PLAN_NOT_FOUND, SIGNATURE_REQUIRED, SIGNATURE_NOT_ALLOWED (114); DEPOSIT_UNSUPPORTED, RELAY_UNSUPPORTED (-32601); PLAN_HASH_MISMATCH (163). Failed proving jobs carry error_reason instead: OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK.",
             "113": "USER_REFUSED — the user rejected the prompt (or it timed out after ~60s)",
             "114": "INVALID_REQUEST_PAYLOAD — malformed params / missing field",
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",
