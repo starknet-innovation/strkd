@@ -723,10 +723,15 @@ async fn channel_key_always_prompts_and_returns_the_pool_derivation() {
     // The disclosure covers the future too: a note sent after the key was
     // handed over decrypts under the same key (scope regression, design §3.2).
     let later = hashes::note_id(ck, strk(), 2);
+    // A fresh random salt, as the planner draws it (not a fixed value).
+    let later_salt = {
+        use strk20::planner::Randomness;
+        strk20::planner::OsRandomness.salt120().unwrap().max(2)
+    };
     node.set(
         "get_note",
         vec![later],
-        vec![crypto::encrypt_note_value(11, 0xdef, ck, strk(), 2), strk()],
+        vec![crypto::encrypt_note_value(11, later_salt, ck, strk(), 2), strk()],
     );
     let packed = node.get("get_note", vec![later]).unwrap()[0];
     assert_eq!(
