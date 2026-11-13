@@ -1,4 +1,5 @@
-// Independent re-derivation of crates/wallet-core/tests/fixtures/conformance-vectors.json.
+// Independent re-derivation of crates/wallet-core/tests/fixtures/conformance-vectors.json
+// and crates/wallet-core/tests/fixtures/strk20-plan-vector.json (issue #48).
 //
 // strkd generates that fixture with krusty-kms. A fixture only ever checked
 // against the code that produced it proves nothing, so this script recomputes
@@ -14,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { HDKey } from "@scure/bip32";
-import { ec, hash, typedData, constants } from "starknet";
+import { ec, hash, typedData, constants, shortString } from "starknet";
 
 const FIXTURE = new URL("../crates/wallet-core/tests/fixtures/conformance-vectors.json", import.meta.url);
 const doc = JSON.parse(readFileSync(FIXTURE, "utf8"));
@@ -44,6 +45,19 @@ for (const v of doc.vectors) {
 for (const [i, v] of (doc.typed_data_vectors ?? []).entries()) {
   const h = typedData.getMessageHash(v.typed_data, v.account_address);
   check(`SNIP-12 digest #${i} (${v.typed_data.primaryType})`, h, v.message_hash);
+}
+
+// --- SNIP-12 Strk20Plan approval hash (issue #48) ---------------------------------
+// The same vector is checked in Rust (wallet-core tests/strk20_plan_vector.rs) and in
+// Cairo against OpenZeppelin's SNIP-12 (contracts/strk20-owner-example).
+{
+  const PLAN = new URL("../crates/wallet-core/tests/fixtures/strk20-plan-vector.json", import.meta.url);
+  const p = JSON.parse(readFileSync(PLAN, "utf8"));
+  check("Strk20Plan actions_hash", hash.computePoseidonHashOnElements(p.inputs.client_actions_felts), p.actions_hash);
+  check("Strk20Plan type hash", typedData.getTypeHash(p.typed_data.types, "Strk20Plan", "1"), p.type_hash);
+  check("Strk20Plan chain id", shortString.encodeShortString(p.inputs.chain_id), p.inputs.chain_id_felt);
+  check("Strk20Plan message.actions_hash", p.typed_data.message.actions_hash, p.actions_hash);
+  check("Strk20Plan plan_hash", typedData.getMessageHash(p.typed_data, p.account_address), p.plan_hash);
 }
 
 // --- invoke V3 transaction hashes ------------------------------------------------

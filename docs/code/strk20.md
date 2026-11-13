@@ -154,10 +154,23 @@ Parts 1 and 2 of 3 are built (enrolment, then the plan step):
 - `wallet-core/tests/strk20.rs` matches the viewing keys live pools registered,
   and pins known-answer vectors for the owner key. The vectors come from the
   test seed only, and their message hashes were reproduced independently.
+- `wallet-core/tests/fixtures/strk20-plan-vector.json`: the SNIP-12
+  `Strk20Plan` approval-hash vector for contract owners (#48, design note
+  §5.3). Checked in Rust (`tests/strk20_plan_vector.rs`), starknet.js
+  (`conformance/verify.mjs`) and Cairo/OpenZeppelin.
 - Live on Sepolia, against strkd's test pool (mainnet class, test screener):
   `crates/strk20/examples/sepolia_e2e.rs` (crate only) and
   `crates/wallet-rpc/examples/strk20_live.rs` (the RPC handlers). Results are
   recorded in the plan.
+
+## Contract owners (#48)
+
+A note owner can be a contract that approves plans on-chain instead of an
+account that signs: [`project/design-48-strk20-external-owner.md`](../project/design-48-strk20-external-owner.md).
+The reference owner contract, with the approval check, the strict
+`is_valid_signature` fallback, tests and sncast steps, is
+[`contracts/strk20-owner-example`](../../contracts/strk20-owner-example/README.md).
+Not audited. The strkd side (enrolment, plan/prove) is not built yet.
 
 ## Not yet
 

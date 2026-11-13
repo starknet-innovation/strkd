@@ -112,6 +112,49 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
   vector for the owner key is still to do (§8).
 - Nothing was submitted on chain.
 
+## 2026-11-13 — Reference STRK20 owner contract + Strk20Plan vector (#48)
+
+**Did**
+- `contracts/strk20-owner-example/`: a Scarb project (scarb 2.18.0, snforge
+  0.60.0, OpenZeppelin as pinned by the pool at starknet-privacy `4026da7`).
+  It is the owner contract from design note §5.3. It advertises SRC5 for the
+  custom-validation id. `is_custom_signature_valid` returns `VALIDATED` only for one
+  `compile_actions` call to the stored pool, for this owner, whose
+  `Strk20Plan` hash an admin approved. `is_valid_signature` always returns 0.
+  `approve_plan`/`revoke_plan` are admin-only and emit events. No upgrade path
+  and no funds.
+- A SNIP-12 `Strk20Plan` vector in
+  `crates/wallet-core/tests/fixtures/strk20-plan-vector.json`. Rust/krusty
+  (`tests/strk20_plan_vector.rs`), starknet.js (`conformance/verify.mjs`) and
+  Cairo/OZ (`test_owner.cairo`) all reproduce
+  `plan_hash = 0x062a76d3…5ce3301`. The Rust test also fails if the Cairo
+  constants drift from the JSON.
+- CI job `owner-contract`: `scarb fmt --check`, `scarb build`, `snforge test`.
+
+**Decisions**
+- The domain `version` is the felt `1`, not the shortstring `'1'` (`0x31`).
+  starknet.js and krusty encode the typed-data string `"1"` as the number 1,
+  the same as `revision`. The first Cairo draft used `'1'` and the vector caught
+  the mismatch. strkd's typed data must keep `"version": "1"`.
+- The contract ignores `signature` and `additional_data`: the on-chain approval
+  is the authorisation. There is no approval expiry, because `get_block_number`
+  inside the virtual block is unverified. Revoke instead.
+
+**Verify**
+- `cd contracts/strk20-owner-example && scarb build && snforge test` → 26 passed.
+- `cargo test --locked -p wallet-core` and
+  `cargo clippy --locked -p wallet-core --all-targets -- -D warnings`.
+- `cd conformance && npm ci && npm run verify`.
+
+**Next / Resume**
+- strkd side of #48 (enrolment, `companion_strk20Plan`/`Prove`). Its
+  `plan_hash` must reproduce this vector.
+- Manual Sepolia live run with this contract (design §8). Nothing has been
+  deployed.
+
+**Notes / caveats**
+- Not audited. Not deployed. No transaction was sent.
+
 ---
 
 ## 2026-11-13 — STRK20 register right after deploy (#50)
