@@ -183,8 +183,16 @@ CI runs these in the `owner-contract` job (`.github/workflows/ci.yml`).
 
 ## Declare and deploy on Sepolia (sncast)
 
-This was not run for the PR. It is shown for the manual live run in design §8. Use a
-funded test account, never a real key.
+Use a funded test account, never a real key.
+
+**Deployed on Sepolia (live test, 2026-11-13).** Class
+`0x03b786469d016b45571809c14bff10a055b94d743e31bd9bf62d18cf7a5931e7` (sncast release
+build of this directory). Instance `0x01f03e564a8a07244e5e895fb2428e4fbe01c1bd838c84c786f2e2636fef27f4`,
+with admin = test-seed account 0 (`0x0497e8…7b4f`) and pool = strkd's test pool
+`0x03016a…6323`. It is registered on that pool, so only transfer and withdraw plans
+work for it. Use it to reproduce `owner-flow` against the test pool. For any other pool,
+or a different admin, deploy your own. Declaring the class cost about 5.35 STRK at Sepolia
+gas prices that day; deploying it cost 0.06 STRK.
 
 ```bash
 # One-time: import or create a Sepolia test account for sncast

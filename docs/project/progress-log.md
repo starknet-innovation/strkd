@@ -8,6 +8,59 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 #48 live test (Sepolia): external owner contract
+
+**Did**
+- Ran the design §8 live run on Sepolia against main `f3e54fd`, using test-seed accounts only
+  (the all-`abandon` vector). Pool: strkd's test pool `0x03016a…6323` (class `0x6d163f2b…`,
+  fee 0, `proof_validity_blocks` 450).
+- Declared and deployed `contracts/strk20-owner-example`:
+  - class `0x03b786469d016b45571809c14bff10a055b94d743e31bd9bf62d18cf7a5931e7`, declare tx
+    `0x0181bcc0…f75c` (block 18089984, 5.35 STRK);
+  - instance `0x01f03e564a8a07244e5e895fb2428e4fbe01c1bd838c84c786f2e2636fef27f4` (admin = account 0,
+    pool = test pool), deploy tx `0x04f8495d…5804` (block 18089991).
+- Negative 1, `B < A`: a register plan was approved at `A` = 18090008 (tx `0x1ebf5e6d…7b52`) and
+  proved at `B` = 18090007. The job failed with `OWNER_SIGNATURE_REJECTED` 3.4 s after it started.
+- Negative 2: a register plan that was never approved, proved at the default `B` (18090020), failed
+  with `OWNER_SIGNATURE_REJECTED` after 3.6 s.
+- Happy path: register approved at `A` = 18090047 (tx `0x2f001fbf…8b64`), proved at `B` = 18090048
+  with `submit: "account"`. The job succeeded in 14.3 s, including the submission. `apply_actions`
+  tx `0x7adcd369…0c67` succeeded in block 18090070 (1.96 STRK). The pool's
+  `get_public_key(owner)` now returns `0x5ce03d4d…1b9`, the `viewing_public_key` that strkd showed at
+  enrolment.
+- Registering again fails at plan time: `ALREADY_REGISTERED` (-32006, `data.reason`).
+- Funded the owner with a private transfer of 0.01 STRK from account 1, submitted by account 0
+  (tx `0x523ada5b…e3`, block 18090104). The owner's discovery then found the note:
+  - an unapproved withdraw plan failed with `OWNER_SIGNATURE_REJECTED` after 3.3 s;
+  - a withdraw approved at 18090134 (tx `0x522d29ec…dcff`) proved in 12.9 s with
+    `submit: "none"`.
+  The withdraw was not submitted, to stay within the spending cap.
+- Design §10 updated: fail-fast, the `INVALID_SIGNATURE` spelling (both forms), and that the chain
+  id inside the virtual OS is the real one are now verified. The README records the deployed
+  instance.
+
+**Decisions**
+- Negatives ran before the happy register: once the owner is registered, register can't be
+  planned, and register is the only owner plan that needs no notes.
+- The negative and prove-only runs used a local, uncommitted `OWNER_FLOW_MODE` knob on
+  `strk20_live owner-flow` (`before-approval`, `unapproved`, `approved-nosubmit`).
+
+**Verify**
+- `sncast call --url <sepolia rpc> --contract-address 0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323 --function get_public_key --calldata 0x01f03e564a8a07244e5e895fb2428e4fbe01c1bd838c84c786f2e2636fef27f4`
+  → `0x5ce03d4d06777cab7930035ba0f4389a2d24c40de744aae31e19b636659a1b9`.
+
+**Next / Resume**
+- A submitted owner withdraw or transfer, and the remaining §8 negatives (stale plan, expired proof
+  window, second plan for the same owner).
+
+**Notes / caveats**
+- Cost: 9.46 STRK from account 0 in total. Declaring the class (5.35) cost far more than a
+  proof-carrying transaction (about 1.96), because Sepolia L2 gas was about 23.5 Gfri.
+  sncast's padded declare bound (about 13 STRK) needed explicit `--l2-gas*` / `--l1-data-gas-price`
+  flags.
+- The owner keeps about 0.01 STRK of private notes on the test pool. The withdraw approval
+  `0x759ff509…ca1` stays approved in the contract (it was not revoked).
+
 ## 2026-11-13 — STRK20 #48 part 3: security-review fixes
 
 **Did**
