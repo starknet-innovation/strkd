@@ -15,11 +15,15 @@ pub struct Request {
     pub id: Value,
 }
 
-/// A JSON-RPC error object.
+/// A JSON-RPC error object. `data` is optional and omitted when unset; strkd
+/// puts `{ reason }` there for errors that carry a machine-readable reason
+/// (`WalletRpcError::with_reason`).
 #[derive(Debug, Clone, Serialize)]
 pub struct RpcErrorObject {
     pub code: i64,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 /// A JSON-RPC response (exactly one of `result` / `error` is set).

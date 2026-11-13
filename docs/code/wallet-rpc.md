@@ -84,6 +84,9 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `companion_proveStatus` | paired | no | poll a proving job by `job_id` → status + `result`/`error` |
 | `companion_proofActivity` | paired | no | recent proving activity feed (desktop Proving tab) |
 | `companion_strk20Register` | paired | **yes** | register the account's STRK20 viewing key (+ self-channel), proved locally, submitted from the account → `{transaction_hash}`. See [`strk20.md`](./strk20.md) |
+| `companion_strk20AddOwner` | paired | **yes (always)** | enrol an external contract with SRC5 `is_custom_signature_valid` as a STRK20 owner (#48). Checks deployed, SRC5, and that any existing pool registration uses the key the controller derives. A grant never covers it → `{owner_address, chain, pool, controller, label, registered, viewing_public_key}` |
+| `companion_strk20ListOwners` | paired | no | the owners in the caller's scope (an agent: those it enrolled; an app: the user's) |
+| `companion_strk20RemoveOwner` | paired | **yes** | forget an owner record on the active or given chain's pool → `true` |
 | `wallet_strk20Balances` | paired | **yes** | private balance per token, discovered and decrypted locally |
 | `wallet_strk20PrepareInvoke` | paired | **yes** | plan + sign + prove STRK20 actions → `{call, proof}` unsubmitted |
 | `wallet_strk20InvokeTransaction` | paired | **yes** | same, then submit (deposits from the account; private batches via the AVNU relay) → `{transaction_hash}` |
@@ -221,7 +224,18 @@ node_probe`.)
   writes `vault.bin` **atomically** (temp + rename, `0600`). If the write fails,
   the in-memory add is **rolled back** (`rollback_account`) so memory and disk
   never diverge. With no store configured (e.g. tests), the change is in-memory
-  only.
+  only. `dispatch::persist_registry` does this for every registry change: agent
+  accounts, and STRK20 owner records (`companion_strk20AddOwner` /
+  `RemoveOwner`, rolled back with `rollback_strk20_owner` or a re-add).
+- **Machine-readable error reasons (`data.reason`):** an error built with
+  `WalletRpcError::with_reason("UPPER_SNAKE")` keeps its code, gets the message
+  prefix `UPPER_SNAKE: `, and its JSON-RPC error object gains
+  `data: { "reason": "UPPER_SNAKE" }`. Errors without a reason serialize exactly
+  as before (no `data` member), so existing clients are unaffected. Current
+  reasons: `OWNER_NOT_DEPLOYED`, `OWNER_NO_CUSTOM_VALIDATION`,
+  `OWNER_KEY_MISMATCH`, `OWNER_ALREADY_ENROLLED` (`-32006`) and
+  `OWNER_NOT_ENROLLED` (`-32002`). The table of planned reasons is in the #48
+  design note, §7.
 - **No secrets in logs/prompts:** `ApprovalRequest` carries only public info.
   The request log (`log.rs`) persists timestamp, method, caller label, network,
   decision, outcome, error code, and latency; with `full_payloads` on (default,
@@ -260,7 +274,8 @@ node_probe`.)
 | `tests/server.rs` (3) | real loopback HTTP via reqwest: `port.lock` written with bound port, public call, unauth rejected (118), pair → bearer-authed call; **403 without `X-Companion-Client`; 403 when `Origin` present**. |
 | `tests/log.rs` (5) | SQLite log: newest-first ordering, full-payloads on keeps params/result, off redacts them but keeps the summary, toggle applies to subsequent rows, file-backed persistence across reopen. |
 | `tests/persistence.rs` (2) | agent-account creation re-seals + writes `vault.bin`; the account survives a reopen + unlock cycle; wrong passphrase can't open the persisted vault. |
-| `tests/session.rs` (3) | `create_user_account` derives a user-domain account and grows the registry; fails when locked; `sign_deploy_account_for` produces a hash/signature + deployment fields matching the account. |
+| `tests/session.rs` (3) | `create_user_account` derives a user-domain account and grows the registry; fails when locked; `sign_deploy_account_for` produces a hash/signature + deployment fields matching the account. Also: STRK20 owner records survive reseal + unlock, with per-scope duplicates refused and rollback; the owner key comes from the controller and differs from its own key. |
+| `tests/dispatch.rs` (STRK20 owners) | `companion_strk20AddOwner` happy path (prompt shown, only the public key returned), registered under the derived key, prompts even under a grant, not deployed, no SRC5 (false and revert), key mismatch, param validation; scoping (agent B can't list, use or remove agent A's owner); remove (prompted, refused keeps it); `owner_address` + `account_address` → 114; errors without a reason have no `data`. |
 | `tests/clients.rs` (2) | pairings + grants survive reopen (token still verifies, grant still active); raw token never persisted (hash only); revoke persists. |
 | `tests/server.rs` (+1) | `GET /` usage doc is open (no auth/headers), 200, self-describing (lists pairing + funding methods); `/usage` alias. |
 

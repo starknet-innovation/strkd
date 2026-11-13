@@ -9,6 +9,8 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
 | Piece | Path | What |
 |---|---|---|
 | Viewing key | `wallet-core::strk20_viewing_key` | Pool-scoped `user_sk`, bramble's derivation via krusty. Same seed → same notes in both wallets. |
+| Owner key | `wallet-core::strk20_owner_viewing_key` | The `user_sk` strkd holds for an external owner contract, derived from a controller account (#48). strkd-only. |
+| Owner records | `wallet-core::Strk20Owner`, `crates/wallet-rpc/src/strk20/owners.rs` | Enrolled owner contracts in the sealed registry, plus `companion_strk20AddOwner` / `ListOwners` / `RemoveOwner`. |
 | Protocol client | `crates/strk20` | Pure Rust port of the wallet side of StarkWare's SDK: hashes, decryption, client actions, the proof invocation, discovery, planner, `apply_actions`. No I/O. |
 | RPC + desktop | `crates/wallet-rpc/src/strk20/` | The `wallet_strk20*` handlers and `companion_strk20Register`, the deposit provers (`remote.rs`), the AVNU private relay (`paymaster.rs`). |
 | Desktop | `desktop/src/components/Privacy.tsx` | The Private tab; Tauri commands `strk20_*` run the same handlers as `Caller::Desktop`. |
@@ -58,12 +60,49 @@ between words) and scrubbed of the viewing key. When the virtual transaction
 reverts, the message carries the full revert reason
 (`prover::snip36::classify_prover_error`).
 
+## External owners (#48, in progress)
+
+A deployed contract that advertises SRC5 `is_custom_signature_valid`
+(`0x2eb9…ded`) can own notes. The pool then asks the contract to approve each
+spend (`assert_valid_signature`, check 1). The design is in
+[`project/design-48-strk20-external-owner.md`](../project/design-48-strk20-external-owner.md).
+Part 1 of 3 is built:
+
+- **Owner key.** strkd signs
+  `starknet_keccak("strkd.strk20.owner.v1:<chain_id>:<pool>:<owner>")` with
+  the controller account's key (RFC 6979) and folds `Poseidon(r, s)`, using
+  krusty's `sign_stark_hash` and `fold_strk20_viewing_key`. The domain tag
+  keeps this key apart from the controller's own STRK20 key. Like that key, it
+  is derived per call and never persisted, logged or returned.
+- **Records.** `Strk20Owner { owner, chain, pool, controller, client_id, label }`
+  is kept in `Registry.strk20_owners`, sealed and persisted like agent accounts.
+  Scoping follows the account rule: an agent sees the owners it enrolled, and an
+  App client or the desktop sees the user's.
+- **Enrolment.** `companion_strk20AddOwner` runs these checks in order:
+  1. The owner is deployed (`getClassHashAt`), else `OWNER_NOT_DEPLOYED`.
+  2. `supports_interface(0x2eb9…ded)` returns `true`, else
+     `OWNER_NO_CUSTOM_VALIDATION`. A revert also counts as unsupported.
+  3. If the owner is already registered with the pool (`get_public_key`), the
+     registered key is the derived one, else `OWNER_KEY_MISMATCH`.
+
+  It then always prompts, even under a grant, and stores the record. The result
+  includes the viewing public key and `registered`.
+- **`Ctx`.** The STRK20 context has a subject: an account, or an enrolled owner
+  with its controller. `owner_address` resolves an owner in scope (else
+  `OWNER_NOT_ENROLLED`, `-32002`). Passing `owner_address` together with
+  `account_address` is a 114. The existing `wallet_strk20*` and
+  `companion_strk20Register` methods refuse owners with `-32601` for now.
+- **Not yet.** Plan, prove, the SNIP-12 `Strk20Plan` hash, `reveal_actions`,
+  the plan store and client-bound proving jobs. These come in parts 2 and 3.
+
 ## Verification
 
 - `crates/strk20/tests/fixtures/strk20-vectors.json` is checked by the crate
   and re-derived by `conformance/strk20.mjs` (starknet.js only, in CI). The
   official SDK reproduced it too, invocation included.
-- `wallet-core/tests/strk20.rs` matches the viewing keys live pools registered.
+- `wallet-core/tests/strk20.rs` matches the viewing keys live pools registered,
+  and pins known-answer vectors for the owner key. The vectors come from the
+  test seed only, and their message hashes were reproduced independently.
 - `wallet-core/tests/fixtures/strk20-plan-vector.json`: the SNIP-12
   `Strk20Plan` approval-hash vector for contract owners (#48, design note
   §5.3). Checked in Rust (`tests/strk20_plan_vector.rs`), starknet.js

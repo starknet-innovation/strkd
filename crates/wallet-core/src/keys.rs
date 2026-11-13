@@ -4,7 +4,7 @@
 //! short-lived `Zeroizing` buffers and is wiped as soon as the derived public
 //! data (address / signature) has been produced.
 
-use krusty_kms::strk20::derive_scoped_strk20_viewing_key;
+use krusty_kms::strk20::{derive_scoped_strk20_viewing_key, fold_strk20_viewing_key};
 use krusty_kms::{
     compute_typed_data_message_hash, derive_private_key_with_coin_type, sign_stark_hash,
     stark_public_key, StarkSignature,
@@ -68,6 +68,48 @@ pub fn strk20_viewing_key(
         .map_err(|_| CoreError::Derivation)
 }
 
+/// Domain tag of [`strk20_owner_viewing_key`]. Bumping it changes every owner's
+/// key, so it is part of the format.
+pub const STRK20_OWNER_KEY_TAG: &str = "strkd.strk20.owner.v1";
+
+/// The hash a controller key signs to derive an owner's STRK20 viewing key:
+/// `starknet_keccak("strkd.strk20.owner.v1:<chain_id>:<pool>:<owner>")`, each
+/// value as shortest lowercase `0x` hex. Zero values are refused.
+pub fn strk20_owner_viewing_key_message(chain_id: &Felt, pool: &Felt, owner: &Felt) -> Result<Felt> {
+    if [chain_id, pool, owner].iter().any(|f| **f == Felt::ZERO) {
+        return Err(CoreError::Derivation);
+    }
+    Ok(crate::tx::starknet_keccak(
+        format!("{STRK20_OWNER_KEY_TAG}:{chain_id:#x}:{pool:#x}:{owner:#x}").as_bytes(),
+    ))
+}
+
+/// Derive the STRK20 viewing key (`user_sk`) strkd holds for an external owner
+/// contract at `owner`, from the key of the controller account `(domain, index)`
+/// (`docs/project/design-48-strk20-external-owner.md` §3.2).
+///
+/// Same construction as [`strk20_viewing_key`] — sign a scope hash with the
+/// account key (RFC 6979) and fold `Poseidon(r, s)` into `[1, n/2)` — but over
+/// [`strk20_owner_viewing_key_message`], whose domain tag keeps it apart from the
+/// controller's own STRK20 key. Not bramble-compatible, by design (D1).
+///
+/// The result is a secret: it decrypts *and* spends the owner's notes (subject
+/// to the owner contract's own signature check). Callers must not log, persist
+/// or return it.
+pub fn strk20_owner_viewing_key(
+    mnemonic: &str,
+    domain: Domain,
+    index: u32,
+    passphrase: Option<&str>,
+    chain_id: &Felt,
+    pool: &Felt,
+    owner: &Felt,
+) -> Result<Felt> {
+    let message = strk20_owner_viewing_key_message(chain_id, pool, owner)?;
+    let sk = private_key(mnemonic, domain, index, passphrase)?;
+    let sig = sign_stark_hash(&sk, &message).map_err(|_| CoreError::Derivation)?;
+    fold_strk20_viewing_key(&sig.public_key, &message, &sig.r, &sig.s).map_err(|_| CoreError::Derivation)
+}
 /// Compute the Stark public key for `(domain, index)`.
 pub fn public_key(
     mnemonic: &str,
