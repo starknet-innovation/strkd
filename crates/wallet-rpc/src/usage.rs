@@ -176,9 +176,20 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
 (interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \
 the contract itself to approve each spend. Enrol it with companion_strk20AddOwner (always prompts, even under a \
 grant); strkd then holds its viewing key, derived from one of your accounts (the controller). List with \
-companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Planning and proving for owners is not \
-available yet: owner_address on the wallet_strk20* methods returns -32601, and owner_address together with \
-account_address is a 114."
+companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Then PLAN a batch with \
+companion_strk20Plan {owner_address, register:true | actions:[…]}: strkd fixes the actions (signs and proves \
+nothing) and returns plan_hash, the SNIP-12 digest of typed_data (companion_typedDataHash reproduces it with \
+account_address = the owner). The owner contract approves plan_hash on-chain; proving the approved plan \
+(companion_strk20Prove) comes in a later build. Plans also work for your own accounts (account_address). \
+owner_address on the wallet_strk20* methods still returns -32601, and owner_address together with \
+account_address is a 114.",
+            "plans": "A plan lives in memory only: bound to the client that made it, expires_at (Unix ms) after \
+ttl_secs (default 3600, max 86400), and wiped when the wallet locks or restarts. One live plan per owner and pool, \
+4 per client, 32 in all (else -32006 PLAN_LIMIT). By default you get plan_hash, typed_data and a summary (tokens, \
+amounts, recipients, action count, pool fee), not the actions. reveal_actions:true asks the user separately (a grant \
+never covers it) and returns client_actions + client_actions_felts: they hold channel keys, which disclose every \
+past and future payment on those channels, irrevocably (they cannot spend). If the user refuses, the plan still \
+comes back with actions_revealed:false."
         },
 
         "methods": [
@@ -286,6 +297,13 @@ normal invoke." },
             { "method": "companion_strk20RemoveOwner", "auth": true, "prompts": true,
               "params": "{ owner_address, chainId? }", "returns": "true",
               "note": "Forgets an owner on the active (or given) chain's pool. Approval-gated (a grant covers it). Nothing on chain changes, and enrolling again derives the same key. Unknown or not yours → -32002 with data.reason OWNER_NOT_ENROLLED." },
+            { "method": "companion_strk20Plan", "auth": true, "prompts": true,
+              "params": "{ owner_address | account_address, register?: bool, actions?: [STRK20_ACTION…], reveal_actions?: bool, ttl_secs?, chainId? }",
+              "returns": "{ plan_id, plan_version: 1, expires_at, plan_block, chain_id, pool, owner, subject: \"owner\"|\"account\", controller, plan_hash, actions_hash, typed_data, summary: { description, register, transfers, withdrawals, action_count, notes_spent, change, pool, pool_fee, pool_fee_token }, actions_revealed?, client_actions?, client_actions_felts? }",
+              "note": "Plans a batch WITHOUT signing or proving it: register:true (register the viewing key + open the self-channel) or transfer/withdraw actions (deposits → -32601 DEPOSIT_UNSUPPORTED). State is read 12 blocks behind the head (plan_block). plan_hash = SNIP-12 rev 1 message hash of typed_data (StarknetDomain {name: \"strkd.Strk20Plan\", version: \"1\", chainId, revision: \"1\"}, Strk20Plan {pool, owner, actions_hash}) with account_address = owner, where actions_hash = poseidon(client_actions_felts) = poseidon(compile_actions calldata[2..]). For an owner contract, it must approve plan_hash on-chain before the proof is built. Approval-gated (a grant covers it); reveal_actions adds a separate prompt a grant never covers. Errors (data.reason): OWNER_NOT_ENROLLED (-32002), OWNER_NO_CUSTOM_VALIDATION / OWNER_NOT_DEPLOYED at plan_block (-32006), ALREADY_REGISTERED (-32006, register:true on a registered owner/account), PLAN_LIMIT (-32006); 118 not registered, 119 insufficient private balance, 120 privacy leak." },
+            { "method": "companion_strk20DiscardPlan", "auth": true, "prompts": false,
+              "params": "{ plan_id }", "returns": "true",
+              "note": "Drops one of your plans (it is wiped). Unknown, expired, already discarded or another client's → 114 with data.reason PLAN_NOT_FOUND." },
             { "method": "wallet_strk20Balances", "auth": true, "prompts": true,
               "params": "{ tokens: [address…], account_address?, chainId? }", "returns": "[{ token, balance }]",
               "note": "Private balance per token (hex, base units), read from the pool and decrypted locally — no indexer sees the viewing key. Approval-gated: it reveals private balances. 118 if the account isn't registered." },
@@ -311,7 +329,7 @@ commitment comes with shadow-account invokes.",
         },
 
         "errors": {
-            "data.reason": "Some errors also carry error.data = { reason: \"UPPER_SNAKE\" }, a stable machine-readable reason (the message starts with it too). The code is unchanged; branch on data.reason when present. Current reasons: OWNER_NOT_DEPLOYED, OWNER_NO_CUSTOM_VALIDATION, OWNER_KEY_MISMATCH, OWNER_ALREADY_ENROLLED (-32006); OWNER_NOT_ENROLLED (-32002).",
+            "data.reason": "Some errors also carry error.data = { reason: \"UPPER_SNAKE\" }, a stable machine-readable reason (the message starts with it too). The code is unchanged; branch on data.reason when present. Current reasons: OWNER_NOT_DEPLOYED, OWNER_NO_CUSTOM_VALIDATION, OWNER_KEY_MISMATCH, OWNER_ALREADY_ENROLLED, ALREADY_REGISTERED, PLAN_LIMIT (-32006); OWNER_NOT_ENROLLED (-32002); PLAN_NOT_FOUND (114); DEPOSIT_UNSUPPORTED (-32601).",
             "113": "USER_REFUSED — the user rejected the prompt (or it timed out after ~60s)",
             "114": "INVALID_REQUEST_PAYLOAD — malformed params / missing field",
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",

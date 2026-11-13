@@ -19,7 +19,7 @@ It holds **no key material**: all signing goes through
 | `error.rs` | `WalletRpcError` + mapping to standard `wallet_rpc.json` codes (and JSON-RPC reserved codes for transport/lock conditions). |
 | `auth.rs` | `ClientStore`: pairing, per-client bearer tokens (only SHA-256 hashes stored), `ClientKind` (Agent/App), time-bounded auto-approval grants (`grant`/`revoke_grant`/`list`), **persisted** to `clients.json` (`open`/`persist`). |
 | `approval.rs` | The `Approver` trait + `AutoApprover` (tests) and `ChannelApprover` (real UI). Carries only public info in a prompt. |
-| `session.rs` | `WalletSession`: holds the unlocked mnemonic + vault passphrase + registry; performs deployment-data, typed-data signing, invoke signing, user/agent-account creation, and re-sealing. |
+| `session.rs` | `WalletSession`: holds the unlocked mnemonic + vault passphrase + registry (and the in-memory STRK20 plan store, dropped on lock); performs deployment-data, typed-data signing, invoke signing, user/agent-account creation, and re-sealing. |
 | `log.rs` | `RequestLog` — SQLite-backed (file or in-memory), with full-payload redaction toggle. |
 | `store.rs` | `VaultStore` — atomic on-disk `vault.bin` load/save (temp + rename, `0600`). |
 | `node.rs` | `StarknetRpc` trait + `HttpStarknetRpc` (reqwest JSON-RPC): nonce, fee estimate, broadcast, deploy-status, deploy-account. |
@@ -87,6 +87,8 @@ desktop "Connect" tab shows a copy-paste prompt that points agents here (see
 | `companion_strk20AddOwner` | paired | **yes (always)** | enrol an external contract with SRC5 `is_custom_signature_valid` as a STRK20 owner (#48). Checks deployed, SRC5, and that any existing pool registration uses the key the controller derives. A grant never covers it → `{owner_address, chain, pool, controller, label, registered, viewing_public_key}` |
 | `companion_strk20ListOwners` | paired | no | the owners in the caller's scope (an agent: those it enrolled; an app: the user's) |
 | `companion_strk20RemoveOwner` | paired | **yes** | forget an owner record on the active or given chain's pool → `true` |
+| `companion_strk20Plan` | paired | **yes** (+ **always** for `reveal_actions`) | plan a STRK20 batch for an owner or an account without signing or proving it (#48) → `{plan_id, plan_version, expires_at, plan_block, plan_hash, actions_hash, typed_data, summary, …}`; `client_actions` only after the separate `reveal_actions` prompt. See [`strk20.md`](./strk20.md#external-owners-48-in-progress) |
+| `companion_strk20DiscardPlan` | paired | no | drop one of the caller's plans → `true`; else `PLAN_NOT_FOUND` |
 | `wallet_strk20Balances` | paired | **yes** | private balance per token, discovered and decrypted locally |
 | `wallet_strk20PrepareInvoke` | paired | **yes** | plan + sign + prove STRK20 actions → `{call, proof}` unsubmitted |
 | `wallet_strk20InvokeTransaction` | paired | **yes** | same, then submit (deposits from the account; private batches via the AVNU relay) → `{transaction_hash}` |
@@ -233,9 +235,10 @@ node_probe`.)
   `data: { "reason": "UPPER_SNAKE" }`. Errors without a reason serialize exactly
   as before (no `data` member), so existing clients are unaffected. Current
   reasons: `OWNER_NOT_DEPLOYED`, `OWNER_NO_CUSTOM_VALIDATION`,
-  `OWNER_KEY_MISMATCH`, `OWNER_ALREADY_ENROLLED` (`-32006`) and
-  `OWNER_NOT_ENROLLED` (`-32002`). The table of planned reasons is in the #48
-  design note, §7.
+  `OWNER_KEY_MISMATCH`, `OWNER_ALREADY_ENROLLED`, `ALREADY_REGISTERED`,
+  `PLAN_LIMIT` (`-32006`), `OWNER_NOT_ENROLLED` (`-32002`), `PLAN_NOT_FOUND`
+  (114) and `DEPOSIT_UNSUPPORTED` (`-32601`). The table of planned reasons is in
+  the #48 design note, §7.
 - **No secrets in logs/prompts:** `ApprovalRequest` carries only public info.
   The request log (`log.rs`) persists timestamp, method, caller label, network,
   decision, outcome, error code, and latency; with `full_payloads` on (default,
@@ -243,7 +246,10 @@ node_probe`.)
   **never** stores seed/key/passphrase/raw tokens — bearer tokens ride the
   header and only the resolved client label/id is logged. Redaction is
   centralized in `RequestLog::record`, and `set_full_payloads(false)` drops the
-  params/result columns for subsequent rows (spec §9). The store is SQLite
+  params/result columns for subsequent rows (spec §9). One result is redacted
+  even with full payloads on: `companion_strk20Plan`'s `client_actions` and
+  `client_actions_felts` (channel keys) are logged as `"<redacted>"`
+  (`dispatch::redact_for_log`). The store is SQLite
   (file-backed in production via `ServerState::with_log`, in-memory by default /
   in tests); inserts are synchronous under the log mutex — fine at wallet
   request rates, movable to a writer task if throughput ever demands it.
@@ -276,6 +282,7 @@ node_probe`.)
 | `tests/persistence.rs` (2) | agent-account creation re-seals + writes `vault.bin`; the account survives a reopen + unlock cycle; wrong passphrase can't open the persisted vault. |
 | `tests/session.rs` (3) | `create_user_account` derives a user-domain account and grows the registry; fails when locked; `sign_deploy_account_for` produces a hash/signature + deployment fields matching the account. Also: STRK20 owner records survive reseal + unlock, with per-scope duplicates refused and rollback; the owner key comes from the controller and differs from its own key. |
 | `tests/dispatch.rs` (STRK20 owners) | `companion_strk20AddOwner` happy path (prompt shown, only the public key returned), registered under the derived key, prompts even under a grant, not deployed, no SRC5 (false and revert), key mismatch, param validation; scoping (agent B can't list, use or remove agent A's owner); remove (prompted, refused keeps it); `owner_address` + `account_address` → 114; errors without a reason have no `data`. |
+| `tests/dispatch.rs` (STRK20 plans) | `companion_strk20Plan` for an owner: one prompt naming owner/label/controller/chain/action count/pool/on-chain approval, no pool-nonce read and no proving job (nothing signed), SRC5 re-checked at `plan_block`, `plan_hash` reproduced by `companion_typedDataHash`, no actions without `reveal_actions`; `reveal_actions` prompts even under a grant, returns felts whose Poseidon is `actions_hash`, and the log redacts them; a refused reveal still returns the plan; a grant covers the plan prompt and a refused plan is not stored; one plan per owner + discard; TTL expiry and validation; another client gets `PLAN_NOT_FOUND`; lock wipes plans; accounts; SRC5 gone / unregistered / already registered; param validation. Unit tests in `strk20/plan.rs`: PR #53's SNIP-12 vector, hash bindings, store caps/expiry/client binding, wipe on drop. |
 | `tests/clients.rs` (2) | pairings + grants survive reopen (token still verifies, grant still active); raw token never persisted (hash only); revoke persists. |
 | `tests/server.rs` (+1) | `GET /` usage doc is open (no auth/headers), 200, self-describing (lists pairing + funding methods); `/usage` alias. |
 

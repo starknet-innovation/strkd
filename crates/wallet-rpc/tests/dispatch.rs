@@ -2405,3 +2405,442 @@ async fn errors_without_a_reason_have_no_data_member() {
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["error"], json!({ "code": 118, "message": "caller is not a registered client" }));
 }
+
+// ── STRK20 plans (#48, part 2: the plan step) ───────────────────────────────
+
+/// A node for the plan step: head 1000, every contract deployed, the owner
+/// answering `supports_interface` with `true` at `latest` and with
+/// `src5_at_block` at a numbered block, and the pool's `get_public_key`
+/// returning `registered_key` (zero: not registered). Every other pool view
+/// reads zero. Records every call.
+struct PlanNode {
+    head: u64,
+    src5_at_block: bool,
+    registered_key: Felt,
+    calls: std::sync::Mutex<Vec<(String, Value)>>,
+}
+
+impl PlanNode {
+    fn methods(&self) -> Vec<String> {
+        self.calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect()
+    }
+    /// The `block_id` of every `supports_interface` call.
+    fn src5_blocks(&self) -> Vec<Value> {
+        let src5 = format!("{:#x}", wallet_core::get_selector_from_name("supports_interface"));
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, p)| m == "starknet_call" && p["request"]["entry_point_selector"] == json!(src5))
+            .map(|(_, p)| p["block_id"].clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl StarknetRpc for PlanNode {
+    async fn raw(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        self.calls.lock().unwrap().push((method.to_string(), params.clone()));
+        match method {
+            "starknet_blockNumber" => Ok(json!(self.head)),
+            "starknet_getClassHashAt" => Ok(json!("0x1234")),
+            "starknet_call" => {
+                let selector = params["request"]["entry_point_selector"].as_str().unwrap();
+                let hex_sel = |n: &str| format!("{:#x}", wallet_core::get_selector_from_name(n));
+                if selector == hex_sel("supports_interface") {
+                    let yes = params["block_id"] == json!("latest") || self.src5_at_block;
+                    Ok(json!([if yes { "0x1" } else { "0x0" }]))
+                } else if selector == hex_sel("get_public_key") {
+                    Ok(json!([format!("{:#x}", self.registered_key)]))
+                } else {
+                    Ok(json!(["0x0"]))
+                }
+            }
+            m => Err(NodeError::Rpc(format!("{m}: unexpected in this test"))),
+        }
+    }
+    async fn get_nonce(&self, _: &Felt) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_invoke(&self, _: &Felt, _: &[Felt], _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_invoke(
+        &self,
+        _: &Felt,
+        _: &[Felt],
+        _: &[Felt],
+        _: &Felt,
+        _: &FeeBounds,
+        _: &[Felt],
+        _: Option<&str>,
+    ) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn is_deployed(&self, _: &Felt) -> Result<bool, NodeError> {
+        unimplemented!()
+    }
+    async fn balance_of(&self, _: &Felt, _: &Felt) -> Result<u128, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_deploy_account(&self, _: &Felt, _: &Felt, _: &[Felt], _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_deploy_account(&self, _: &Felt, _: &[Felt], _: &Felt, _: &[Felt], _: &FeeBounds) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_declare(&self, _: &Felt, _: &Felt, _: &Value, _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_declare(&self, _: &Felt, _: &Felt, _: &Value, _: &[Felt], _: &Felt, _: &FeeBounds) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+}
+
+const PLAN: &str = "companion_strk20Plan";
+const REVEAL: &str = "companion_strk20Plan (reveal_actions)";
+
+fn plan_node(src5_at_block: bool, registered_key: Felt) -> Arc<PlanNode> {
+    Arc::new(PlanNode { head: 1000, src5_at_block, registered_key, calls: Default::default() })
+}
+
+/// A server with the stub prover, `node` on Sepolia, and a recording approver
+/// that rejects `reject`.
+fn plan_state(
+    tag: &str,
+    node: Arc<PlanNode>,
+    reject: &'static [&'static str],
+) -> (Arc<ServerState>, Arc<RecordingApprover>) {
+    let dir = std::env::temp_dir().join(format!("strkd-rpc-plan-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pstate = Arc::new(prover::ProverState {
+        prover: Arc::new(StubProver),
+        jobs: Arc::new(prover::Jobs::new(0)),
+        settings: Arc::new(prover::SettingsStore::load(dir.join("settings.json"))),
+        storage: Arc::new(prover::Storage::new(dir.join("storage"))),
+    });
+    let approver = Arc::new(RecordingApprover { reject, prompts: Default::default() });
+    let state = Arc::new(
+        ServerState::new(Arc::new(Mutex::new(make_session(false))), approver.clone())
+            .with_node(ChainId::Sepolia, node)
+            .with_prover(pstate),
+    );
+    (state, approver)
+}
+
+async fn enrol(state: &ServerState, token: &str, label: &str) {
+    let r = call(state, Some(token), "companion_strk20AddOwner", json!({ "owner_address": OWNER, "label": label })).await;
+    r.result.unwrap_or_else(|| panic!("enrol: {:?}", r.error));
+}
+
+/// `companion_typedDataHash` of the plan's typed data, signed as the owner.
+async fn typed_data_hash(state: &ServerState, token: &str, plan: &Value) -> Felt {
+    let r = call(
+        state,
+        Some(token),
+        "companion_typedDataHash",
+        json!({ "typed_data": plan["typed_data"], "account_address": plan["owner"] }),
+    )
+    .await;
+    Felt::from_hex(r.result.unwrap()["hash"].as_str().unwrap()).unwrap()
+}
+
+fn felt_of(v: &Value) -> Felt {
+    Felt::from_hex(v.as_str().unwrap_or_else(|| panic!("not a felt: {v}"))).unwrap()
+}
+
+fn sepolia_pool() -> Felt {
+    Felt::from_hex(wallet_rpc::strk20::SEPOLIA_POOL).unwrap()
+}
+
+#[tokio::test]
+async fn plan_for_an_owner_prompts_signs_nothing_and_returns_a_reproducible_hash() {
+    let node = plan_node(true, Felt::ZERO);
+    let (state, approver) = plan_state("owner-ok", node.clone(), &[]);
+    let token = pair(&state, "app").await;
+    let (_, controller) = user_registry();
+    enrol(&state, &token, "vault").await;
+    let before = node.calls.lock().unwrap().len();
+
+    let resp = call(&state, Some(&token), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    let p = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+    assert_eq!(p["plan_version"], json!(1));
+    assert_eq!(p["plan_block"], json!(988));
+    assert_eq!(p["chain_id"], json!("SN_SEPOLIA"));
+    assert_eq!(p["owner"], json!(OWNER));
+    assert_eq!(p["subject"], json!("owner"));
+    assert_eq!(p["controller"], json!(controller));
+    assert_eq!(p["pool"], json!(address_hex(&sepolia_pool())));
+    assert_eq!(p["plan_id"].as_str().unwrap().len(), 32);
+    let now = wallet_rpc::now_unix_ms();
+    let expires = p["expires_at"].as_u64().unwrap();
+    assert!(expires > now + 3_590_000 && expires <= now + 3_600_000, "{expires}");
+    // Register = SetViewingKey + the self-channel.
+    assert_eq!(p["summary"]["action_count"], json!(2));
+    assert_eq!(p["summary"]["register"], json!(true));
+    // No actions without reveal_actions.
+    for k in ["client_actions", "client_actions_felts", "actions_revealed"] {
+        assert!(p.get(k).is_none(), "{k} returned without reveal_actions: {p}");
+    }
+    // The typed data reproduces plan_hash through companion_typedDataHash.
+    assert_eq!(typed_data_hash(&state, &token, &p).await, felt_of(&p["plan_hash"]));
+    assert_eq!(felt_of(&p["typed_data"]["message"]["actions_hash"]), felt_of(&p["actions_hash"]));
+    assert_eq!(felt_of(&p["typed_data"]["message"]["owner"]), Felt::from_hex(OWNER).unwrap());
+    assert_eq!(p["typed_data"]["domain"]["name"], json!("strkd.Strk20Plan"));
+
+    // One prompt, naming owner, label, controller, chain, action count, pool
+    // and the on-chain approval.
+    let prompts = prompted(&approver, PLAN);
+    assert_eq!(prompts.len(), 1);
+    let text = &prompts[0];
+    let pool = format!("{:#x}", sepolia_pool());
+    for want in [OWNER, "\"vault\"", &controller, "SN_SEPOLIA", "2 action(s)", &pool, "approve this plan on-chain", "Nothing is signed"] {
+        assert!(text.contains(want), "prompt lacks {want:?}: {text}");
+    }
+    assert!(prompted(&approver, REVEAL).is_empty());
+
+    // SRC5 was re-checked at the reference block. Nothing was signed or
+    // proved: no pool-nonce read (it precedes signing), no proving job.
+    let calls = node.calls.lock().unwrap()[before..].to_vec();
+    assert!(calls.iter().all(|(m, _)| m != "starknet_getNonce"), "{calls:?}");
+    assert!(node.src5_blocks().contains(&json!({ "block_number": 988 })));
+    let act = call(&state, Some(&token), "companion_proofActivity", json!({})).await.result.unwrap();
+    assert_eq!(act["activity"], json!([]), "{act}");
+}
+
+/// D3/D6: reveal_actions always prompts, even when a grant covers the plan
+/// prompt. The actions come back to the caller but not into the request log.
+#[tokio::test]
+async fn reveal_actions_prompts_even_under_a_grant_and_returns_the_hashed_actions() {
+    let (state, approver) = plan_state("reveal", plan_node(true, Felt::ZERO), &[]);
+    let (token, id, _) = agent_with_account_and_id(&state).await;
+    enrol(&state, &token, "").await;
+    grant_forever(&state, &id).await;
+
+    let params = json!({ "owner_address": OWNER, "register": true, "reveal_actions": true });
+    let resp = call(&state, Some(&token), PLAN, params).await;
+    let p = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+    // The grant covered the plan prompt; the reveal prompt still showed.
+    assert!(prompted(&approver, PLAN).is_empty());
+    let reveal = prompted(&approver, REVEAL);
+    assert_eq!(reveal.len(), 1);
+    for want in ["channel key", "every past and", "future private payment", "cannot be revoked", "does not let anyone spend"] {
+        assert!(reveal[0].contains(want), "reveal prompt lacks {want:?}: {}", reveal[0]);
+    }
+
+    assert_eq!(p["actions_revealed"], json!(true));
+    let actions = p["client_actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["type"], json!("set_viewing_key"));
+    assert_eq!(actions[1]["type"], json!("open_channel"));
+    assert_eq!(felt_of(&actions[1]["recipient_addr"]), Felt::from_hex(OWNER).unwrap());
+    // The felts are serialize_actions: the Span length prefix, then each action.
+    let felts: Vec<Felt> = p["client_actions_felts"].as_array().unwrap().iter().map(felt_of).collect();
+    assert_eq!(felts[0], Felt::TWO);
+    assert_eq!(felts.len(), 1 + 2 + 5);
+    // Recompute: actions_hash = poseidon(felts), plan_hash = SNIP-12 of the typed data.
+    assert_eq!(strk20::hashes::poseidon_hash_many(&felts), felt_of(&p["actions_hash"]));
+    let owner = Felt::from_hex(OWNER).unwrap();
+    let again = wallet_rpc::strk20::plan::plan_hash(ChainId::Sepolia, &sepolia_pool(), &owner, &felts).unwrap();
+    assert_eq!(again.plan_hash, felt_of(&p["plan_hash"]));
+    assert_eq!(typed_data_hash(&state, &token, &p).await, felt_of(&p["plan_hash"]));
+
+    // The request log keeps the plan but not its actions.
+    let log = state.log.lock().await.recent(20);
+    let entry = log.iter().find(|e| e.method == PLAN).expect("plan logged");
+    let logged = entry.result_json.as_deref().unwrap();
+    assert!(logged.contains("<redacted>") && logged.contains(p["plan_hash"].as_str().unwrap()), "{logged}");
+    let random = actions[0]["random"].as_str().unwrap();
+    assert!(!logged.contains(random), "the log holds a planned random value: {logged}");
+}
+
+/// Refusing the reveal prompt still returns (and keeps) the plan, without actions.
+#[tokio::test]
+async fn refusing_the_reveal_returns_the_plan_without_actions() {
+    let (state, approver) = plan_state("reveal-no", plan_node(true, Felt::ZERO), &[REVEAL]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    let params = json!({ "owner_address": OWNER, "register": true, "reveal_actions": true });
+    let p = call(&state, Some(&token), PLAN, params).await.result.unwrap();
+    assert_eq!(prompted(&approver, PLAN).len(), 1);
+    assert_eq!(prompted(&approver, REVEAL).len(), 1);
+    assert_eq!(p["actions_revealed"], json!(false));
+    assert!(p.get("client_actions").is_none() && p.get("client_actions_felts").is_none());
+    let d = call(&state, Some(&token), "companion_strk20DiscardPlan", json!({ "plan_id": p["plan_id"] })).await;
+    assert_eq!(d.result, Some(json!(true)), "{:?}", d.error);
+}
+
+/// A grant covers the plan prompt (D6).
+#[tokio::test]
+async fn a_grant_covers_the_plan_prompt() {
+    let (state, approver) = plan_state("grant", plan_node(true, Felt::ZERO), &[PLAN]);
+    let (token, id, _) = agent_with_account_and_id(&state).await;
+    enrol(&state, &token, "").await;
+    // Without the grant the (rejecting) prompt shows.
+    let refused = call(&state, Some(&token), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    assert_eq!(err_code(&refused), 113);
+    assert_eq!(prompted(&approver, PLAN).len(), 1);
+    // A refused plan is not stored, so the next one isn't capped by it.
+    grant_forever(&state, &id).await;
+    let p = call(&state, Some(&token), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    assert!(p.result.is_some(), "{:?}", p.error);
+    assert_eq!(prompted(&approver, PLAN).len(), 1, "the grant covered the second plan");
+}
+
+/// One live plan per owner and pool; discarding frees the slot.
+#[tokio::test]
+async fn one_live_plan_per_owner_and_discard_frees_it() {
+    let (state, approver) = plan_state("cap", plan_node(true, Felt::ZERO), &[]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    let params = json!({ "owner_address": OWNER, "register": true });
+    let first = call(&state, Some(&token), PLAN, params.clone()).await.result.unwrap();
+    let second = call(&state, Some(&token), PLAN, params.clone()).await;
+    assert_eq!(err_code(&second), -32006);
+    assert_eq!(reason(&second).as_deref(), Some("PLAN_LIMIT"));
+    let msg = second.error.unwrap().message;
+    assert!(msg.contains(first["plan_id"].as_str().unwrap()), "{msg}");
+    // Refused before prompting.
+    assert_eq!(prompted(&approver, PLAN).len(), 1);
+
+    let id = json!({ "plan_id": first["plan_id"] });
+    let d = call(&state, Some(&token), "companion_strk20DiscardPlan", id.clone()).await;
+    assert_eq!(d.result, Some(json!(true)));
+    let again = call(&state, Some(&token), "companion_strk20DiscardPlan", id).await;
+    assert_eq!(err_code(&again), 114);
+    assert_eq!(reason(&again).as_deref(), Some("PLAN_NOT_FOUND"));
+    let third = call(&state, Some(&token), PLAN, params).await;
+    assert!(third.result.is_some(), "{:?}", third.error);
+}
+
+#[tokio::test]
+async fn plans_expire_after_their_ttl() {
+    let (state, _) = plan_state("ttl", plan_node(true, Felt::ZERO), &[]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    for bad in [json!(0), json!(86_401), json!("60"), json!(1.5)] {
+        let params = json!({ "owner_address": OWNER, "register": true, "ttl_secs": bad });
+        assert_eq!(err_code(&call(&state, Some(&token), PLAN, params).await), 114, "ttl_secs {bad}");
+    }
+    let params = json!({ "owner_address": OWNER, "register": true, "ttl_secs": 1 });
+    let p = call(&state, Some(&token), PLAN, params).await.result.unwrap();
+    assert!(p["expires_at"].as_u64().unwrap() <= wallet_rpc::now_unix_ms() + 1000);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let d = call(&state, Some(&token), "companion_strk20DiscardPlan", json!({ "plan_id": p["plan_id"] })).await;
+    assert_eq!(reason(&d).as_deref(), Some("PLAN_NOT_FOUND"));
+    // The expired plan no longer holds the owner's slot.
+    let again = call(&state, Some(&token), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    assert!(again.result.is_some(), "{:?}", again.error);
+}
+
+/// Plans are bound to their client: another client gets PLAN_NOT_FOUND.
+#[tokio::test]
+async fn another_client_cannot_discard_a_plan() {
+    let (state, _) = plan_state("client", plan_node(true, Felt::ZERO), &[]);
+    let (token_a, _, _) = agent_with_account_and_id(&state).await;
+    let (token_b, _, _) = agent_with_account_and_id(&state).await;
+    enrol(&state, &token_a, "").await;
+    let params = json!({ "owner_address": OWNER, "register": true });
+    let p = call(&state, Some(&token_a), PLAN, params.clone()).await.result.unwrap();
+    let id = json!({ "plan_id": p["plan_id"] });
+    // B doesn't have the owner in scope, and can't touch A's plan.
+    let b_plan = call(&state, Some(&token_b), PLAN, params).await;
+    assert_eq!(reason(&b_plan).as_deref(), Some("OWNER_NOT_ENROLLED"));
+    let b = call(&state, Some(&token_b), "companion_strk20DiscardPlan", id.clone()).await;
+    assert_eq!(err_code(&b), 114);
+    assert_eq!(reason(&b).as_deref(), Some("PLAN_NOT_FOUND"));
+    let a = call(&state, Some(&token_a), "companion_strk20DiscardPlan", id).await;
+    assert_eq!(a.result, Some(json!(true)));
+}
+
+/// D2: locking wipes every plan, and unlocking doesn't bring them back.
+#[tokio::test]
+async fn locking_the_wallet_wipes_plans() {
+    let (state, _) = plan_state("lock", plan_node(true, Felt::ZERO), &[]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    let params = json!({ "owner_address": OWNER, "register": true });
+    let p = call(&state, Some(&token), PLAN, params).await.result.unwrap();
+    let id = json!({ "plan_id": p["plan_id"] });
+
+    let vault = state.session.lock().await.reseal().unwrap();
+    state.session.lock().await.lock();
+    let locked = call(&state, Some(&token), "companion_strk20DiscardPlan", id.clone()).await;
+    assert_eq!(err_code(&locked), -32001);
+    state.session.lock().await.unlock(&vault, "test-pass").unwrap();
+    let gone = call(&state, Some(&token), "companion_strk20DiscardPlan", id).await;
+    assert_eq!(reason(&gone).as_deref(), Some("PLAN_NOT_FOUND"));
+}
+
+/// §2.1: plans also work for strkd accounts, without an SRC5 check; strkd
+/// signs at prove time.
+#[tokio::test]
+async fn plans_work_for_strkd_accounts() {
+    let node = plan_node(false, Felt::ZERO);
+    let (state, approver) = plan_state("account", node.clone(), &[]);
+    let token = pair(&state, "app").await;
+    let (_, account) = user_registry();
+    let p = call(&state, Some(&token), PLAN, json!({ "register": true })).await;
+    let p = p.result.unwrap_or_else(|| panic!("{:?}", p.error));
+    assert_eq!(p["subject"], json!("account"));
+    assert_eq!(p["owner"], json!(account));
+    assert_eq!(p["controller"], json!(account));
+    assert_eq!(typed_data_hash(&state, &token, &p).await, felt_of(&p["plan_hash"]));
+    let text = &prompted(&approver, PLAN)[0];
+    assert!(text.contains("strkd signs with this account") && text.contains(&account), "{text}");
+    assert!(node.src5_blocks().is_empty());
+    assert!(node.methods().iter().all(|m| m != "starknet_getNonce"));
+}
+
+/// The plan checks the owner's state for the intent before prompting.
+#[tokio::test]
+async fn plan_checks_src5_and_registration_for_the_intent() {
+    // SRC5 gone at the reference block.
+    let (state, approver) = plan_state("nosrc5", plan_node(false, Felt::ZERO), &[]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    let r = call(&state, Some(&token), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    assert_eq!(err_code(&r), -32006, "{:?}", r.error);
+    assert_eq!(reason(&r).as_deref(), Some("OWNER_NO_CUSTOM_VALIDATION"));
+    assert!(r.error.unwrap().message.contains("reference block 988"));
+    assert!(prompted(&approver, PLAN).is_empty());
+
+    // Withdrawing for an unregistered owner: 118.
+    let (state2, approver2) = plan_state("unreg", plan_node(true, Felt::ZERO), &[]);
+    let token2 = pair(&state2, "app").await;
+    enrol(&state2, &token2, "").await;
+    let w = json!({ "owner_address": OWNER,
+                    "actions": [{ "type": "withdraw", "token": "0x4718", "amount": "0x5", "recipient": "0xa11ce" }] });
+    assert_eq!(err_code(&call(&state2, Some(&token2), PLAN, w).await), 118);
+    assert!(prompted(&approver2, PLAN).is_empty());
+
+    // Registering an owner that is already registered.
+    let (state3, approver3) = plan_state("reg", plan_node(true, expected_owner_public_key()), &[]);
+    let token3 = pair(&state3, "app").await;
+    enrol(&state3, &token3, "").await;
+    let r = call(&state3, Some(&token3), PLAN, json!({ "owner_address": OWNER, "register": true })).await;
+    assert_eq!(err_code(&r), -32006);
+    assert_eq!(reason(&r).as_deref(), Some("ALREADY_REGISTERED"));
+    assert!(prompted(&approver3, PLAN).is_empty());
+}
+
+#[tokio::test]
+async fn plan_validates_its_params() {
+    let (state, _) = plan_state("params", plan_node(true, Felt::ZERO), &[]);
+    let token = pair(&state, "app").await;
+    enrol(&state, &token, "").await;
+    let transfer = json!([{ "type": "transfer", "token": "0x4718", "amount": "0x5", "recipient": "0xb0b" }]);
+    for params in [
+        json!({ "owner_address": OWNER }),
+        json!({ "owner_address": OWNER, "register": true, "actions": transfer }),
+        json!({ "owner_address": OWNER, "register": "yes" }),
+        json!({ "owner_address": OWNER, "register": true, "reveal_actions": 1 }),
+    ] {
+        assert_eq!(err_code(&call(&state, Some(&token), PLAN, params.clone()).await), 114, "{params}");
+    }
+    let deposit = json!({ "owner_address": OWNER, "actions": [{ "type": "deposit", "token": "0x4718", "amount": "0x5" }] });
+    let r = call(&state, Some(&token), PLAN, deposit).await;
+    assert_eq!(err_code(&r), -32601);
+    assert_eq!(reason(&r).as_deref(), Some("DEPOSIT_UNSUPPORTED"));
+    assert_eq!(err_code(&call(&state, Some(&token), "companion_strk20DiscardPlan", json!({})).await), 114);
+}

@@ -11,6 +11,7 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
 | Viewing key | `wallet-core::strk20_viewing_key` | Pool-scoped `user_sk`, bramble's derivation via krusty. Same seed → same notes in both wallets. |
 | Owner key | `wallet-core::strk20_owner_viewing_key` | The `user_sk` strkd holds for an external owner contract, derived from a controller account (#48). strkd-only. |
 | Owner records | `wallet-core::Strk20Owner`, `crates/wallet-rpc/src/strk20/owners.rs` | Enrolled owner contracts in the sealed registry, plus `companion_strk20AddOwner` / `ListOwners` / `RemoveOwner`. |
+| Plans | `crates/wallet-rpc/src/strk20/plan.rs` | `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 `Strk20Plan` hash (`plan_hash`), and the in-memory `PlanStore` (#48). |
 | Protocol client | `crates/strk20` | Pure Rust port of the wallet side of StarkWare's SDK: hashes, decryption, client actions, the proof invocation, discovery, planner, `apply_actions`. No I/O. |
 | RPC + desktop | `crates/wallet-rpc/src/strk20/` | The `wallet_strk20*` handlers and `companion_strk20Register`, the deposit provers (`remote.rs`), the AVNU private relay (`paymaster.rs`). |
 | Desktop | `desktop/src/components/Privacy.tsx` | The Private tab; Tauri commands `strk20_*` run the same handlers as `Caller::Desktop`. |
@@ -66,7 +67,7 @@ A deployed contract that advertises SRC5 `is_custom_signature_valid`
 (`0x2eb9…ded`) can own notes. The pool then asks the contract to approve each
 spend (`assert_valid_signature`, check 1). The design is in
 [`project/design-48-strk20-external-owner.md`](../project/design-48-strk20-external-owner.md).
-Part 1 of 3 is built:
+Parts 1 and 2 of 3 are built (enrolment, then the plan step):
 
 - **Owner key.** strkd signs
   `starknet_keccak("strkd.strk20.owner.v1:<chain_id>:<pool>:<owner>")` with
@@ -92,8 +93,58 @@ Part 1 of 3 is built:
   `OWNER_NOT_ENROLLED`, `-32002`). Passing `owner_address` together with
   `account_address` is a 114. The existing `wallet_strk20*` and
   `companion_strk20Register` methods refuse owners with `-32601` for now.
-- **Not yet.** Plan, prove, the SNIP-12 `Strk20Plan` hash, `reveal_actions`,
-  the plan store and client-bound proving jobs. These come in parts 2 and 3.
+- **Plan (part 2).** `companion_strk20Plan { owner_address | account_address,
+  register? | actions?, reveal_actions?, ttl_secs?, chainId? }` runs the first
+  half of the one-shot pipeline and stops before signing:
+  1. Refuses deposits (`DEPOSIT_UNSUPPORTED`, `-32601`), checks the plan caps,
+     and for `register: true` refuses an already registered subject
+     (`ALREADY_REGISTERED`).
+  2. `plan_at_reference` (shared with `prepare()`): `B = head − 12`, the
+     subject is deployed at `B` (`OWNER_NOT_DEPLOYED` for an owner), an owner
+     still advertises SRC5 at `B` (`OWNER_NO_CUSTOM_VALIDATION`), discovery at
+     `B` and at `latest` must agree, then `planner::plan` with `OsRandomness`
+     drawn once, and the `UserLinkage` check.
+  3. `plan_hash` (below), one gated prompt (a grant covers it) naming the
+     subject, the controller, the chain, the intent, the action count, the pool
+     and, for an owner, that its contract must approve the plan on-chain first.
+  4. Stores the plan and returns `plan_id`, `plan_version: 1`, `expires_at`
+     (Unix ms), `plan_block`, `plan_hash`, `actions_hash`, `typed_data` and a
+     summary (transfers, withdrawals, action count, notes spent, change, pool
+     fee). Nothing is signed and nothing is proved.
+- **`plan_hash`.** `actions_hash = poseidon_hash_many(serialize_actions(actions))`,
+  which is `compile_actions` calldata from index 2 on (the `Span` length prefix
+  included; `owner` and `user_sk` excluded). The typed data is
+  `StarknetDomain { name: "strkd.Strk20Plan", version: "1", chainId, revision: "1" }`
+  (all `shortstring`) and `Strk20Plan { pool: ContractAddress, owner:
+  ContractAddress, actions_hash: felt }`, hashed with
+  `typed_data_message_hash(json, owner)`. `"version": "1"` is the felt 1, not
+  the shortstring `0x31`. `plan::plan_hash` is the only implementation; its
+  unit test pins PR #53's vector (`plan_hash = 0x062a76d3…3301`), and
+  `companion_typedDataHash` on the returned `typed_data` reproduces it.
+- **`reveal_actions`.** A second prompt through `Caller::approve_always` (a
+  grant never covers it) says the actions hold channel keys, which disclose
+  every past and future payment on those channels, irrevocably, and cannot
+  spend. Approved: the result gains `client_actions` (typed JSON) and
+  `client_actions_felts`. Refused: the plan still comes back, with
+  `actions_revealed: false`. The request log replaces both fields with
+  `"<redacted>"` (`dispatch::redact_for_log`).
+- **Plan store.** `PlanStore` lives inside the unlocked `WalletSession`, so any
+  lock (from RPC idle, the desktop, or tests) drops it, and a restart starts
+  empty. Plans are keyed by a 128-bit random hex `plan_id` and bound to the
+  client that made them; any other client gets `PLAN_NOT_FOUND` (114), the same
+  as for an unknown, expired or discarded id. Caps: one live plan per (subject,
+  chain, pool), 4 per client, 32 in all (`PLAN_LIMIT`, `-32006`). The TTL is
+  1 h by default and 24 h at most; expired plans are swept on every access. A
+  stored plan keeps the subject, controller, chain, pool, intent, actions,
+  felts, `plan_hash`, `plan_block`, the discovered state with `user_sk`
+  zeroed, the prover kind and submission route the prompt named, and the
+  prompt. Dropping a plan overwrites its felts (best effort, no `unsafe`).
+  `companion_strk20DiscardPlan { plan_id }` drops one without a prompt.
+- **Accounts.** Plans work for strkd accounts too (no SRC5 check). For them
+  `owner` is the account, and strkd will sign at prove time.
+- **Not yet.** Prove (`companion_strk20Prove`), the prove-time checks,
+  `submit: "none" | "account"` and client-bound, unrecorded proving jobs. These
+  come in part 3.
 
 ## Verification
 
