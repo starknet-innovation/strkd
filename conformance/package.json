@@ -1,7 +1,7 @@
 {
   "name": "strkd-conformance",
   "private": true,
-  "description": "Independent re-derivation of strkd's conformance fixtures: crates/wallet-core/tests/fixtures/conformance-vectors.json (issue #17) and crates/strk20/tests/fixtures/strk20-vectors.json.",
+  "description": "Independent re-derivation of strkd's conformance fixtures: crates/wallet-core/tests/fixtures/conformance-vectors.json (issue #17), crates/wallet-core/tests/fixtures/strk20-plan-vector.json (issue #48) and crates/strk20/tests/fixtures/strk20-vectors.json.",
   "type": "module",
   "scripts": {
     "verify": "node verify.mjs && node strk20.mjs",

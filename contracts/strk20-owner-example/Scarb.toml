@@ -1,0 +1,30 @@
+[package]
+name = "strk20_owner_example"
+version = "0.1.0"
+edition = "2024_07"
+
+# Reference STRK20 owner contract for strkd issue #48. Not audited.
+# Toolchain: see .tool-versions. OpenZeppelin 3.0.0 is the version the deployed
+# pool is built with (starknet-privacy 4026da7; openzeppelin_utils is 2.1.0 there).
+
+[dependencies]
+starknet = "2.18.0"
+openzeppelin_introspection = "=3.0.0"
+openzeppelin_utils = "=2.1.0"
+openzeppelin_interfaces = "=2.1.0"
+
+[dev-dependencies]
+snforge_std = "0.60.0"
+assert_macros = "2.18.0"
+
+[[target.starknet-contract]]
+sierra = true
+
+[scripts]
+test = "snforge test"
+
+[tool.scarb]
+allow-prebuilt-plugins = ["snforge_std"]
+
+[tool.fmt]
+sort-module-level-items = true
