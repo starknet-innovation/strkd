@@ -2062,3 +2062,346 @@ async fn strk20_register_reports_other_node_errors_as_node_errors() {
     assert_eq!(err_code(&resp), -32004, "{:?}", resp.error);
     assert!(resp.error.unwrap().message.contains("Block not found"));
 }
+
+// ── STRK20 external owners (#48, part 1: enrolment) ─────────────────────────
+
+const OWNER: &str = "0x0000000000000000000000000000000000000000000000000000000000c0ffee";
+
+/// How the mock owner contract answers `supports_interface`.
+#[derive(Clone, Copy)]
+enum Src5 {
+    Yes,
+    No,
+    /// No SRC5 at all: the call reverts (entry point not found).
+    Reverts,
+}
+
+/// A node with one owner contract at [`OWNER`] and the pool reporting
+/// `registered_key` from `get_public_key` (zero: not registered).
+struct OwnerNode {
+    deployed: bool,
+    src5: Src5,
+    registered_key: Felt,
+}
+
+#[async_trait]
+impl StarknetRpc for OwnerNode {
+    async fn raw(&self, method: &str, params: Value) -> Result<Value, NodeError> {
+        match method {
+            "starknet_getClassHashAt" => {
+                assert_eq!(params["contract_address"], json!(format!("{:#x}", Felt::from_hex(OWNER).unwrap())));
+                if self.deployed {
+                    Ok(json!("0x1234"))
+                } else {
+                    Err(NodeError::Rpc(r#"{"code":20,"message":"Contract not found"}"#.into()))
+                }
+            }
+            "starknet_call" => {
+                let selector = params["request"]["entry_point_selector"].as_str().unwrap();
+                let src5 = format!("{:#x}", wallet_core::get_selector_from_name("supports_interface"));
+                if selector == src5 {
+                    assert_eq!(
+                        params["request"]["calldata"],
+                        json!([wallet_rpc::strk20::owners::CUSTOM_SIGNATURE_INTERFACE_ID])
+                    );
+                    match self.src5 {
+                        Src5::Yes => Ok(json!(["0x1"])),
+                        Src5::No => Ok(json!(["0x0"])),
+                        // What the Sepolia node answers for a contract without SRC5 (2026-11-13).
+                        Src5::Reverts => Err(NodeError::Rpc(
+                            r#"{"code":21,"message":"Requested entry point does not exist in the contract"}"#.into(),
+                        )),
+                    }
+                } else {
+                    // The pool's `get_public_key(owner)`.
+                    Ok(json!([format!("{:#x}", self.registered_key)]))
+                }
+            }
+            m => Err(NodeError::Rpc(format!("{m}: unexpected in this test"))),
+        }
+    }
+    async fn get_nonce(&self, _: &Felt) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_invoke(&self, _: &Felt, _: &[Felt], _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_invoke(
+        &self,
+        _: &Felt,
+        _: &[Felt],
+        _: &[Felt],
+        _: &Felt,
+        _: &FeeBounds,
+        _: &[Felt],
+        _: Option<&str>,
+    ) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn is_deployed(&self, _: &Felt) -> Result<bool, NodeError> {
+        unimplemented!()
+    }
+    async fn balance_of(&self, _: &Felt, _: &Felt) -> Result<u128, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_deploy_account(&self, _: &Felt, _: &Felt, _: &[Felt], _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_deploy_account(&self, _: &Felt, _: &[Felt], _: &Felt, _: &[Felt], _: &FeeBounds) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+    async fn estimate_declare(&self, _: &Felt, _: &Felt, _: &Value, _: &Felt) -> Result<FeeBounds, NodeError> {
+        unimplemented!()
+    }
+    async fn add_declare(&self, _: &Felt, _: &Felt, _: &Value, _: &[Felt], _: &Felt, _: &FeeBounds) -> Result<Felt, NodeError> {
+        unimplemented!()
+    }
+}
+
+/// An approver that records every prompt and rejects the listed methods.
+struct RecordingApprover {
+    reject: &'static [&'static str],
+    prompts: std::sync::Mutex<Vec<wallet_rpc::ApprovalRequest>>,
+}
+
+#[async_trait]
+impl wallet_rpc::Approver for RecordingApprover {
+    async fn request_approval(&self, req: wallet_rpc::ApprovalRequest) -> Decision {
+        let decision = if self.reject.contains(&req.method.as_str()) { Decision::Reject } else { Decision::Approve };
+        self.prompts.lock().unwrap().push(req);
+        decision
+    }
+}
+
+fn owner_state(node: OwnerNode, reject: &'static [&'static str]) -> (Arc<ServerState>, Arc<RecordingApprover>) {
+    let approver = Arc::new(RecordingApprover { reject, prompts: Default::default() });
+    let state = Arc::new(
+        ServerState::new(Arc::new(Mutex::new(make_session(false))), approver.clone())
+            .with_node(ChainId::Sepolia, Arc::new(node)),
+    );
+    (state, approver)
+}
+
+fn owner_node(deployed: bool, src5: Src5) -> OwnerNode {
+    OwnerNode { deployed, src5, registered_key: Felt::ZERO }
+}
+
+fn prompted(approver: &RecordingApprover, method: &str) -> Vec<String> {
+    approver.prompts.lock().unwrap().iter().filter(|p| p.method == method).map(|p| p.summary.clone()).collect()
+}
+
+fn reason(resp: &Response) -> Option<String> {
+    resp.error.as_ref()?.data.as_ref()?["reason"].as_str().map(str::to_string)
+}
+
+/// The owner's viewing public key as strkd derives it from user account 0
+/// (test seed) on Sepolia's canonical pool.
+fn expected_owner_public_key() -> Felt {
+    let key = wallet_core::strk20_owner_viewing_key(
+        TEST_MNEMONIC,
+        Domain::User,
+        0,
+        None,
+        &ChainId::Sepolia.as_felt(),
+        &Felt::from_hex(wallet_rpc::strk20::SEPOLIA_POOL).unwrap(),
+        &Felt::from_hex(OWNER).unwrap(),
+    )
+    .unwrap();
+    strk20::crypto::public_key(key)
+}
+
+#[tokio::test]
+async fn add_owner_enrols_after_a_prompt_and_lists_it() {
+    let (state, approver) = owner_state(owner_node(true, Src5::Yes), &[]);
+    let token = pair(&state, "app").await;
+    let (_, controller) = user_registry();
+
+    let resp = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": "0xc0ffee", "label": "vault" })).await;
+    let r = resp.result.unwrap_or_else(|| panic!("{:?}", resp.error));
+    assert_eq!(r["owner_address"], json!(OWNER));
+    assert_eq!(r["controller"]["address"], json!(controller));
+    assert_eq!(r["chain"], json!("SN_SEPOLIA"));
+    assert_eq!(r["registered"], json!(false));
+    assert_eq!(r["viewing_public_key"], json!(format!("{:#x}", expected_owner_public_key())));
+    // Only the public key comes back: no field carries the viewing key.
+    assert!(r.as_object().unwrap().keys().all(|k| !k.contains("sk") && k != "viewing_key"), "{r}");
+
+    let prompts = prompted(&approver, "companion_strk20AddOwner");
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains(OWNER) && prompts[0].contains(&controller), "{}", prompts[0]);
+    assert!(prompts[0].contains("cannot check who controls this contract"), "{}", prompts[0]);
+
+    let list = call(&state, Some(&token), "companion_strk20ListOwners", json!({})).await.result.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["owner_address"], json!(OWNER));
+    assert_eq!(list[0]["label"], json!("vault"));
+
+    // Enrolling it again in the same scope is refused.
+    let again = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&again), -32006);
+    assert_eq!(reason(&again).as_deref(), Some("OWNER_ALREADY_ENROLLED"));
+}
+
+/// An owner already registered with the pool under the key this controller
+/// derives enrols, and reports `registered: true`.
+#[tokio::test]
+async fn add_owner_accepts_a_registration_under_the_derived_key() {
+    let node = OwnerNode { deployed: true, src5: Src5::Yes, registered_key: expected_owner_public_key() };
+    let (state, _) = owner_state(node, &[]);
+    let token = pair(&state, "app").await;
+    let r = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await.result.unwrap();
+    assert_eq!(r["registered"], json!(true));
+}
+
+/// D6: enrolment always prompts. An agent whose grant auto-approves its other
+/// operations still gets the prompt (refused here → 113, nothing recorded).
+#[tokio::test]
+async fn add_owner_prompts_even_under_an_active_grant() {
+    let (state, approver) = owner_state(owner_node(true, Src5::Yes), &["companion_strk20AddOwner"]);
+    let (token, id, _) = agent_with_account_and_id(&state).await;
+    grant_forever(&state, &id).await;
+
+    let resp = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&resp), 113, "{:?}", resp.error);
+    assert_eq!(prompted(&approver, "companion_strk20AddOwner").len(), 1);
+    let list = call(&state, Some(&token), "companion_strk20ListOwners", json!({})).await.result.unwrap();
+    assert_eq!(list, json!([]));
+}
+
+#[tokio::test]
+async fn add_owner_refuses_an_undeployed_owner() {
+    let (state, approver) = owner_state(owner_node(false, Src5::Yes), &[]);
+    let token = pair(&state, "app").await;
+    let resp = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&resp), -32006, "{:?}", resp.error);
+    assert_eq!(reason(&resp).as_deref(), Some("OWNER_NOT_DEPLOYED"));
+    assert!(resp.error.as_ref().unwrap().message.starts_with("OWNER_NOT_DEPLOYED: "));
+    assert!(prompted(&approver, "companion_strk20AddOwner").is_empty());
+}
+
+#[tokio::test]
+async fn add_owner_refuses_an_owner_without_custom_validation() {
+    for src5 in [Src5::No, Src5::Reverts] {
+        let (state, approver) = owner_state(owner_node(true, src5), &[]);
+        let token = pair(&state, "app").await;
+        let resp = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+        assert_eq!(err_code(&resp), -32006, "{:?}", resp.error);
+        assert_eq!(reason(&resp).as_deref(), Some("OWNER_NO_CUSTOM_VALIDATION"));
+        assert!(prompted(&approver, "companion_strk20AddOwner").is_empty());
+    }
+}
+
+/// D8: registered with the pool under a key this controller doesn't derive.
+#[tokio::test]
+async fn add_owner_refuses_a_foreign_registration() {
+    let node = OwnerNode { deployed: true, src5: Src5::Yes, registered_key: Felt::from_hex("0x1234abcd").unwrap() };
+    let (state, approver) = owner_state(node, &[]);
+    let token = pair(&state, "app").await;
+    let resp = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&resp), -32006, "{:?}", resp.error);
+    assert_eq!(reason(&resp).as_deref(), Some("OWNER_KEY_MISMATCH"));
+    assert!(prompted(&approver, "companion_strk20AddOwner").is_empty());
+}
+
+#[tokio::test]
+async fn add_owner_validates_its_params() {
+    let (state, _) = owner_state(owner_node(true, Src5::Yes), &[]);
+    let token = pair(&state, "app").await;
+    let (_, controller) = user_registry();
+    for params in [json!({}), json!({ "owner_address": "0x0" }), json!({ "owner_address": "nope" })] {
+        assert_eq!(err_code(&call(&state, Some(&token), "companion_strk20AddOwner", params).await), 114);
+    }
+    // A strkd account is not an external owner.
+    let own = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": controller })).await;
+    assert_eq!(err_code(&own), 114);
+    // The controller must be in the caller's scope.
+    let foreign = json!({ "owner_address": OWNER, "account_address": "0x123" });
+    assert_eq!(err_code(&call(&state, Some(&token), "companion_strk20AddOwner", foreign).await), -32002);
+}
+
+/// Owners are scoped like accounts: agent B neither lists nor uses nor removes
+/// agent A's owner; the user's (app) owners are separate from both.
+#[tokio::test]
+async fn owners_are_scoped_to_the_enrolling_client() {
+    let (state, _) = owner_state(owner_node(true, Src5::Yes), &[]);
+    let (token_a, _, account_a) = agent_with_account_and_id(&state).await;
+    let (token_b, _, _) = agent_with_account_and_id(&state).await;
+    let app = pair(&state, "app").await;
+
+    let r = call(&state, Some(&token_a), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await;
+    let r = r.result.unwrap_or_else(|| panic!("{:?}", r.error));
+    assert_eq!(r["controller"]["address"], json!(account_a), "an agent's controller is its own account");
+
+    let listed = |token: String| {
+        let state = state.clone();
+        async move { call(&state, Some(&token), "companion_strk20ListOwners", json!({})).await.result.unwrap() }
+    };
+    assert_eq!(listed(token_a.clone()).await.as_array().unwrap().len(), 1);
+    assert_eq!(listed(token_b.clone()).await, json!([]));
+    assert_eq!(listed(app.clone()).await, json!([]));
+
+    // B can't act on A's owner: OWNER_NOT_ENROLLED, same as an unknown owner.
+    let use_b = call(&state, Some(&token_b), "wallet_strk20Balances", json!({ "tokens": ["0x4718"], "owner_address": OWNER })).await;
+    assert_eq!(err_code(&use_b), -32002);
+    assert_eq!(reason(&use_b).as_deref(), Some("OWNER_NOT_ENROLLED"));
+    let rm_b = call(&state, Some(&token_b), "companion_strk20RemoveOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&rm_b), -32002);
+    assert_eq!(reason(&rm_b).as_deref(), Some("OWNER_NOT_ENROLLED"));
+    assert_eq!(listed(token_a.clone()).await.as_array().unwrap().len(), 1);
+
+    // A's owner resolves for A; the one-shot methods don't take owners yet.
+    let use_a = call(&state, Some(&token_a), "wallet_strk20Balances", json!({ "tokens": ["0x4718"], "owner_address": OWNER })).await;
+    assert_eq!(err_code(&use_a), -32601, "{:?}", use_a.error);
+}
+
+#[tokio::test]
+async fn remove_owner_prompts_and_forgets_it() {
+    let (state, approver) = owner_state(owner_node(true, Src5::Yes), &[]);
+    let token = pair(&state, "app").await;
+    call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await.result.unwrap();
+
+    let resp = call(&state, Some(&token), "companion_strk20RemoveOwner", json!({ "owner_address": "0xc0ffee" })).await;
+    assert_eq!(resp.result, Some(json!(true)), "{:?}", resp.error);
+    assert_eq!(prompted(&approver, "companion_strk20RemoveOwner").len(), 1);
+    let list = call(&state, Some(&token), "companion_strk20ListOwners", json!({})).await.result.unwrap();
+    assert_eq!(list, json!([]));
+
+    let again = call(&state, Some(&token), "companion_strk20RemoveOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&again), -32002);
+    assert_eq!(reason(&again).as_deref(), Some("OWNER_NOT_ENROLLED"));
+}
+
+#[tokio::test]
+async fn remove_owner_refused_keeps_it() {
+    let (state, _) = owner_state(owner_node(true, Src5::Yes), &["companion_strk20RemoveOwner"]);
+    let token = pair(&state, "app").await;
+    call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": OWNER })).await.result.unwrap();
+    let resp = call(&state, Some(&token), "companion_strk20RemoveOwner", json!({ "owner_address": OWNER })).await;
+    assert_eq!(err_code(&resp), 113);
+    let list = call(&state, Some(&token), "companion_strk20ListOwners", json!({})).await.result.unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}
+
+/// §3.1: a STRK20 call names an owner or an account, never both.
+#[tokio::test]
+async fn owner_and_account_address_together_is_114() {
+    let (state, _) = owner_state(owner_node(true, Src5::Yes), &[]);
+    let token = pair(&state, "app").await;
+    let (_, account) = user_registry();
+    let both = json!({ "tokens": ["0x4718"], "owner_address": OWNER, "account_address": account });
+    let resp = call(&state, Some(&token), "wallet_strk20Balances", both).await;
+    assert_eq!(err_code(&resp), 114, "{:?}", resp.error);
+    assert!(resp.error.unwrap().message.contains("not both"));
+    // An unknown owner on its own is OWNER_NOT_ENROLLED.
+    let unknown = call(&state, Some(&token), "wallet_strk20Balances", json!({ "tokens": ["0x4718"], "owner_address": OWNER })).await;
+    assert_eq!(reason(&unknown).as_deref(), Some("OWNER_NOT_ENROLLED"));
+}
+
+/// `data` is additive: errors without a reason serialize exactly as before.
+#[tokio::test]
+async fn errors_without_a_reason_have_no_data_member() {
+    let state = state_with(Decision::Approve, false);
+    let resp = call(&state, None, "wallet_requestAccounts", json!({})).await;
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["error"], json!({ "code": 118, "message": "caller is not a registered client" }));
+}

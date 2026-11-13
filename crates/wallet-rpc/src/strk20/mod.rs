@@ -16,6 +16,7 @@
 //! disk. Only a deposit's invocation leaves the machine, to the screening prover
 //! the approval prompt names.
 
+pub mod owners;
 pub mod paymaster;
 pub mod remote;
 
@@ -27,9 +28,9 @@ use serde_json::{json, Value};
 use strk20::discovery::{self, PoolReader};
 use strk20::invocation::ProofInvocation;
 use strk20::planner::{self, Intent, OsRandomness, Plan, State, Warning};
-use wallet_core::{get_selector_from_name, AccountRef, Call, ChainId, Felt, InvokeV3Params};
+use wallet_core::{address_hex, get_selector_from_name, AccountRef, Call, ChainId, Felt, InvokeV3Params, Strk20Owner};
 
-use crate::approval::Decision;
+use crate::approval::{ApprovalRequest, Decision};
 use crate::auth::PairedClient;
 use crate::dispatch::{
     chain_name, gated_approval, normalize_address, opt_param_str, prover_network, prover_or_err, resolve_chain,
@@ -149,7 +150,7 @@ async fn ensure_deployed_at(ctx: &Ctx, block: u64) -> Result<(), WalletRpcError>
         Err(e) if is_contract_not_found(&e) => Err(WalletRpcError::Precondition(format!(
             "account {} is not deployed at reference block {block} (proofs run {PROVING_LAG} blocks behind the chain \
              head). If you just deployed it, retry in about a minute.",
-            ctx.account.address
+            ctx.address()
         ))),
         Err(e) => Err(node_err(e)),
     }
@@ -189,10 +190,50 @@ impl Caller<'_> {
             },
         }
     }
+
+    /// Like [`Self::approve`], but an active grant never covers it: an RPC
+    /// caller always gets a prompt (enrolment, D6; like `companion_requestGrant`).
+    async fn approve_always(self, state: &ServerState, method: &str, summary: String) -> Result<(), WalletRpcError> {
+        match self {
+            Caller::Desktop => Ok(()),
+            Caller::Rpc(client) => {
+                let request = ApprovalRequest {
+                    client_label: format!("{} ({})", client.label, client.id),
+                    method: method.to_string(),
+                    summary,
+                };
+                match state.approver.request_approval(request).await {
+                    Decision::Reject => Err(WalletRpcError::UserRefused),
+                    _ => Ok(()),
+                }
+            }
+        }
+    }
+
+    /// The registry scope: an agent's client id, else `None` (the user's).
+    fn scope(self) -> Option<String> {
+        match self {
+            Caller::Rpc(client) => scope_for(client),
+            Caller::Desktop => None,
+        }
+    }
+}
+
+/// Whose notes an operation acts on (design note #48 §3.1).
+enum Subject {
+    /// A strkd account: its own key derives `user_sk` and signs the invocation.
+    Account,
+    /// An enrolled external owner contract. [`Ctx::account`] is its controller,
+    /// whose key derives the owner's `user_sk`; strkd never signs for it.
+    Owner(Strk20Owner),
 }
 
 struct Ctx {
+    /// The strkd account whose key is used: the subject itself, or the owner's
+    /// controller.
     account: AccountRef,
+    subject: Subject,
+    /// The subject's address: the pool's `user`.
     user: Felt,
     chain: ChainId,
     pool: Felt,
@@ -211,32 +252,83 @@ pub fn pool_for(cfg: &prover::Strk20Config, chain: ChainId) -> Result<Felt, Wall
     }
 }
 
-async fn ctx(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Ctx, WalletRpcError> {
+/// The chain a request targets, its STRK20 settings and pool.
+async fn chain_and_pool(state: &ServerState, params: &Value) -> Result<(ChainId, prover::Strk20Config, Felt), WalletRpcError> {
     let chain = resolve_chain(state, params).await?;
-    let account = {
-        let session = state.session.lock().await;
-        let reg = session.registry()?;
-        let scope = match caller {
-            Caller::Rpc(client) => scope_for(client),
-            Caller::Desktop => None,
-        };
-        let mut scoped = reg.scoped_for(scope.as_deref());
-        match opt_param_str(params, "account_address") {
-            Some(a) => {
-                let want = normalize_address(&a)?;
-                scoped.find(|acc| acc.address == want).cloned().ok_or(WalletRpcError::Forbidden)?
-            }
-            None => scoped.next().cloned().ok_or(WalletRpcError::Forbidden)?,
-        }
-    };
-    let user = Felt::from_hex(&account.address).map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
-    let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
     let cfg = match &state.prover {
         Some(p) => p.settings.for_network(prover_network(chain)).await.strk20,
         None => prover::Strk20Config::default(),
     };
     let pool = pool_for(&cfg, chain)?;
-    Ok(Ctx { account, user, chain, pool, node, cfg })
+    Ok((chain, cfg, pool))
+}
+
+/// A non-zero address param, as [`address_hex`].
+fn address_param(params: &Value, key: &str) -> Result<Option<String>, WalletRpcError> {
+    match params.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let f = v.as_str().and_then(|s| Felt::from_hex(s).ok()).filter(|f| *f != Felt::ZERO);
+            f.map(|f| Some(address_hex(&f))).ok_or_else(|| invalid(format!("{key}: expected a non-zero address")))
+        }
+    }
+}
+
+/// `OWNER_NOT_ENROLLED` (-32002): unknown, or outside the caller's scope.
+fn not_enrolled() -> WalletRpcError {
+    WalletRpcError::Forbidden.with_reason("OWNER_NOT_ENROLLED")
+}
+
+/// Resolve the subject of a STRK20 call: `account_address` (default: the
+/// caller's first scoped account) or `owner_address`, an owner the caller
+/// enrolled on this chain and pool. Passing both is a 114.
+async fn ctx(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Ctx, WalletRpcError> {
+    let owner = address_param(params, "owner_address")?;
+    if owner.is_some() && params.get("account_address").is_some_and(|v| !v.is_null()) {
+        return Err(invalid(
+            "pass owner_address or account_address, not both (an owner's controller is fixed at enrolment)",
+        ));
+    }
+    let (chain, cfg, pool) = chain_and_pool(state, params).await?;
+    let (account, subject) = {
+        let session = state.session.lock().await;
+        let reg = session.registry()?;
+        let scope = caller.scope();
+        match owner {
+            None => {
+                let mut scoped = reg.scoped_for(scope.as_deref());
+                let account = match opt_param_str(params, "account_address") {
+                    Some(a) => {
+                        let want = normalize_address(&a)?;
+                        scoped.find(|acc| acc.address == want).cloned().ok_or(WalletRpcError::Forbidden)?
+                    }
+                    None => scoped.next().cloned().ok_or(WalletRpcError::Forbidden)?,
+                };
+                (account, Subject::Account)
+            }
+            Some(owner) => {
+                let record = reg
+                    .strk20_owners_for(scope.as_deref())
+                    .find(|o| o.is(&owner, chain, &address_hex(&pool), scope.as_deref()))
+                    .cloned()
+                    .ok_or_else(not_enrolled)?;
+                let c = &record.controller;
+                let controller = reg
+                    .scoped_for(scope.as_deref())
+                    .find(|a| a.address == c.address && a.domain == c.domain && a.index == c.index)
+                    .cloned()
+                    .ok_or_else(not_enrolled)?;
+                (controller, Subject::Owner(record))
+            }
+        }
+    };
+    let user = match &subject {
+        Subject::Account => &account.address,
+        Subject::Owner(o) => &o.owner,
+    };
+    let user = Felt::from_hex(user).map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
+    let node = state.node_for(chain).ok_or(WalletRpcError::NoNode)?;
+    Ok(Ctx { account, subject, user, chain, pool, node, cfg })
 }
 
 impl Ctx {
@@ -244,8 +336,30 @@ impl Ctx {
         NodeReader { node: self.node.clone(), pool: self.pool, block }
     }
 
+    /// The subject's address, as [`address_hex`].
+    fn address(&self) -> String {
+        address_hex(&self.user)
+    }
+
+    /// Refuse an owner subject on a method that signs with or submits from the
+    /// subject's own account. Owners get the plan/prove methods (#48, phase 1).
+    fn account_only(self, method: &str) -> Result<Self, WalletRpcError> {
+        match self.subject {
+            Subject::Account => Ok(self),
+            Subject::Owner(_) => Err(WalletRpcError::NotImplemented(format!(
+                "owner_address on {method}: STRK20 operations for an owner contract come with the plan/prove methods"
+            ))),
+        }
+    }
+
+    /// The subject's viewing key: the account's own, or the owner's, derived
+    /// from its controller. Never persisted, logged or returned.
     async fn viewing_key(&self, state: &ServerState) -> Result<Felt, WalletRpcError> {
-        state.session.lock().await.strk20_viewing_key_for(&self.account, self.chain, &self.pool)
+        let session = state.session.lock().await;
+        match &self.subject {
+            Subject::Account => session.strk20_viewing_key_for(&self.account, self.chain, &self.pool),
+            Subject::Owner(_) => session.strk20_owner_viewing_key_for(&self.account, self.chain, &self.pool, &self.user),
+        }
     }
 }
 
@@ -417,7 +531,7 @@ async fn prepare(
             format!(
                 "STRK20 on {} from {}: {}. {} ({} action(s), pool {:#x}); {}.",
                 chain_name(ctx.chain),
-                ctx.account.address,
+                ctx.address(),
                 describe(intent),
                 where_proved,
                 plan.actions.len(),
@@ -511,7 +625,7 @@ async fn check_public_funds(ctx: &Ctx, deposits: &[(Felt, u128)]) -> Result<(), 
         if have < need {
             return Err(WalletRpcError::Precondition(format!(
                 "{} holds {have} of {token:#x}, and this deposit needs {need} (the deposit{}), plus gas. Fund the account first.",
-                ctx.account.address,
+                ctx.address(),
                 if token == felt(STRK) && fee > 0 { format!(" plus the pool's fee of {fee}") } else { String::new() },
             )));
         }
@@ -589,7 +703,7 @@ pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -
     if tokens.is_empty() || tokens.len() > MAX_TOKENS {
         return Err(invalid(format!("tokens: between 1 and {MAX_TOKENS} required")));
     }
-    let ctx = ctx(state, caller, params).await?;
+    let ctx = ctx(state, caller, params).await?.account_only("wallet_strk20Balances")?;
     caller
         .approve(
             state,
@@ -597,7 +711,7 @@ pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -
             format!(
                 "Reveal the private (STRK20) balance of {} token(s) held by {} on {}.",
                 tokens.len(),
-                ctx.account.address,
+                ctx.address(),
                 chain_name(ctx.chain)
             ),
         )
@@ -605,7 +719,7 @@ pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -
     let user_sk = ctx.viewing_key(state).await?;
     let reader = ctx.reader(json!("latest"));
     if discovery::public_key(&reader, ctx.user).await.map_err(map_strk20)?.is_none() {
-        return Err(WalletRpcError::Strk20NotRegistered(ctx.account.address.clone()));
+        return Err(WalletRpcError::Strk20NotRegistered(ctx.address()));
     }
     let notes = discovery::discover_notes(&reader, ctx.user, user_sk, &tokens).await.map_err(map_strk20)?;
     Ok(json!(tokens
@@ -622,10 +736,10 @@ pub async fn balances(state: &ServerState, caller: Caller<'_>, params: &Value) -
 /// Registers the viewing key and opens the account's channel to itself, proved
 /// locally, submitted from the account (registration is public by nature).
 pub async fn register(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
-    let ctx = ctx(state, caller, params).await?;
+    let ctx = ctx(state, caller, params).await?.account_only("companion_strk20Register")?;
     let reader = ctx.reader(json!("latest"));
     if discovery::public_key(&reader, ctx.user).await.map_err(map_strk20)?.is_some() {
-        return Err(WalletRpcError::Precondition(format!("{} is already registered with the pool", ctx.account.address)));
+        return Err(WalletRpcError::Precondition(format!("{} is already registered with the pool", ctx.address())));
     }
     let intent = Intent { register: true, ..Intent::default() };
     let prepared =
@@ -638,7 +752,7 @@ pub async fn register(state: &ServerState, caller: Caller<'_>, params: &Value) -
 /// → `STRK20_CALL_AND_PROOF`, for the caller to submit from any account.
 pub async fn prepare_invoke(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let actions = parse_actions(params)?;
-    let ctx = ctx(state, caller, params).await?;
+    let ctx = ctx(state, caller, params).await?.account_only("wallet_strk20PrepareInvoke")?;
     let simulate = params.get("simulate").and_then(Value::as_bool).unwrap_or(false);
     let proving = proving_for(&ctx, &actions)?;
     let prepared = prepare(
@@ -663,7 +777,7 @@ pub async fn prepare_invoke(state: &ServerState, caller: Caller<'_>, params: &Va
 /// the caller is pointed to `wallet_strk20PrepareInvoke`.
 pub async fn invoke_transaction(state: &ServerState, caller: Caller<'_>, params: &Value) -> Result<Value, WalletRpcError> {
     let actions = parse_actions(params)?;
-    let ctx = ctx(state, caller, params).await?;
+    let ctx = ctx(state, caller, params).await?.account_only("wallet_strk20InvokeTransaction")?;
     let mut intent = intent_of(&actions);
 
     if has_deposit(&actions) {

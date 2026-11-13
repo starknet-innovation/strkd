@@ -1,14 +1,16 @@
 # STRK20 for an external contract owner, with a plan/prove split — design note
 
-**Status:** Design agreed 2026-11-13 (§2). Nothing is built.
+**Status:** Design agreed 2026-11-13 (§2). Phase 1 part 1 of 3 built (2026-11-13): owner records,
+enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11). Plan/prove are
+not built yet.
 **Issue:** [#48](https://github.com/starknet-innovation/strkd/issues/48)
 **Relates to:** [`strk20-plan.md`](./strk20-plan.md), [`../code/strk20.md`](../code/strk20.md),
 [`../code/wallet-rpc.md`](../code/wallet-rpc.md), and the #49 note on channel-key disclosure
 (`design-49-strk20-channel-disclosure.md`, drafted in parallel).
 
 Line references are to `main` at `c1163ee`. Pool references are to the privacy contracts vendored
-in bramble (`bramble/vendor/starknet-privacy`, `b40bf10`, 2026-09-15). Whether the deployed pool
-class has the same custom-validation path is still to be checked (§10).
+in bramble (`bramble/vendor/starknet-privacy`, `b40bf10`, 2026-09-15). Verified 2026-11-13: the
+deployed pool class has the same custom-validation path (§10).
 
 ---
 
@@ -464,13 +466,59 @@ maintainer decides, because it submits transactions:
 
 ## 10. Still open: verify before relying on this
 
-- Does the deployed pool class (`0x6d163f2b…cf83`, Sepolia and mainnet) contain the SRC5
-  custom-validation path from the vendored source?
-- Does the pool's nonce stay constant? It only affects the invocation hash, not `plan_hash`, but
-  check that the pool never sends real transactions.
+- Verified 2026-11-13: the deployed pool class
+  `0x6d163f2b27df0f53c5b0d019366261ba8034af1bef949dee920a60fe58bcf83` (Sepolia pool
+  `0x03ce2d…3a3e` and mainnet pool `0x040337…812a`) rebuilds byte-for-byte (scarb 2.18.0,
+  `scarb --release build -p privacy`) from starknet-privacy commit `4026da7` (version `'2.1'`).
+  Its `assert_valid_signature` (`packages/privacy/src/utils.cairo:385-420` at `4026da7`) accepts
+  the first of:
+  1. SRC5 `supports_interface(0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded)`
+     and `is_custom_signature_valid(calls, additional_data = [], signature)` returns `VALIDATED`.
+     The call goes through a safe dispatcher, so a panic counts as not accepted.
+  2. `is_valid_signature(tx_hash, signature)`.
+  3. `is_valid_signature(SNIP-12 CallSet hash(user_addr, calls, []), signature)`.
+
+  Otherwise it fails with `INVALID_SIGNATURE`. The interface takes three arguments:
+  `is_custom_signature_valid(calls: Span<Call>, additional_data: Span<felt252>,
+  signature: Span<felt252>) -> felt252`, as in the §5.3 sketch.
+- Verified 2026-11-13: the Sepolia pool's nonce is `0x0` at `latest` and at block 16000000, so it
+  is constant. It only affects the invocation hash, not `plan_hash`.
 - Does the native prover fail fast on `INVALID_SIGNATURE`, during execution and before the
   expensive proving phase?
 - Is `get_tx_info().chain_id` inside the virtual OS execution the real chain id? The contract's
   SNIP-12 domain depends on it.
 - A Rust↔Cairo↔starknet.js SNIP-12 vector for `Strk20Plan` (see the krusty #36 history).
 - AVNU relay: quote lifetime and how to fix the fee withdraw at plan time (phase 2).
+
+## 11. Implementation notes (phase 1, part 1)
+
+Built on branch `feat/strk20-owners-48`. Where the code differs from the text above, this
+section wins.
+
+- **Records.** `wallet_core::Strk20Owner` lives in `Registry.strk20_owners`, an additive field
+  that is absent from vaults without owners. One record per `(owner, chain, pool, scope)`. Two
+  scopes can hold records for the same owner, but only the one whose controller derives the
+  registered key can pass enrolment once the owner is registered.
+- **Key.** `wallet_core::strk20_owner_viewing_key` (with `strk20_owner_viewing_key_message` and
+  `STRK20_OWNER_KEY_TAG`), built on krusty's `sign_stark_hash` and `fold_strk20_viewing_key`. The
+  known-answer vectors are in `wallet-core/tests/strk20.rs`. The message hashes were reproduced
+  independently. The starknet.js conformance vector is still to do.
+- **`Ctx`.** It now carries a `Subject`: `Account` or `Owner(Strk20Owner)`. `ctx.account` is
+  always the strkd account whose key is used, which for an owner is its controller.
+  `ctx.viewing_key()` picks the derivation. `ctx.account_only(method)` refuses an owner on the
+  existing one-shot methods with `-32601` until phase 2.
+- **Enrolment extras.** Two additions to §3.3:
+  - `OWNER_ALREADY_ENROLLED` (-32006) when the owner is already enrolled in the caller's scope.
+  - Enrolling a strkd account address as an owner is a 114.
+
+  Enrolment calls `supports_interface` with `starknet_call` at `latest`. A JSON-RPC error from the
+  node (a revert, or no such entry point) counts as "not supported". A transport failure stays
+  `-32004`. On 2026-11-13 the Sepolia node answered `supports_interface` on contracts without
+  it (STRK, the pool) with JSON-RPC error 21, "Requested entry point does not exist".
+- **List and remove.** `companion_strk20ListOwners` returns the owners in scope on every chain and
+  pool. `companion_strk20RemoveOwner { owner_address, chainId? }` works on the active or given
+  chain's current pool. It goes through the gated prompt, so a grant can cover it, because it
+  signs and reveals nothing.
+- **`data.reason`.** `WalletRpcError::with_reason(&'static str)` wraps any error. The code stays
+  the same, the message gets a `REASON: ` prefix, and the error object gets `data: { reason }`.
+  Errors without a reason serialize exactly as before.

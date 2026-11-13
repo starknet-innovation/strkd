@@ -494,6 +494,11 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
             strk20::invoke_transaction(state, strk20::Caller::Rpc(&client), &params).await
         }
         "companion_strk20Register" => strk20::register(state, strk20::Caller::Rpc(&client), &params).await,
+        "companion_strk20AddOwner" => strk20::owners::add_owner(state, strk20::Caller::Rpc(&client), &params).await,
+        "companion_strk20ListOwners" => strk20::owners::list_owners(state, strk20::Caller::Rpc(&client)).await,
+        "companion_strk20RemoveOwner" => {
+            strk20::owners::remove_owner(state, strk20::Caller::Rpc(&client), &params).await
+        }
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -514,7 +519,9 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "wallet_strk20Balances"
         | "wallet_strk20PrepareInvoke"
         | "wallet_strk20InvokeTransaction"
-        | "companion_strk20Register" => decision_label(&result),
+        | "companion_strk20Register"
+        | "companion_strk20AddOwner"
+        | "companion_strk20RemoveOwner" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -2059,26 +2066,30 @@ async fn handle_create_agent_account(
 
     let mut session = state.session.lock().await;
     let account = session.create_agent_account(&client.id, label)?;
-
-    // Persist transactionally: if a vault store is configured, re-seal and write
-    // it back atomically. On any failure, roll back the in-memory add so memory
-    // and disk stay consistent. (If no store is configured the change is
-    // in-memory only — e.g. tests.)
-    if let Some(store) = &state.vault_store {
-        let persisted = session
-            .reseal()
-            .and_then(|vault| {
-                store
-                    .save(&vault)
-                    .map_err(|_| WalletRpcError::Unknown("failed to persist vault".into()))
-            });
-        if let Err(e) = persisted {
-            session.rollback_account(&account.address);
-            return Err(e);
-        }
-    }
-
+    persist_registry(state, &mut session, |s| s.rollback_account(&account.address))?;
     Ok(account_to_json(&account))
+}
+
+/// Persist an in-memory registry change transactionally: if a vault store is
+/// configured, re-seal and write it back atomically. On any failure, `rollback`
+/// undoes the in-memory change so memory and disk stay consistent. (If no store
+/// is configured the change is in-memory only — e.g. tests.) Call it with the
+/// session lock still held from the change.
+pub(crate) fn persist_registry(
+    state: &ServerState,
+    session: &mut WalletSession,
+    rollback: impl FnOnce(&mut WalletSession),
+) -> Result<(), WalletRpcError> {
+    let Some(store) = &state.vault_store else { return Ok(()) };
+    let persisted = session.reseal().and_then(|vault| {
+        store
+            .save(&vault)
+            .map_err(|_| WalletRpcError::Unknown("failed to persist vault".into()))
+    });
+    if persisted.is_err() {
+        rollback(session);
+    }
+    persisted
 }
 
 pub(crate) fn normalize_address(s: &str) -> Result<String, WalletRpcError> {

@@ -171,7 +171,14 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
                 "3. Read: wallet_strk20Balances {tokens:[…]} → [{token, balance}] (hex, base units). Notes become spendable ~12 blocks after they land.",
                 "4. Send privately / unshield: wallet_strk20InvokeTransaction {actions:[{type:\"transfer\", token, amount, recipient}, {type:\"withdraw\", token, amount, recipient}]} (needs the AVNU key) — or wallet_strk20PrepareInvoke with the same actions → {call, proof}, then submit from another account: wallet_addInvokeTransaction {account_address:<other>, calls:[call], proof_facts:proof.proof_facts, proof:proof.data, submit:true}.",
                 "Amounts are felts in base units (0x…). The recipient of a transfer must be registered (else 118). Not supported yet: transfer amount \"OPEN\", invoke and shadow_account_invoke actions (-32601)."
-            ]
+            ],
+            "owner_contracts": "A deployed contract that advertises SRC5 is_custom_signature_valid \
+(interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \
+the contract itself to approve each spend. Enrol it with companion_strk20AddOwner (always prompts, even under a \
+grant); strkd then holds its viewing key, derived from one of your accounts (the controller). List with \
+companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Planning and proving for owners is not \
+available yet: owner_address on the wallet_strk20* methods returns -32601, and owner_address together with \
+account_address is a 114."
         },
 
         "methods": [
@@ -269,6 +276,16 @@ normal invoke." },
             { "method": "companion_strk20Register", "auth": true, "prompts": true,
               "params": "{ account_address?, chainId? }", "returns": "{ transaction_hash }",
               "note": "Registers the account's STRK20 viewing key with the pool and opens its channel to itself, proved on this machine and submitted from the account (registration is public: it links the address to the pool). Once per account and pool; -32006 if already registered." },
+            { "method": "companion_strk20AddOwner", "auth": true, "prompts": true,
+              "params": "{ owner_address, account_address?, label?, chainId? }",
+              "returns": "{ owner_address, chain, pool, controller: { address, domain, index }, label, registered, viewing_public_key }",
+              "note": "Enrols an external contract as a STRK20 owner for the active (or given) chain's pool. account_address picks the controller (default: your first account); strkd derives the owner's viewing key from it and never returns the key, only its public key. ALWAYS prompts, even under a grant. Errors carry data.reason: OWNER_NOT_DEPLOYED (-32006, no contract at the address), OWNER_NO_CUSTOM_VALIDATION (-32006, supports_interface(0x2eb9…ded) is not true), OWNER_KEY_MISMATCH (-32006, already registered with the pool under a key this controller does not derive: it cannot be enrolled), OWNER_ALREADY_ENROLLED (-32006). An agent only ever sees owners it enrolled." },
+            { "method": "companion_strk20ListOwners", "auth": true, "prompts": false,
+              "params": "{}", "returns": "[{ owner_address, chain, pool, controller: { address, domain, index }, label }]",
+              "note": "The owners you enrolled (an app client: the user's). No prompt." },
+            { "method": "companion_strk20RemoveOwner", "auth": true, "prompts": true,
+              "params": "{ owner_address, chainId? }", "returns": "true",
+              "note": "Forgets an owner on the active (or given) chain's pool. Approval-gated (a grant covers it). Nothing on chain changes, and enrolling again derives the same key. Unknown or not yours → -32002 with data.reason OWNER_NOT_ENROLLED." },
             { "method": "wallet_strk20Balances", "auth": true, "prompts": true,
               "params": "{ tokens: [address…], account_address?, chainId? }", "returns": "[{ token, balance }]",
               "note": "Private balance per token (hex, base units), read from the pool and decrypted locally — no indexer sees the viewing key. Approval-gated: it reveals private balances. 118 if the account isn't registered." },
@@ -294,6 +311,7 @@ commitment comes with shadow-account invokes.",
         },
 
         "errors": {
+            "data.reason": "Some errors also carry error.data = { reason: \"UPPER_SNAKE\" }, a stable machine-readable reason (the message starts with it too). The code is unchanged; branch on data.reason when present. Current reasons: OWNER_NOT_DEPLOYED, OWNER_NO_CUSTOM_VALIDATION, OWNER_KEY_MISMATCH, OWNER_ALREADY_ENROLLED (-32006); OWNER_NOT_ENROLLED (-32002).",
             "113": "USER_REFUSED — the user rejected the prompt (or it timed out after ~60s)",
             "114": "INVALID_REQUEST_PAYLOAD — malformed params / missing field",
             "116": "DEPLOYMENT_DATA_NOT_AVAILABLE — no in-scope account",

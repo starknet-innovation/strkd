@@ -14,9 +14,10 @@
 use serde::{Deserialize, Serialize};
 use wallet_core::{
     address_hex, deployment_data, sign_declare_v3, sign_deploy_account_v3, sign_hash, sign_invoke_v3,
-    sign_typed_data, strk20_viewing_key, AccountContract, AccountRef, Call, ChainId, CoreError, DeploymentData, Domain,
+    sign_typed_data, strk20_owner_viewing_key, strk20_viewing_key, AccountContract, AccountRef, Call, ChainId, CoreError,
+    DeploymentData, Domain,
     EncryptedVault,
-    Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature,
+    Felt, InvokeV3Params, Registry, SignedDeclare, SignedDeployAccount, SignedInvoke, StarkSignature, Strk20Owner,
 };
 use zeroize::Zeroizing;
 
@@ -242,6 +243,52 @@ impl WalletSession {
         let u = self.require_unlocked()?;
         strk20_viewing_key(&u.mnemonic, account.domain, account.index, None, &chain.as_felt(), pool)
             .map_err(WalletRpcError::from)
+    }
+
+    /// The STRK20 viewing key strkd holds for the external owner contract
+    /// `owner`, derived from `controller`'s key and scoped to `pool` on `chain`
+    /// (`wallet_core::strk20_owner_viewing_key`; design note #48 §3.2).
+    ///
+    /// Same handling as [`Self::strk20_viewing_key_for`]: a secret, never
+    /// logged, persisted or returned over RPC.
+    pub fn strk20_owner_viewing_key_for(
+        &self,
+        controller: &AccountRef,
+        chain: ChainId,
+        pool: &Felt,
+        owner: &Felt,
+    ) -> Result<Felt, WalletRpcError> {
+        let u = self.require_unlocked()?;
+        strk20_owner_viewing_key(&u.mnemonic, controller.domain, controller.index, None, &chain.as_felt(), pool, owner)
+            .map_err(WalletRpcError::from)
+    }
+
+    /// Add a STRK20 owner record to the in-memory registry. Returns false if the
+    /// owner is already enrolled on that chain and pool in the record's scope.
+    /// Persist with [`Self::reseal`]; undo with [`Self::rollback_strk20_owner`].
+    pub fn add_strk20_owner(&mut self, owner: Strk20Owner) -> Result<bool, WalletRpcError> {
+        let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
+        Ok(u.registry.add_strk20_owner(owner))
+    }
+
+    /// Remove the STRK20 owner record for `owner` on `(chain, pool)` in the
+    /// scope `client_id`, returning it. Undo by re-adding it.
+    pub fn remove_strk20_owner(
+        &mut self,
+        owner: &str,
+        chain: ChainId,
+        pool: &str,
+        client_id: Option<&str>,
+    ) -> Result<Option<Strk20Owner>, WalletRpcError> {
+        let u = self.unlocked.as_mut().ok_or(WalletRpcError::Locked)?;
+        Ok(u.registry.remove_strk20_owner(owner, chain, pool, client_id))
+    }
+
+    /// Undo [`Self::add_strk20_owner`] when persistence fails.
+    pub fn rollback_strk20_owner(&mut self, owner: &Strk20Owner) {
+        if let Some(u) = self.unlocked.as_mut() {
+            u.registry.remove_strk20_owner(&owner.owner, owner.chain, &owner.pool, owner.client_id.as_deref());
+        }
     }
 
     /// Sign an already-computed hash with the account's key and serialize the

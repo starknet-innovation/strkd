@@ -119,3 +119,59 @@ fn reveal_for_session_refuses_while_locked() {
     assert!(reveal_for_session(&unlocked, &vault, "wrong").is_err());
     assert_eq!(&*reveal_for_session(&unlocked, &vault, "pass").unwrap() as &str, TEST_MNEMONIC);
 }
+
+// --- STRK20 owner records (#48) -------------------------------------------
+
+/// An owner record is sealed into the vault with the registry and survives a
+/// lock + unlock; it carries no key material; duplicates in one scope are
+/// refused; rollback undoes an add.
+#[test]
+fn strk20_owner_records_persist_in_the_sealed_registry() {
+    use wallet_core::{OwnerController, Strk20Owner};
+
+    let mut s = WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "pass", Registry::default());
+    let controller = s.create_user_account("Main").unwrap();
+    let record = Strk20Owner {
+        owner: format!("0x{:064x}", 0xc0ffeeu64),
+        chain: ChainId::Sepolia,
+        pool: format!("0x{:064x}", 0x123u64),
+        controller: OwnerController { domain: controller.domain, index: controller.index, address: controller.address },
+        client_id: None,
+        label: "vault".into(),
+    };
+    assert!(s.add_strk20_owner(record.clone()).unwrap());
+    assert!(!s.add_strk20_owner(record.clone()).unwrap(), "same owner, chain, pool and scope");
+    // Another scope (an agent) may hold its own record for the same owner.
+    assert!(s.add_strk20_owner(Strk20Owner { client_id: Some("agent-1".into()), ..record.clone() }).unwrap());
+
+    let vault = s.reseal().unwrap();
+    let mut reopened = WalletSession::new_locked(ChainId::Sepolia);
+    reopened.unlock(&vault, "pass").unwrap();
+    let reg = reopened.registry().unwrap();
+    assert_eq!(reg.strk20_owners_for(None).collect::<Vec<_>>(), vec![&record]);
+    assert_eq!(reg.strk20_owners_for(Some("agent-1")).count(), 1);
+    assert_eq!(reg.strk20_owners_for(Some("agent-2")).count(), 0);
+
+    reopened.rollback_strk20_owner(&record);
+    assert_eq!(reopened.registry().unwrap().strk20_owners_for(None).count(), 0);
+    let removed = reopened.remove_strk20_owner(&record.owner, ChainId::Sepolia, &record.pool, Some("agent-1")).unwrap();
+    assert!(removed.is_some());
+    assert!(reopened.registry().unwrap().strk20_owners.is_empty());
+}
+
+/// The owner key is derived per call from the controller and differs from the
+/// controller's own STRK20 key.
+#[test]
+fn strk20_owner_viewing_key_comes_from_the_controller() {
+    use wallet_core::Felt;
+
+    let mut s = WalletSession::new_unlocked(ChainId::Sepolia, TEST_MNEMONIC, "pass", Registry::default());
+    let controller = s.create_user_account("Main").unwrap();
+    let pool = Felt::from_hex("0x123").unwrap();
+    let owner = Felt::from_hex("0xc0ffee").unwrap();
+    let owner_key = s.strk20_owner_viewing_key_for(&controller, ChainId::Sepolia, &pool, &owner).unwrap();
+    assert_ne!(owner_key, s.strk20_viewing_key_for(&controller, ChainId::Sepolia, &pool).unwrap());
+    assert_eq!(owner_key, s.strk20_owner_viewing_key_for(&controller, ChainId::Sepolia, &pool, &owner).unwrap());
+    s.lock();
+    assert!(s.strk20_owner_viewing_key_for(&controller, ChainId::Sepolia, &pool, &owner).is_err());
+}

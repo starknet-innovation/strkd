@@ -8,6 +8,60 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 external owners, part 1: enrolment and key derivation (#48)
+
+**Did**
+- `wallet_core::strk20_owner_viewing_key` signs
+  `starknet_keccak("strkd.strk20.owner.v1:<chain>:<pool>:<owner>")` with the
+  controller account's key (RFC 6979) and folds the signature with krusty's
+  `fold_strk20_viewing_key`. It is a sibling of `strk20_viewing_key`, and
+  `WalletSession::strk20_owner_viewing_key_for` wraps it.
+- `Strk20Owner` records live in `Registry.strk20_owners`, an additive serde
+  field. They are sealed and persisted through the new
+  `dispatch::persist_registry`, which also handles agent-account creation now.
+  Scoping follows the account rule.
+- Three new methods:
+  - `companion_strk20AddOwner` checks that the owner is deployed, that it
+    advertises SRC5 `0x2eb9…ded`, and that any existing pool registration uses
+    the derived key. It then always prompts (`Caller::approve_always`, which
+    skips grants) and records the owner.
+  - `companion_strk20ListOwners` lists the owners in scope.
+  - `companion_strk20RemoveOwner` forgets an owner after a gated prompt.
+- The STRK20 `Ctx` now has a `Subject` (an account, or an owner with its
+  controller). `owner_address` together with `account_address` is a 114. The
+  existing one-shot methods refuse owners with `-32601` until phase 2.
+- Error objects can carry `data: { reason }`, set with
+  `WalletRpcError::with_reason`. The code is unchanged and the message gets a
+  `REASON: ` prefix. Errors without a reason serialize as before.
+- Design note: recorded that the deployed pool class has the custom-validation
+  path and that the pool nonce is constant (verified 2026-11-13). Added §11,
+  implementation notes.
+
+**Decisions**
+- Added `OWNER_ALREADY_ENROLLED` (-32006), which is not in the note's §7 table.
+  Enrolling a strkd account address as an owner is a 114.
+- `RemoveOwner` goes through the gated prompt, so a grant can cover it. Removal
+  signs and reveals nothing, and the key can be derived again.
+- A `starknet_call` JSON-RPC error on `supports_interface` (a revert, or no
+  such entry point) counts as "no SRC5". Transport failures stay `-32004`.
+
+**Verify**
+- `cargo test --locked` → green across the workspace. This adds 3 owner-key
+  tests in wallet-core, 1 vault test, 11 owner dispatch tests, 2 session tests
+  and 2 `error.rs` unit tests.
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+
+**Next / Resume**
+- #48 part 2: `companion_strk20Plan` (SNIP-12 `Strk20Plan` hash,
+  `reveal_actions`, `PlanStore`). Part 3: prove, client-bound jobs, `submit`.
+
+**Notes / caveats**
+- The owner-key vectors use the test seed only. The starknet.js conformance
+  vector for the owner key is still to do (§8).
+- Nothing was submitted on chain.
+
+---
+
 ## 2026-11-13 — STRK20 register right after deploy (#50)
 
 **Did**
