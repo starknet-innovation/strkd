@@ -124,7 +124,16 @@ impl ServerState {
     }
 
     /// Attach the on-device proving companion so `companion_prove*` is available.
+    ///
+    /// Also hooks the session's lock so every lock, by any path, drops the
+    /// results of unrecorded (STRK20) proving jobs (#48 §5.7). Call it at
+    /// construction, while nothing else holds the session.
     pub fn with_prover(mut self, prover: Arc<prover::ProverState>) -> Self {
+        let jobs = prover.jobs.clone();
+        self.session
+            .try_lock()
+            .expect("with_prover: the session is held elsewhere during construction")
+            .add_lock_hook(Arc::new(move || jobs.wipe_ephemeral()));
         self.prover = Some(prover);
         self
     }
@@ -214,6 +223,47 @@ fn encode_query(s: &str) -> String {
         }
     }
     out
+}
+
+/// Whether `c` may appear in caller-supplied text shown in a prompt: not a
+/// control character, and not an invisible Unicode format character (category
+/// Cf: bidi overrides and isolates, zero-width spaces and joiners, the BOM, tag
+/// characters, ...) or a line/paragraph separator, any of which can reorder or
+/// hide what the user reads.
+pub(crate) fn is_display_safe(c: char) -> bool {
+    if c.is_control() {
+        return false;
+    }
+    !matches!(
+        c as u32,
+        0x00AD
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x0890..=0x0891
+            | 0x08E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x2028..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+    )
+}
+
+/// Caller-supplied text made safe to show in a prompt: [`is_display_safe`]
+/// characters only, at most `max` of them.
+pub(crate) fn display_text(s: &str, max: usize) -> String {
+    s.chars().filter(|c| is_display_safe(*c)).take(max).collect()
 }
 
 /// Truncate to at most `max` chars (char-safe), appending `…` if cut.
@@ -372,13 +422,26 @@ pub async fn dispatch(state: &ServerState, token: Option<&str>, req: Request) ->
 const REDACTED_RESULT_FIELDS: &[(&str, &[&str])] =
     &[("companion_strk20Plan", &["client_actions", "client_actions_felts"])];
 
+/// A STRK20 proving job's `result` and `error`, as `companion_proveStatus`
+/// returns them, stay out of the request log too: the jobs are unrecorded by
+/// design (#48 §5.7), and their errors come from proving contract code that
+/// could carry secrets (strkd already returns only fixed text; this is the
+/// second line). Their status and `error_reason` are still logged.
+const REDACTED_STRK20_JOB_FIELDS: &[&str] = &["result", "error"];
+
+fn is_strk20_job(v: &Value) -> bool {
+    v.get("label").and_then(Value::as_str).is_some_and(|l| l.starts_with("STRK20 "))
+}
+
 fn redact_for_log<'a>(method: &str, v: &'a Value) -> std::borrow::Cow<'a, Value> {
-    let Some((_, fields)) = REDACTED_RESULT_FIELDS.iter().find(|(m, _)| *m == method) else {
-        return std::borrow::Cow::Borrowed(v);
+    let fields: &[&str] = match REDACTED_RESULT_FIELDS.iter().find(|(m, _)| *m == method) {
+        Some((_, fields)) => fields,
+        None if method == "companion_proveStatus" && is_strk20_job(v) => REDACTED_STRK20_JOB_FIELDS,
+        None => return std::borrow::Cow::Borrowed(v),
     };
     let mut out = v.clone();
     if let Some(obj) = out.as_object_mut() {
-        for f in *fields {
+        for f in fields {
             if let Some(x) = obj.get_mut(*f) {
                 *x = json!("<redacted>");
             }
@@ -506,9 +569,9 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_requestGrant" => handle_request_grant(state, &client, &params).await,
         "companion_requestFunding" => handle_request_funding(state, &client, &params).await,
         "companion_deployAccount" => handle_deploy_account(state, &client, &params).await,
-        "companion_prove" => handle_prove(state, &params).await,
-        "companion_proveStatus" => handle_prove_status(state, &params).await,
-        "companion_proofActivity" => handle_proof_activity(state).await,
+        "companion_prove" => handle_prove(state, &client, &params).await,
+        "companion_proveStatus" => handle_prove_status(state, &client, &params).await,
+        "companion_proofActivity" => handle_proof_activity(state, &client).await,
         "companion_signAndProve" => handle_sign_and_prove(state, &client, &params).await,
         "wallet_strk20Balances" => strk20::balances(state, strk20::Caller::Rpc(&client), &params).await,
         "wallet_strk20PrepareInvoke" => strk20::prepare_invoke(state, strk20::Caller::Rpc(&client), &params).await,
@@ -525,6 +588,7 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_strk20DiscardPlan" => {
             strk20::plan::discard(state, strk20::Caller::Rpc(&client), &params).await
         }
+        "companion_strk20Prove" => strk20::prove::prove(state, strk20::Caller::Rpc(&client), &params).await,
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -548,7 +612,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "companion_strk20Register"
         | "companion_strk20AddOwner"
         | "companion_strk20RemoveOwner"
-        | "companion_strk20Plan" => decision_label(&result),
+        | "companion_strk20Plan"
+        | "companion_strk20Prove" => decision_label(&result),
         _ => "n/a".into(),
     };
 
@@ -598,8 +663,15 @@ async fn verify_token(state: &ServerState, token: Option<&str>) -> Option<Paired
     state.clients.lock().await.verify(t)
 }
 
+/// Client names are cut to this many characters.
+const MAX_CLIENT_NAME_CHARS: usize = 64;
+
 async fn handle_pairing(state: &ServerState, params: &Value) -> Handled {
-    let name = opt_param_str(params, "name").unwrap_or_else(|| "unnamed client".into());
+    // Shown in the pairing prompt and every later prompt's client label.
+    let name = opt_param_str(params, "name")
+        .map(|n| display_text(&n, MAX_CLIENT_NAME_CHARS))
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "unnamed client".into());
     let kind = match opt_param_str(params, "kind").as_deref() {
         Some("agent") => ClientKind::Agent,
         _ => ClientKind::App,
@@ -1437,14 +1509,15 @@ pub(crate) fn prover_or_err(state: &ServerState) -> Result<&prover::ProverState,
 
 /// `companion_prove` — enqueue an opaque, already-signed payload for on-device
 /// proving. Returns immediately with a job id; poll `companion_proveStatus`.
-async fn handle_prove(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+/// The job belongs to the calling client: no other client can poll it.
+async fn handle_prove(state: &ServerState, client: &PairedClient, params: &Value) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
     let network = opt_param_str(params, "network").unwrap_or_else(|| "mainnet".into());
     let label = opt_param_str(params, "label");
     // `payload` is the opaque thing to prove; if absent, treat the whole params
     // object as the payload (mirrors the prover crate's generic contract).
     let payload = params.get("payload").cloned().unwrap_or_else(|| params.clone());
-    let job_id = prover::enqueue_prove(prover, payload, label, network).await;
+    let job_id = prover::enqueue_prove_as(prover, payload, label, network, Some(client.id.clone())).await;
     Ok(json!({
         "job_id": job_id,
         "status": "queued",
@@ -1453,19 +1526,27 @@ async fn handle_prove(state: &ServerState, params: &Value) -> Result<Value, Wall
 }
 
 /// `companion_proveStatus` — poll a proving job by id (status + result/error).
-async fn handle_prove_status(state: &ServerState, params: &Value) -> Result<Value, WalletRpcError> {
+/// Only the client that queued a job sees it; any other job id, including
+/// another client's, is "unknown job".
+async fn handle_prove_status(
+    state: &ServerState,
+    client: &PairedClient,
+    params: &Value,
+) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
     let job_id = param_str(params, "job_id")?;
-    match prover.jobs.get(&job_id).await {
+    match prover.jobs.get_for(&job_id, &client.id).await {
         Some(job) => Ok(json!(job)),
         None => Err(WalletRpcError::InvalidRequest(format!("unknown job '{job_id}'"))),
     }
 }
 
-/// `companion_proofActivity` — recent proving activity feed (most-recent first).
-async fn handle_proof_activity(state: &ServerState) -> Result<Value, WalletRpcError> {
+/// `companion_proofActivity` — recent proving activity feed (most-recent
+/// first) of the jobs this client queued, like `companion_proveStatus`. The
+/// desktop's own feed (IPC) lists every job.
+async fn handle_proof_activity(state: &ServerState, client: &PairedClient) -> Result<Value, WalletRpcError> {
     let prover = prover_or_err(state)?;
-    Ok(json!({ "activity": prover.jobs.recent_activity().await }))
+    Ok(json!({ "activity": prover.jobs.recent_activity_for(&client.id).await }))
 }
 
 /// The prover's network name for a chain (`mainnet`/`testnet`) — selects which
@@ -1601,8 +1682,14 @@ async fn handle_sign_and_prove(
         payload["block_number"] = json!(bn);
     }
     let label = opt_param_str(params, "label");
-    let job_id =
-        prover::enqueue_prove(prover, payload, label, prover_network(chain).to_string()).await;
+    let job_id = prover::enqueue_prove_as(
+        prover,
+        payload,
+        label,
+        prover_network(chain).to_string(),
+        Some(client.id.clone()),
+    )
+    .await;
 
     Ok(json!({
         "job_id": job_id,

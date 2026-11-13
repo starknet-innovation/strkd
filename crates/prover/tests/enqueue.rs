@@ -81,3 +81,128 @@ async fn job_counter_seeds_past_existing_records() {
 
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+/// A backend that returns a canned proof and remembers the payload it saw.
+struct Canned(std::sync::Mutex<Option<serde_json::Value>>);
+
+#[async_trait::async_trait]
+impl prover::Prover for Canned {
+    async fn prove(&self, req: prover::ProveRequest) -> Result<prover::ProveResult, String> {
+        *self.0.lock().unwrap() = Some(req.payload);
+        Ok(prover::ProveResult { proof: json!({ "proof": "0xp" }) })
+    }
+    fn kind(&self) -> &'static str {
+        "canned"
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// `enqueue_prove_unrecorded` never writes the payload (or anything else) to
+/// storage, hands the proof to `finish`, and keeps the job for its client only.
+#[tokio::test]
+async fn unrecorded_jobs_write_nothing_and_belong_to_their_client() {
+    let data_dir = temp_dir("unrecorded");
+    let backend = std::sync::Arc::new(Canned(Default::default()));
+    let state = ProverState {
+        prover: backend.clone(),
+        jobs: std::sync::Arc::new(prover::Jobs::new(0)),
+        settings: std::sync::Arc::new(prover::SettingsStore::load(data_dir.join("settings.json"))),
+        storage: std::sync::Arc::new(prover::Storage::new(data_dir.join("storage"))),
+    };
+    let secret = "0x5ec2e7";
+    let id = prover::enqueue_prove_unrecorded(
+        &state,
+        json!({ "transaction": { "calldata": [secret] } }),
+        Some("t".into()),
+        "testnet".into(),
+        Some("client-a".into()),
+        |_, res| async move { res.map(|p| json!({ "wrapped": p })).map_err(Into::into) },
+    )
+    .await;
+    let job = run_to_terminal(&state, &id).await;
+    assert_eq!(job.status, JobStatus::Succeeded);
+    assert_eq!(job.result, Some(json!({ "wrapped": { "proof": "0xp" } })));
+    assert!(job.result_expires_at_ms.is_some());
+    assert!(backend.0.lock().unwrap().is_some(), "the prover got the payload");
+    assert_eq!(state.storage.stats().records, 0);
+    assert!(state.storage.get_record(&id).is_none());
+    let on_disk = std::fs::read_dir(data_dir.join("storage")).map(|d| d.count()).unwrap_or(0);
+    assert_eq!(on_disk, 0);
+    assert!(state.jobs.get_for(&id, "client-a").await.is_some());
+    assert!(state.jobs.get_for(&id, "client-b").await.is_none());
+    let _ = std::fs::remove_dir_all(&data_dir);
+}
+
+/// A backend that never finishes and records when its future is dropped.
+struct Hangs(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+struct SetOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl prover::Prover for Hangs {
+    async fn prove(&self, _req: prover::ProveRequest) -> Result<prover::ProveResult, String> {
+        let _guard = SetOnDrop(self.0.clone());
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+    fn kind(&self) -> &'static str {
+        "hangs"
+    }
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// A wallet lock (`wipe_ephemeral`) stops a running unrecorded job: the
+/// prover's future is dropped (the native backend kills its subprocess and
+/// removes its temp dir there), `finish` never runs, and the job fails with
+/// WIPED_ON_LOCK. The one-shot `prove_unrecorded` is stopped the same way.
+#[tokio::test]
+async fn locking_cancels_running_unrecorded_jobs() {
+    let data_dir = temp_dir("cancel");
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let state = ProverState {
+        prover: std::sync::Arc::new(Hangs(dropped.clone())),
+        jobs: std::sync::Arc::new(prover::Jobs::new(0)),
+        settings: std::sync::Arc::new(prover::SettingsStore::load(data_dir.join("settings.json"))),
+        storage: std::sync::Arc::new(prover::Storage::new(data_dir.join("storage"))),
+    };
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let f = finished.clone();
+    let id = prover::enqueue_prove_unrecorded(&state, json!({}), None, "testnet".into(), Some("c".into()), move |_, _| async move {
+        f.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(json!(1))
+    })
+    .await;
+    // Let it start proving, then lock.
+    for _ in 0..100 {
+        if state.jobs.get(&id).await.unwrap().status == JobStatus::Proving {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    state.jobs.wipe_ephemeral();
+    let job = run_to_terminal(&state, &id).await;
+    assert_eq!(job.status, JobStatus::Failed);
+    assert_eq!(job.error_reason.as_deref(), Some("WIPED_ON_LOCK"));
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the prover was stopped");
+    assert!(!finished.load(std::sync::atomic::Ordering::SeqCst), "finish must not run");
+
+    // The one-shot path.
+    dropped.store(false, std::sync::atomic::Ordering::SeqCst);
+    let st = state.clone();
+    let task = tokio::spawn(async move { prover::prove_unrecorded(&st, json!({}), None, "testnet".into()).await });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    state.jobs.wipe_ephemeral();
+    let res = tokio::time::timeout(Duration::from_secs(5), task).await.expect("stopped").unwrap();
+    assert_eq!(res.unwrap_err(), prover::WIPED_MESSAGE);
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

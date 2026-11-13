@@ -42,10 +42,16 @@ struct Unlocked {
     strk20_plans: PlanStore,
 }
 
+/// Something to run whenever the session locks (by any path).
+pub type LockHook = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// A wallet session, locked or unlocked, bound to a network.
 pub struct WalletSession {
     chain: ChainId,
     unlocked: Option<Unlocked>,
+    /// Run on every [`WalletSession::lock`]: wipes in-memory state held outside
+    /// the session, such as STRK20 proving results (#48 §5.7).
+    lock_hooks: Vec<LockHook>,
 }
 
 /// Decrypt the on-disk vault with a **freshly supplied** passphrase and return
@@ -109,6 +115,7 @@ impl WalletSession {
         WalletSession {
             chain,
             unlocked: None,
+            lock_hooks: Vec::new(),
         }
     }
 
@@ -129,6 +136,7 @@ impl WalletSession {
                 registry,
                 strk20_plans: PlanStore::default(),
             }),
+            lock_hooks: Vec::new(),
         }
     }
 
@@ -147,9 +155,18 @@ impl WalletSession {
         Ok(())
     }
 
-    /// Drop the unlocked state, wiping the mnemonic and every STRK20 plan.
+    /// Drop the unlocked state, wiping the mnemonic and every STRK20 plan, and
+    /// run the lock hooks (which drop STRK20 proving results).
     pub fn lock(&mut self) {
         self.unlocked = None;
+        for hook in &self.lock_hooks {
+            hook();
+        }
+    }
+
+    /// Run `hook` on every future [`Self::lock`], by any path.
+    pub fn add_lock_hook(&mut self, hook: LockHook) {
+        self.lock_hooks.push(hook);
     }
 
     pub fn is_locked(&self) -> bool {

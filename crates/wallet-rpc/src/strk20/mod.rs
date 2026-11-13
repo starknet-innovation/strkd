@@ -16,12 +16,14 @@
 //! disk. Only a deposit's invocation leaves the machine, to the screening prover
 //! the approval prompt names.
 //!
-//! External owner contracts (#48) go through [`owners`] (enrolment) and
-//! [`plan`] (`companion_strk20Plan`: plan now, approve on-chain, prove later).
+//! External owner contracts (#48) go through [`owners`] (enrolment), [`plan`]
+//! (`companion_strk20Plan`: plan now, approve on-chain) and [`prove`]
+//! (`companion_strk20Prove`: prove the approved plan later, as a job).
 
 pub mod owners;
 pub mod paymaster;
 pub mod plan;
+pub mod prove;
 pub mod remote;
 
 use std::collections::BTreeMap;
@@ -42,6 +44,7 @@ use crate::dispatch::{
 };
 use crate::error::WalletRpcError;
 use crate::node::{NodeError, StarknetRpc};
+use crate::session::WalletSession;
 
 pub const MAINNET_POOL: &str = "0x040337b1af3c663e86e333bab5a4b28da8d4652a15a69beee2b677776ffe812a";
 pub const SEPOLIA_POOL: &str = "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e";
@@ -85,6 +88,98 @@ fn scrub(text: &str, user_sk: Felt) -> String {
     let padded = format!("0x{user_sk:064x}");
     let decimal = user_sk.to_string();
     text.replace(&padded, "<viewing key>").replace(&hex, "<viewing key>").replace(&decimal, "<viewing key>")
+}
+
+/// `INVALID_SIGNATURE` as a Cairo short string, as a prover revert trace
+/// spells it in hex (`0x494e56414c49445f5349474e4154555245`).
+const INVALID_SIGNATURE_HEX: &str = "494e56414c49445f5349474e4154555245";
+
+/// Whether a prover error says the pool's signature check failed.
+fn is_invalid_signature(text: &str) -> bool {
+    text.contains("INVALID_SIGNATURE") || text.to_ascii_lowercase().contains(INVALID_SIGNATURE_HEX)
+}
+
+/// Prover error prefixes strkd itself writes (the `prover` crate's messages,
+/// `snip36::classify_prover_error` first of all), each with a fixed message.
+/// Only the start of the error is matched: whatever follows it can quote the
+/// prover's output, which the code being proved controls.
+const KNOWN_PROVER_ERRORS: &[(&str, &str)] = &[
+    (
+        "the transaction reverted while it was proved",
+        "the batch reverted when the prover executed it at the reference block: a contract it calls failed, or is          not deployed at that block",
+    ),
+    ("transaction too large to prove", "the batch is too large for the prover: split it into smaller batches"),
+    ("upstream RPC throttled", "the prover's RPC node throttled it (HTTP 429): use a higher-quota RPC in Settings"),
+    ("RPC too old", "the prover's RPC node is too old (it needs JSON-RPC spec 0.10): change it in Settings"),
+    ("prover port in use", "the prover's local port was in use: retry"),
+    (
+        "the bundled prover does not support",
+        "the bundled prover does not support this network's Starknet version: update strkd, or use a compatible          remote prover",
+    ),
+    ("prover timed out", "the prover timed out"),
+    ("snip36 binary not found", "the on-device prover is not installed (snip36 binary not found)"),
+    ("failed to launch prover", "the on-device prover could not be started"),
+    ("no RPC URL configured", "no RPC URL is configured for the prover's network (Settings)"),
+    (
+        "nonce mismatch",
+        "the virtual transaction's nonce does not match the pool's nonce at the reference block",
+    ),
+    (
+        "transaction is not signed",
+        "the prover refuses a virtual transaction without a `signature` array",
+    ),
+    ("no remote prover configured", "no remote prover is configured for this network (Settings)"),
+    ("remote prover", "the remote prover returned an error"),
+    ("rpc ", "the prover could not read the chain through its RPC node"),
+];
+
+/// What a STRK20 proving error says, as a reason and a fixed message that
+/// quotes **nothing** from the prover's output.
+///
+/// The batch runs the owner contract's `is_custom_signature_valid` (and, for
+/// any subject, the pool) inside the prover, with the full `compile_actions`
+/// call — `user_sk` and every channel key — as its argument. A revert reason
+/// is text that code chose: a malicious contract could panic with a secret,
+/// encoded so no scrubbing finds it. So strkd never returns, logs or stores
+/// the prover's text for these jobs; it classifies the error by the prefix
+/// strkd itself wrote and returns that class (§6).
+fn safe_prover_error(err: &str, owner: bool, block: u64) -> (&'static str, String) {
+    let err = err.trim_start();
+    if err == prover::WIPED_MESSAGE {
+        return ("WIPED_ON_LOCK", prover::WIPED_MESSAGE.to_string());
+    }
+    if is_invalid_signature(err) {
+        let why = if owner {
+            format!(
+                "the owner contract did not validate the batch at reference block {block}: it had not approved \
+                 plan_hash at or before that block, or the signature was not one it accepts"
+            )
+        } else {
+            "the account's signature was not accepted".to_string()
+        };
+        let reason = if owner { "OWNER_SIGNATURE_REJECTED" } else { "INVALID_SIGNATURE" };
+        return (reason, format!("the pool's signature check failed (INVALID_SIGNATURE) when the prover executed the batch: {why}"));
+    }
+    let what = KNOWN_PROVER_ERRORS.iter().find(|(prefix, _)| err.starts_with(prefix)).map_or("proving failed", |(_, m)| m);
+    (
+        "PROVING_FAILED",
+        format!("{what}. The prover's own output is withheld: the contracts it runs can put secrets in it."),
+    )
+}
+
+/// The prover the plan and prove prompts name: its kind, plus the URL for a
+/// remote prover (a changed URL is a different party seeing the viewing key).
+async fn prover_identity(prover: &prover::ProverState, chain: ChainId) -> String {
+    let kind = prover.prover.kind();
+    if kind != "remote" {
+        return kind.to_string();
+    }
+    let url = prover.settings.for_network(prover_network(chain)).await.prover_url;
+    if url.is_empty() {
+        "remote (no URL set)".to_string()
+    } else {
+        format!("remote at {url}")
+    }
 }
 
 /// A submission error: explain pool reverts, pass the rest through.
@@ -612,15 +707,26 @@ async fn prepare(
             prover_network(ctx.chain).to_string(),
         )
         .await
-        .map_err(|e| WalletRpcError::Unknown(scrub(&format!("proving failed: {e}"), user_sk)))?,
+        .map_err(|e| {
+            // Never the prover's text (see `safe_prover_error`).
+            let (reason, message) = safe_prover_error(&e, false, block);
+            WalletRpcError::Unknown(format!("proving failed: {message}")).with_reason(reason)
+        })?,
         Proving::Remote(p) => remote::prove(&p, ctx.chain, block, &tx).await.map_err(|e| match e {
             remote::RemoteError::ScreeningRejected(_) => WalletRpcError::Precondition(e.to_string()),
             _ => WalletRpcError::Unknown(scrub(&e.to_string(), user_sk)),
         })?,
     };
-    let proved = remote::parse_result(&result, &ctx.pool).map_err(|e| WalletRpcError::Unknown(scrub(&e, user_sk)))?;
+    let proved = remote::parse_result(&result, &ctx.pool).map_err(|_| unreadable_proof())?;
     let call = strk20::apply::apply_actions_call(ctx.pool, &proved.output, proved.screening.as_ref()).map_err(map_strk20)?;
     Ok(Prepared { call, proved })
+}
+
+/// A prover result strkd can't parse. Fixed text: the result came from the
+/// prover, whose output the proved contracts influence.
+fn unreadable_proof() -> WalletRpcError {
+    WalletRpcError::Unknown("the prover's result could not be read (its text is withheld)".into())
+        .with_reason("PROVING_FAILED")
 }
 
 fn call_and_proof(p: &Prepared, simulate: bool) -> Value {
@@ -654,7 +760,13 @@ fn proving_for(ctx: &Ctx, actions: &[Action]) -> Result<Proving, WalletRpcError>
 // ── submission from the user's own account (register, deposits) ──────────────
 
 async fn pool_fee(ctx: &Ctx) -> Result<u128, WalletRpcError> {
-    let out = ctx.reader(json!("latest")).call(get_selector_from_name("get_fee_amount"), vec![]).await.map_err(map_strk20)?;
+    pool_fee_at(&ctx.node, ctx.pool).await
+}
+
+/// The pool's fee (in STRK) at `latest`.
+async fn pool_fee_at(node: &Arc<dyn StarknetRpc>, pool: Felt) -> Result<u128, WalletRpcError> {
+    let reader = NodeReader { node: node.clone(), pool, block: json!("latest") };
+    let out = reader.call(get_selector_from_name("get_fee_amount"), vec![]).await.map_err(map_strk20)?;
     let fee = out.first().copied().unwrap_or(Felt::ZERO);
     u128::try_from(fee).map_err(|_| node_err("get_fee_amount exceeds u128"))
 }
@@ -665,10 +777,12 @@ async fn pool_fee(ctx: &Ctx) -> Result<u128, WalletRpcError> {
 async fn check_public_funds(ctx: &Ctx, deposits: &[(Felt, u128)]) -> Result<(), WalletRpcError> {
     let mut needed: BTreeMap<Felt, u128> = BTreeMap::new();
     for &(token, amount) in deposits {
-        *needed.entry(token).or_default() += amount;
+        let n = needed.entry(token).or_default();
+        *n = n.saturating_add(amount);
     }
     let fee = pool_fee(ctx).await?;
-    *needed.entry(felt(STRK)).or_default() += fee;
+    let n = needed.entry(felt(STRK)).or_default();
+    *n = n.saturating_add(fee);
     for (token, need) in needed {
         let request = json!({ "contract_address": hex(&token), "entry_point_selector": hex(&get_selector_from_name("balance_of")),
                               "calldata": [hex(&ctx.user)] });
@@ -693,10 +807,76 @@ fn approve(token: Felt, spender: Felt, amount: u128) -> Call {
 /// Submit `apply_actions` (plus the ERC-20 approvals the pool will `transfer_from`)
 /// as a proof-carrying invoke from the user's account.
 async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared, deposits: &[(Felt, u128)]) -> Result<Felt, WalletRpcError> {
+    let target =
+        SubmitTarget { session: state.session.clone(), node: ctx.node.clone(), chain: ctx.chain, pool: ctx.pool, guard: None };
+    submit_from(&target, &ctx.account, prepared, deposits).await
+}
+
+/// Where and how a proved batch is submitted. Owned (no borrow of the server
+/// state), so a background proving job can submit too.
+#[derive(Clone)]
+struct SubmitTarget {
+    session: Arc<tokio::sync::Mutex<WalletSession>>,
+    node: Arc<dyn StarknetRpc>,
+    chain: ChainId,
+    pool: Felt,
+    /// For a background job: re-checked under the session lock right before
+    /// signing (and again before broadcasting).
+    guard: Option<SubmitGuard>,
+}
+
+/// What a background job's submission re-checks at the last moment: the job
+/// was not wiped by a lock (a lock and a quick unlock must not let it submit),
+/// and the submitter is still in the client's scope.
+#[derive(Clone)]
+struct SubmitGuard {
+    jobs: Arc<prover::Jobs>,
+    job_id: String,
+    /// The client's registry scope (`Caller::scope`).
+    scope: Option<String>,
+}
+
+impl SubmitGuard {
+    fn check_wiped(&self) -> Result<(), WalletRpcError> {
+        if self.jobs.is_wiped(&self.job_id) {
+            return Err(WalletRpcError::Precondition(
+                "the wallet locked while this job ran, so the batch was not submitted".into(),
+            )
+            .with_reason("WIPED_ON_LOCK"));
+        }
+        Ok(())
+    }
+
+    fn check(&self, session: &WalletSession, submitter: &AccountRef) -> Result<(), WalletRpcError> {
+        self.check_wiped()?;
+        let in_scope = session
+            .registry()?
+            .scoped_for(self.scope.as_deref())
+            .any(|a| a.address == submitter.address && a.domain == submitter.domain && a.index == submitter.index);
+        if !in_scope {
+            return Err(WalletRpcError::Forbidden.with_reason("SUBMITTER_NOT_IN_SCOPE"));
+        }
+        Ok(())
+    }
+}
+
+/// Submit `apply_actions` (plus the ERC-20 approvals the pool will
+/// `transfer_from`) as a proof-carrying invoke from `submitter`, a strkd
+/// account in the caller's scope, which signs and pays the gas and the pool's
+/// fee. For an account's own batch the submitter is the account itself; for an
+/// owner's plan (`companion_strk20Prove` with `submit: "account"`) it is any
+/// in-scope strkd account, publicly linked to the owner by doing so.
+async fn submit_from(
+    target: &SubmitTarget,
+    submitter: &AccountRef,
+    prepared: &Prepared,
+    deposits: &[(Felt, u128)],
+) -> Result<Felt, WalletRpcError> {
+    let sender = Felt::from_hex(&submitter.address).map_err(|_| WalletRpcError::Unknown("bad stored address".into()))?;
     if let Some(a) = &prepared.proved.screening {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         // Leave a minute for inclusion: the pool checks age against the block timestamp.
-        if now + 60 > a.issued_at + strk20::apply::ATTESTATION_MAX_AGE_SECS {
+        if now.saturating_add(60) > a.issued_at.saturating_add(strk20::apply::ATTESTATION_MAX_AGE_SECS) {
             return Err(WalletRpcError::Precondition(
                 "the deposit's screening attestation expired before it could be submitted; retry the deposit".into(),
             ));
@@ -705,26 +885,32 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
     let strk = felt(STRK);
     let mut approvals: BTreeMap<Felt, u128> = BTreeMap::new();
     for &(token, amount) in deposits {
-        *approvals.entry(token).or_default() += amount;
+        let a = approvals.entry(token).or_default();
+        *a = a.saturating_add(amount);
     }
-    let fee = pool_fee(ctx).await?;
+    let fee = pool_fee_at(&target.node, target.pool).await?;
     if fee > 0 {
-        *approvals.entry(strk).or_default() += fee;
+        let a = approvals.entry(strk).or_default();
+        *a = a.saturating_add(fee);
     }
-    let mut calls: Vec<Call> = approvals.into_iter().map(|(t, a)| approve(t, ctx.pool, a)).collect();
+    let mut calls: Vec<Call> = approvals.into_iter().map(|(t, a)| approve(t, target.pool, a)).collect();
     calls.push(prepared.call.clone());
 
     let calldata = wallet_core::encode_calls(&calls);
-    let nonce = ctx.node.get_nonce(&ctx.user).await.map_err(node_err)?;
-    let bounds = ctx
+    let nonce = target.node.get_nonce(&sender).await.map_err(node_err)?;
+    let bounds = target
         .node
-        .estimate_invoke_with_proof(&ctx.user, &calldata, &nonce, &prepared.proved.proof_facts, &prepared.proved.proof)
+        .estimate_invoke_with_proof(&sender, &calldata, &nonce, &prepared.proved.proof_facts, &prepared.proved.proof)
         .await
         .map_err(submit_err)?;
-    let signed = state.session.lock().await.sign_invoke_for(
-        &ctx.account,
+    let session = target.session.lock().await;
+    if let Some(g) = &target.guard {
+        g.check(&session, submitter)?;
+    }
+    let signed = session.sign_invoke_for(
+        submitter,
         &calls,
-        ctx.chain,
+        target.chain,
         &InvokeV3Params {
             nonce,
             l1_gas: bounds.l1_gas,
@@ -734,8 +920,13 @@ async fn submit_from_account(state: &ServerState, ctx: &Ctx, prepared: &Prepared
             ..InvokeV3Params::default()
         },
     )?;
-    ctx.node
-        .add_invoke(&ctx.user, &signed.calldata, &signed.signature, &nonce, &bounds, &prepared.proved.proof_facts, Some(&prepared.proved.proof))
+    drop(session);
+    if let Some(g) = &target.guard {
+        g.check_wiped()?;
+    }
+    target
+        .node
+        .add_invoke(&sender, &signed.calldata, &signed.signature, &nonce, &bounds, &prepared.proved.proof_facts, Some(&prepared.proved.proof))
         .await
         .map_err(submit_err)
 }
@@ -941,5 +1132,35 @@ mod tests {
         assert_eq!(pool_for(&cfg, ChainId::Sepolia).unwrap(), felt(SEPOLIA_POOL));
         cfg.pool = "0x123".into();
         assert_eq!(pool_for(&cfg, ChainId::Sepolia).unwrap(), Felt::from(0x123u64));
+    }
+}
+
+#[cfg(test)]
+mod safe_error_tests {
+    use super::*;
+
+    #[test]
+    fn prover_errors_never_echo_the_prover_text() {
+        // An owner contract that panics with an encoded secret: the revert
+        // reason is the contract's choice, so none of it may come back.
+        let encoded = "0x7365637265742d6b65792d656e636f646564";
+        let revert = format!(
+            "the transaction reverted while it was proved, and the prover proves only transactions that succeed. \
+             revert reason: Error in the called contract: ('{encoded}')"
+        );
+        let (reason, m) = safe_prover_error(&revert, true, 9);
+        assert_eq!(reason, "PROVING_FAILED");
+        assert!(m.starts_with("the batch reverted") && !m.contains(encoded), "{m}");
+        // The contract can make the pool fail INVALID_SIGNATURE and still not leak.
+        let (reason, m) = safe_prover_error(&format!("{revert} 'INVALID_SIGNATURE' {encoded}"), true, 9);
+        assert_eq!(reason, "OWNER_SIGNATURE_REJECTED");
+        assert!(m.contains("reference block 9") && !m.contains(encoded), "{m}");
+        assert_eq!(safe_prover_error("0x494E56414C49445F5349474E4154555245", false, 9).0, "INVALID_SIGNATURE");
+        // Only the start counts: a known phrase inside quoted text is ignored.
+        let (_, m) = safe_prover_error(&format!("prover failed: {encoded} transaction too large to prove"), true, 9);
+        assert!(m.starts_with("proving failed.") && !m.contains(encoded), "{m}");
+        let (_, m) = safe_prover_error("transaction too large to prove: raw: whatever", true, 9);
+        assert!(m.starts_with("the batch is too large"), "{m}");
+        assert_eq!(safe_prover_error(prover::WIPED_MESSAGE, true, 9).0, "WIPED_ON_LOCK");
     }
 }

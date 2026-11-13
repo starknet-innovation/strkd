@@ -4,7 +4,7 @@
 //! A plan fixes a batch's `client_actions` (every index, channel key, salt and
 //! random value) without signing or proving it, and returns `plan_hash`: the
 //! SNIP-12 digest an owner contract approves on-chain before the proof is built
-//! (`companion_strk20Prove`, part 3 of #48). Plans work for enrolled owners and
+//! (`companion_strk20Prove`, [`super::prove`]). Plans work for enrolled owners and
 //! for strkd accounts (§2.1); for an account, strkd signs at prove time.
 //!
 //! Plans live in a [`PlanStore`] held by the unlocked session: in memory only,
@@ -24,7 +24,8 @@ use wallet_core::{address_hex, AccountRef, ChainId, Felt};
 
 use super::{
     ctx, describe, has_deposit, hex, intent_of, invalid, map_strk20, parse_actions,
-    plan_at_reference, pool_fee, where_proved, Caller, Ctx, Planned, Proving, Subject, STRK,
+    plan_at_reference, pool_fee, prover_identity, where_proved, Caller, Ctx, Planned, Proving,
+    Subject, STRK,
 };
 use crate::dispatch::{chain_name, param_str, prover_or_err, ServerState};
 use crate::error::WalletRpcError;
@@ -117,9 +118,6 @@ pub fn plan_hash(
 // ── stored plans ─────────────────────────────────────────────────────────────
 
 /// A plan as the store keeps it. No `Debug`: it holds channel keys.
-///
-/// Some fields are only read by `companion_strk20Prove` (#48, part 3).
-#[allow(dead_code)]
 pub(super) struct StoredPlan {
     pub(super) id: String,
     /// The paired client that made it. Only that client can see, discard or
@@ -144,9 +142,9 @@ pub(super) struct StoredPlan {
     /// The state discovered at `plan_block`, with `user_sk` zeroed. Prove
     /// compares a fresh discovery against it (`same_state`, §5.5).
     pub(super) state: State,
-    /// The prover kind and submission route the plan prompt named. Prove
-    /// prompts again if either changes (§5.6).
-    pub(super) prover_kind: String,
+    /// The prover (its kind, and a remote prover's URL) and submission route
+    /// the plan prompt named. Prove prompts again if either changes (§5.6).
+    pub(super) prover_id: String,
     pub(super) submission: &'static str,
     /// The plan prompt, as shown.
     pub(super) prompt: String,
@@ -285,8 +283,15 @@ impl PlanStore {
     }
 
     /// Refuse a new plan for `(user, chain, pool)` by `client` if it would
-    /// break a cap: one live plan per subject and pool (concurrent plans would
-    /// claim the same slots), [`MAX_PLANS_PER_CLIENT`], [`MAX_PLANS_TOTAL`].
+    /// break a cap: one live plan per client, subject and pool (a client's
+    /// concurrent plans would claim the same slots), [`MAX_PLANS_PER_CLIENT`],
+    /// [`MAX_PLANS_TOTAL`].
+    ///
+    /// The one-plan cap is per client, so one client can't block another's
+    /// planning (or learn that it has a plan). Two clients' plans for the same
+    /// subject race on the same notes: whichever is proved and lands second
+    /// fails, with `PLAN_STALE` at prove time or on-chain (nullifiers are
+    /// single-use), and loses nothing but the pool fee if it got that far.
     pub(super) fn check_caps(
         &mut self,
         client: &str,
@@ -296,24 +301,16 @@ impl PlanStore {
         now_ms: u64,
     ) -> Result<(), WalletRpcError> {
         self.sweep(now_ms);
-        if let Some(p) = self
-            .plans
-            .values()
-            .find(|p| p.user == *user && p.chain == chain && p.pool == *pool)
-        {
-            let whose = if p.client_id == client {
-                format!(
-                    "your plan {}: discard it with companion_strk20DiscardPlan or let it expire",
-                    p.id
-                )
-            } else {
-                "made by another client".to_string()
-            };
+        if let Some(p) = self.plans.values().find(|p| {
+            p.client_id == client && p.user == *user && p.chain == chain && p.pool == *pool
+        }) {
             return Err(plan_limit(format!(
-                "{} already has a live plan on pool {} ({whose}). Only one plan per owner and pool can be live, \
+                "{} already has a live plan on pool {} (your plan {}: discard it with \
+                 companion_strk20DiscardPlan or let it expire). Only one plan per owner and pool can be live, \
                  because concurrent plans would claim the same note slots.",
                 address_hex(user),
-                address_hex(pool)
+                address_hex(pool),
+                p.id
             )));
         }
         if self
@@ -358,8 +355,7 @@ impl PlanStore {
     }
 
     /// Remove and return the live plan `id`, if `client` made it. Discard
-    /// drops it (wiping it); prove (#48 part 3) consumes it once its job is
-    /// queued.
+    /// drops it (wiping it); prove consumes it once its job is queued.
     pub(super) fn take(
         &mut self,
         id: &str,
@@ -374,7 +370,7 @@ impl PlanStore {
 // ── the handlers ─────────────────────────────────────────────────────────────
 
 /// The id plans are bound to.
-fn client_id(caller: Caller<'_>) -> String {
+pub(super) fn client_id(caller: Caller<'_>) -> String {
     match caller {
         Caller::Rpc(c) => c.id.clone(),
         Caller::Desktop => "desktop".into(),
@@ -683,7 +679,7 @@ pub async fn plan(
         client_actions_felts: felts,
         plan_hash: hashed.plan_hash,
         state: snapshot,
-        prover_kind: prover.prover.kind().to_string(),
+        prover_id: prover_identity(prover, ctx.chain).await,
         submission: "none",
         prompt,
         created_at_ms,
@@ -856,7 +852,7 @@ mod tests {
                 channels: Default::default(),
                 notes: Vec::new(),
             },
-            prover_kind: "native".into(),
+            prover_id: "native".into(),
             submission: "none",
             prompt: String::new(),
             created_at_ms: 0,
@@ -899,12 +895,15 @@ mod tests {
     fn store_caps_one_per_subject_four_per_client_thirty_two_in_all() {
         let mut s = PlanStore::default();
         s.insert(stored("a", "c1", 1, u64::MAX), 0).unwrap();
-        // Same subject and pool, any client.
-        for c in ["c1", "c2"] {
-            let e = s.insert(stored("x", c, 1, u64::MAX), 0).unwrap_err();
-            assert_eq!(e.reason(), Some("PLAN_LIMIT"));
-            assert_eq!(e.code(), -32006);
-        }
+        // Same subject and pool, same client.
+        let e = s.insert(stored("x", "c1", 1, u64::MAX), 0).unwrap_err();
+        assert_eq!(e.reason(), Some("PLAN_LIMIT"));
+        assert_eq!(e.code(), -32006);
+        // Another client is neither blocked nor told about c1's plan.
+        s.insert(stored("y", "c2", 1, u64::MAX), 0).unwrap();
+        let e = s.insert(stored("y2", "c2", 1, u64::MAX), 0).unwrap_err();
+        assert!(e.message().contains("your plan y:") && !e.message().contains("\"a\"") && !e.message().contains(" a:"), "{}", e.message());
+        assert!(s.take("y", "c2", 0).is_ok());
         for i in 2..=4 {
             s.insert(stored(&format!("a{i}"), "c1", i, u64::MAX), 0)
                 .unwrap();

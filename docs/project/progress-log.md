@@ -8,6 +8,107 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 #48 part 3: security-review fixes
+
+**Did**
+- STRK20 prover errors no longer echo the prover. A malicious owner contract could panic with the
+  viewing key or a channel key, encoded so scrubbing misses it.
+  - `strk20::safe_prover_error` maps every error, on the job and the one-shot path, to a reason
+    plus fixed text, picked by the prefix strkd wrote.
+  - `redact_for_log` drops `result` and `error` from `companion_proveStatus` for STRK20 jobs.
+  - The enrolment prompt, the usage doc and design §6 say the owner contract's code is trusted
+    with the viewing key and channel keys.
+- Native prover temp file: the dir is `0700` and the file `0600` (`create_new`), and the dir is
+  removed on drop.
+  - A wallet lock cancels running ephemeral jobs (`Jobs::cancel_signal`). The `snip36` process
+    group is killed and the dir removed; `finish` never runs; the job fails with `WIPED_ON_LOCK`.
+  - Stale `strkd-prove-<deadpid>-*` dirs are removed at prover start.
+- Submission re-checks, under the session lock right before signing, that the job wasn't wiped and
+  that the submitter is still in scope (`SubmitGuard`, `SUBMITTER_NOT_IN_SCOPE`).
+- Arithmetic on outside input saturates: `block_number` + 12, and the deposit, fee and attestation
+  sums.
+- The one-plan cap is per client, and its message no longer mentions other clients.
+- `dispatch::display_text` strips control and Unicode format (Cf) characters from owner labels and
+  client names.
+- Prove prompts again when a remote prover's URL changed since the plan (`prover_identity`).
+- `companion_proofActivity` lists only the caller's jobs.
+- Design note §10: L2→L1 messages from an owner contract can't be published. The pool requires
+  `message_to_l1_hashes == [its own]`, and `proof_facts` carries hashes only. §11.3 lists the fixes.
+
+**Decisions**
+- Errors are classified by prefix only. Text after the prefix can be chosen by contract code. The
+  one exception is `INVALID_SIGNATURE` anywhere in the text, and it only chooses the reason.
+- Revert detail is gone for STRK20 errors. That is the price of not leaking. Debug with `snip36`
+  run by hand on a test seed.
+- No stdin for the tx: `snip36 prove virtual-os --help` (v1.4.2 bundle) has only `--tx-json
+  <path>`. Its source reads the path once, so `/dev/stdin` may work; it was not tried, because
+  running the bundled binary was out of scope.
+
+**Verify**
+- `cargo test --locked` → green.
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` (from a copy) → green.
+
+**Next / Resume**
+- Decide on the native preflight that refuses an empty `signature`: it breaks owner plans proved
+  with `signature: []` (design §11.3).
+- Sepolia live run (design §8), unchanged.
+
+**Notes / caveats**
+- No transactions sent; test seeds only.
+
+## 2026-11-13 — STRK20 external owners, part 3: the prove step (#48)
+
+**Did**
+- `companion_strk20Prove { plan_id, block_number?, signature?, submit?, submitter_address? }`
+  (`strk20/prove.rs`). It runs every §5.5 check synchronously: plan, subject still in scope, `B`
+  bounds, deployed and SRC5 at `B`, discovery at `B` and `latest` against the plan's snapshot, plan
+  hash re-check. Then it consumes the plan and queues a proving job, polled with
+  `companion_proveStatus`. The result is `{ call, proof }`, or `{ transaction_hash,
+  submitter_address, call }` with `submit: "account"`.
+- Owners: the caller's `signature` felts go into the virtual tx verbatim, and strkd never signs.
+  Accounts: strkd signs the invocation hash with the account key.
+- `prover::enqueue_prove_unrecorded`: a background proof that writes nothing to proof storage,
+  owned by one client, with its result dropped 1 h after it finishes or when the wallet locks
+  (a session lock hook installed by `ServerState::with_prover`).
+- Every proving job is now client-scoped (`Jobs::get_for`): `companion_proveStatus` answers
+  "unknown job" for another client's job, including `companion_prove` and
+  `companion_signAndProve` jobs.
+- `submit_from` generalises `submit_from_account` so any in-scope strkd account can submit an
+  owner's proof. The relay is refused (`RELAY_UNSUPPORTED`).
+- Prover errors that show the pool's `INVALID_SIGNATURE` fail the job with `error_reason`
+  `OWNER_SIGNATURE_REJECTED` (owner) or `INVALID_SIGNATURE` (account). Everything is scrubbed.
+- `strk20_live owner-flow` example command for the manual Sepolia run. Usage doc, code docs and
+  design note §10 and §11.2 updated.
+
+**Decisions**
+- Client scoping applies to all jobs, not only STRK20 ones. It is compatible for clients that poll
+  their own jobs (re-attach keeps the id) and closes the "any paired client can poll any job" hole.
+- `BLOCK_TOO_RECENT` also covers "the head hasn't moved 12 blocks past the plan yet"; there is no
+  separate `BLOCK_TOO_EARLY`. `BLOCK_TOO_OLD` keeps 120 blocks of the pool's window in hand.
+- `PLAN_STALE` drops the plan; bound, SRC5 and param errors keep it.
+- Job wipe-on-lock is a `WalletSession` lock hook, so every lock path (desktop button, auto-lock,
+  tests) runs it with no change in the desktop crate. `Jobs` moved to a plain mutex so the hook can
+  run synchronously.
+
+**Verify**
+- `cargo test --locked` → green across the workspace (15 new prove dispatch tests, 5 unit tests in
+  `strk20/prove.rs`, 3 in `prover/src/jobs.rs`, 1 in `prover/tests/enqueue.rs`).
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+- `desktop/src-tauri`: `cargo check --locked` and `cargo test --locked` → green.
+
+**Next / Resume**
+- Sepolia live run with `contracts/strk20-owner-example` (design §8): `strk20_live owner-flow`.
+  Record whether `INVALID_SIGNATURE` fails fast and how the prover spells it (§10).
+- Phase 2: `owner_address` on the one-shot methods, the narrow staleness check, desktop UI, relay.
+
+**Notes / caveats**
+- Not run against a live owner contract; no transactions were sent.
+- The native prover still writes the virtual tx (with `user_sk`) to a temp file for the CLI,
+  deleted afterwards. Unchanged by this PR.
+
+---
+
 ## 2026-11-13 — STRK20 external owners, part 2: the plan step (#48)
 
 **Did**
