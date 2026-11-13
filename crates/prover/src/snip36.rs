@@ -217,6 +217,24 @@ pub struct ProveInputs {
     pub rpc_url: String,
 }
 
+/// Invariant: the prover never signs, so it rejects an unsigned transaction up
+/// front. The `signature` field must be an array; it must also be non-empty
+/// unless `allow_empty` (strkd's STRK20 paths only: an owner contract decides
+/// what its signature means, and `[]` can be valid for it).
+fn check_signed(tx: &Value, allow_empty: bool) -> Result<(), String> {
+    let signed = match tx.get("signature").and_then(|s| s.as_array()) {
+        Some(a) => !a.is_empty() || allow_empty,
+        None => false,
+    };
+    if signed {
+        Ok(())
+    } else {
+        Err("transaction is not signed (missing/empty `signature`); the prover proves \
+             pre-signed transactions only and never signs"
+            .into())
+    }
+}
+
 /// Validate the request and resolve the reference block + nonce, independent of
 /// which backend will run the prover. Returns a clear error early (before any
 /// ~minute-long proof) on the common failures.
@@ -236,17 +254,7 @@ pub async fn preflight(
         .cloned()
         .ok_or("payload missing `transaction` (the signed Tx A)")?;
 
-    // Invariant: the prover never signs — reject unsigned transactions up front.
-    let signed = tx
-        .get("signature")
-        .and_then(|s| s.as_array())
-        .map(|a| !a.is_empty())
-        .unwrap_or(false);
-    if !signed {
-        return Err("transaction is not signed (missing/empty `signature`); the prover proves \
-                    pre-signed transactions only and never signs"
-            .into());
-    }
+    check_signed(&tx, req.allow_empty_signature)?;
 
     let block_number = match req.payload.get("block_number").and_then(|v| v.as_u64()) {
         Some(n) => n,
@@ -409,6 +417,20 @@ impl Drop for GroupKiller {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_signed_requires_signature_field_and_non_empty_unless_allowed() {
+        use serde_json::json;
+        let empty = json!({ "signature": [] });
+        let missing = json!({});
+        let not_array = json!({ "signature": "0x1" });
+        let one = json!({ "signature": ["0x1"] });
+        assert!(super::check_signed(&one, false).is_ok());
+        assert!(super::check_signed(&one, true).is_ok());
+        assert!(super::check_signed(&empty, false).unwrap_err().contains("not signed"));
+        assert!(super::check_signed(&empty, true).is_ok());
+        assert!(super::check_signed(&missing, true).is_err());
+        assert!(super::check_signed(&not_array, true).is_err());
+    }
     use super::{bounded, classify_prover_error, MAX_PROVER_ERROR_CHARS};
 
     /// Dropping `run_and_parse` mid-run (a cancelled job) kills the CLI and

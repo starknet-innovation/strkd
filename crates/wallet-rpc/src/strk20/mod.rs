@@ -126,7 +126,7 @@ const KNOWN_PROVER_ERRORS: &[(&str, &str)] = &[
     ),
     (
         "transaction is not signed",
-        "the prover refuses a virtual transaction with an empty signature: pass at least one signature felt",
+        "the prover refuses a virtual transaction without a `signature` array",
     ),
     ("no remote prover configured", "no remote prover is configured for this network (Settings)"),
     ("remote prover", "the remote prover returned an error"),

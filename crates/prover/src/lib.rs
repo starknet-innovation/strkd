@@ -103,7 +103,7 @@ pub async fn enqueue_prove_as(
         let started = std::time::Instant::now();
         let res = st
             .prover
-            .prove(ProveRequest { payload: payload.clone(), label: label.clone(), network: network.clone() })
+            .prove(ProveRequest { payload: payload.clone(), label: label.clone(), network: network.clone(), allow_empty_signature: false })
             .await;
         let prove_ms = started.elapsed().as_millis();
 
@@ -152,7 +152,7 @@ pub async fn prove_unrecorded(
     let opts = JobOptions { client_id: None, result_ttl_ms: Some(UNRECORDED_RESULT_TTL_MS) };
     let job_id = state.jobs.create_with(label.clone(), opts).await;
     state.jobs.set_status(&job_id, JobStatus::Proving).await;
-    let Some(res) = prove_or_cancel(state, &job_id, ProveRequest { payload, label, network }).await else {
+    let Some(res) = prove_or_cancel(state, &job_id, ProveRequest { payload, label, network, allow_empty_signature: true }).await else {
         state.jobs.fail_with(&job_id, wiped_failure()).await;
         return Err(WIPED_MESSAGE.into());
     };
@@ -230,7 +230,7 @@ where
     let jid = job_id.clone();
     tokio::spawn(async move {
         st.jobs.set_status(&jid, JobStatus::Proving).await;
-        let Some(res) = prove_or_cancel(&st, &jid, ProveRequest { payload, label, network }).await else {
+        let Some(res) = prove_or_cancel(&st, &jid, ProveRequest { payload, label, network, allow_empty_signature: true }).await else {
             drop(finish);
             st.jobs.fail_with(&jid, wiped_failure()).await;
             return;

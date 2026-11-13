@@ -727,8 +727,10 @@ An independent review of `981c83e` found the items below; all are fixed on
   - The example contract's README (PR #53) now says to revoke approvals after use, that
     third-party owner contracts must never accept controller signatures as plan approval, and that
     the pool in its sncast example must match the pool strkd uses.
-- **Found while fixing, not changed.** The native prover's preflight refuses a transaction with
-  an empty `signature` ("transaction is not signed"). An owner plan proved with `signature: []`
-  therefore fails on the native backend, with `PROVING_FAILED` and a message saying so. The stub
-  prover in the dispatch tests doesn't catch it. Pass a non-empty signature, or relax the
-  preflight for unrecorded jobs (to decide).
+- **Empty owner signatures.** The native prover's preflight refused a transaction with an empty
+  `signature` ("transaction is not signed"), so an owner plan proved with `signature: []` failed on
+  the native backend (the stub prover in the dispatch tests didn't catch it). Fixed: `ProveRequest`
+  has `allow_empty_signature`, set only by strkd's own unrecorded STRK20 paths
+  (`prove_unrecorded`, `enqueue_prove_unrecorded`). The `signature` field must still be an array,
+  so the prover still never signs. `companion_prove` (recorded jobs) keeps requiring a non-empty
+  signature.
