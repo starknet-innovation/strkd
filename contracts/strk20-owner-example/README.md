@@ -116,6 +116,10 @@ Three implementations check it:
    at `B < A` fails with `INVALID_SIGNATURE` (strkd: `OWNER_SIGNATURE_REJECTED`).
 4. Submit `apply_actions`. The proof is single-use: nullifiers and write-once slots
    make a replay revert.
+5. Once the batch has landed (or the plan is abandoned), the admin sends
+   `revoke_plan(plan_hash)`. Replaying that exact batch fails anyway, but an approval
+   left live is an open authorisation with no expiry. Revoking keeps the approved set
+   down to plans still in flight.
 
 **Revocation.** `revoke_plan(plan_hash)` stops proofs whose reference block is after
 the revocation. A proof already built against an earlier block, while the approval was
@@ -134,7 +138,22 @@ stale approvals with `revoke_plan`.
   (for example a standard account's ECDSA check) would let a signature over the tx hash
   or the CallSet hash bypass approval.
 - **Never read `user_sk`.** `calldata[1]` is the viewing key. It is visible during
-  virtual execution, inside the prover only. Don't store it, emit it or branch on it.
+  virtual execution, inside the prover only. Don't store it, emit it, branch on it, or
+  put it (or the channel keys in the actions) in a panic message.
+- **Your code is trusted with the keys.** The pool hands this contract the whole
+  `compile_actions` call, so its code sees the owner's viewing key and the batch's
+  channel keys while each proof runs. Whoever enrols an owner contract in strkd is
+  trusting its code with them (design §6). strkd withholds revert text from callers and
+  logs, but a malicious contract has other ways to try. Enrol only contracts whose code
+  you have reviewed.
+- **Revoke approvals after use.** See "Approving a plan", step 5.
+- **Never accept a controller signature as plan approval.** A third-party owner
+  contract must not treat a signature by the strkd controller account (for example
+  from `wallet_signTypedData` over the `Strk20Plan` typed data) as approval. The
+  controller key lives in strkd, next to the viewing key it derives. If strkd or the
+  agent driving it can produce the approval, the contract's check stops being a
+  separate party. Approval has to come from an authority strkd doesn't hold: this
+  contract's admin transaction, or a co-signer key kept outside strkd.
 - **Approval must come before the reference block.** See "Approving a plan" step 3.
 - **Bound to chain, pool and owner.** `chainId` comes from `tx_info` (whether it is
   the real chain id inside the virtual OS is listed as unverified in design §10). The
@@ -177,10 +196,10 @@ sncast --account owner-admin declare --network sepolia \
   --contract-name Strk20OwnerExample
 # → class_hash
 
-# constructor(admin, pool)
+# constructor(admin, pool): pool must be the pool strkd uses (see below)
 sncast --account owner-admin deploy --network sepolia \
   --class-hash 0x<class_hash> \
-  --constructor-calldata 0x<admin_account> 0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e
+  --constructor-calldata 0x<admin_account> 0x<pool>
 # → owner contract address: enrol it with companion_strk20AddOwner
 
 # Approve a plan_hash returned by companion_strk20Plan
@@ -192,6 +211,17 @@ sncast call --network sepolia --contract-address 0x<owner> \
   --function is_plan_approved --calldata 0x<plan_hash>
 ```
 
-Flags vary between sncast versions; check `sncast <cmd> --help`. The pool address
-above is strkd's Sepolia test pool. Check it against strkd's configured pool before
-deploying.
+Flags vary between sncast versions; check `sncast <cmd> --help`.
+
+**The `pool` argument must be the pool strkd plans against**, or every approval
+fails: the contract checks `call.to == pool`, and `plan_hash` binds the pool.
+- strkd's default Sepolia pool is
+  `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e`. A pool
+  override in the app's STRK20 settings replaces it.
+- `crates/wallet-rpc/examples/strk20_live.rs` (the `owner-flow` live run) defaults to
+  strkd's test pool `TEST_POOL` =
+  `0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323`, unless
+  `STRK20_POOL` is set.
+
+To check, compare against the `pool` field that `companion_strk20Plan` or
+`companion_strk20ListOwners` returns.
