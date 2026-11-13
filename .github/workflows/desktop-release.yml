@@ -144,9 +144,10 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Unsigned build: do NOT set APPLE_* env here. tauri-action ad-hoc signs
-          # the .app; users right-click → Open (or: xattr -dr com.apple.quarantine
-          # /Applications/strkd.app). Setting APPLE_* to empty values makes the
+          # Unsigned build: do NOT set APPLE_* env here. The .app is ad-hoc signed
+          # via bundle.macOS.signingIdentity "-" in tauri.conf.json (without it the
+          # bundle is only linker-signed and macOS reports it as "damaged"). Users
+          # clear quarantine: xattr -dr com.apple.quarantine /Applications/strkd.app. Setting APPLE_* to empty values makes the
           # macOS codesign step fail ("failed to import keychain certificate").
           # To ship signed + notarized later, add the APPLE_* signing secrets and
           # reintroduce them here per the tauri-action docs.
@@ -157,8 +158,9 @@ jobs:
           releaseDraft: true      # human-in-the-loop: review before publishing
           prerelease: false
           releaseBody: |
-            **These builds are not code-signed and not notarized.** macOS will say the app
-            "cannot be opened": right-click → Open, or run
+            **These builds are not code-signed and not notarized.** macOS will block the app
+            ("cannot be opened" or "is damaged"). Drag it to Applications, then either use
+            System Settings → Privacy & Security → Open Anyway, or run
             `xattr -dr com.apple.quarantine /Applications/strkd.app`. Only do that after you
             have verified the download.
 
