@@ -22,6 +22,7 @@ use wallet_core::{
 use zeroize::Zeroizing;
 
 use crate::error::WalletRpcError;
+use crate::strk20::plan::PlanStore;
 
 /// The plaintext payload stored (encrypted) in the vault.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,10 @@ struct Unlocked {
     mnemonic: Zeroizing<String>,
     vault_passphrase: Zeroizing<String>,
     registry: Registry,
+    /// STRK20 plans (#48 §5.4). They hold channel keys, so they live and die
+    /// with the unlocked state: every lock, by any path, drops (and wipes)
+    /// them. Never persisted.
+    strk20_plans: PlanStore,
 }
 
 /// A wallet session, locked or unlocked, bound to a network.
@@ -122,6 +127,7 @@ impl WalletSession {
                 mnemonic: Zeroizing::new(mnemonic.into()),
                 vault_passphrase: Zeroizing::new(vault_passphrase.into()),
                 registry,
+                strk20_plans: PlanStore::default(),
             }),
         }
     }
@@ -136,11 +142,12 @@ impl WalletSession {
             mnemonic: Zeroizing::new(contents.mnemonic),
             vault_passphrase: Zeroizing::new(vault_passphrase.to_string()),
             registry: contents.registry,
+            strk20_plans: PlanStore::default(),
         });
         Ok(())
     }
 
-    /// Drop the unlocked state, wiping the mnemonic.
+    /// Drop the unlocked state, wiping the mnemonic and every STRK20 plan.
     pub fn lock(&mut self) {
         self.unlocked = None;
     }
@@ -163,6 +170,11 @@ impl WalletSession {
             .as_ref()
             .map(|u| &u.registry)
             .ok_or(WalletRpcError::Locked)
+    }
+
+    /// The in-memory STRK20 plan store, if unlocked (#48 §5.4).
+    pub(crate) fn strk20_plans(&mut self) -> Result<&mut PlanStore, WalletRpcError> {
+        self.unlocked.as_mut().map(|u| &mut u.strk20_plans).ok_or(WalletRpcError::Locked)
     }
 
     fn require_unlocked(&self) -> Result<&Unlocked, WalletRpcError> {

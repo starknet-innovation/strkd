@@ -334,7 +334,7 @@ pub async fn dispatch(state: &ServerState, token: Option<&str>, req: Request) ->
     let handled = handle(state, token, req).await;
 
     let (outcome, error_code, result_json) = match &handled.result {
-        Ok(v) => ("ok".to_string(), None, serde_json::to_string(v).ok()),
+        Ok(v) => ("ok".to_string(), None, serde_json::to_string(&redact_for_log(&method, v)).ok()),
         Err(e) => (
             format!("error {}: {}", e.code(), e.message()),
             Some(e.code()),
@@ -363,6 +363,28 @@ pub async fn dispatch(state: &ServerState, token: Option<&str>, req: Request) ->
         Ok(value) => Response::ok(id, value),
         Err(e) => Response::err(id, e.to_object()),
     }
+}
+
+/// Result fields the request log must never hold, even with full payloads on.
+/// `companion_strk20Plan` with `reveal_actions` returns the plan's actions,
+/// which carry channel keys (#48 §5.6, #49): the caller gets them, the log
+/// gets a placeholder.
+const REDACTED_RESULT_FIELDS: &[(&str, &[&str])] =
+    &[("companion_strk20Plan", &["client_actions", "client_actions_felts"])];
+
+fn redact_for_log<'a>(method: &str, v: &'a Value) -> std::borrow::Cow<'a, Value> {
+    let Some((_, fields)) = REDACTED_RESULT_FIELDS.iter().find(|(m, _)| *m == method) else {
+        return std::borrow::Cow::Borrowed(v);
+    };
+    let mut out = v.clone();
+    if let Some(obj) = out.as_object_mut() {
+        for f in *fields {
+            if let Some(x) = obj.get_mut(*f) {
+                *x = json!("<redacted>");
+            }
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handled {
@@ -499,6 +521,10 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         "companion_strk20RemoveOwner" => {
             strk20::owners::remove_owner(state, strk20::Caller::Rpc(&client), &params).await
         }
+        "companion_strk20Plan" => strk20::plan::plan(state, strk20::Caller::Rpc(&client), &params).await,
+        "companion_strk20DiscardPlan" => {
+            strk20::plan::discard(state, strk20::Caller::Rpc(&client), &params).await
+        }
         _ => Err(WalletRpcError::NotImplemented(format!(
             "unknown method '{method}'"
         ))),
@@ -521,7 +547,8 @@ async fn handle(state: &ServerState, token: Option<&str>, req: Request) -> Handl
         | "wallet_strk20InvokeTransaction"
         | "companion_strk20Register"
         | "companion_strk20AddOwner"
-        | "companion_strk20RemoveOwner" => decision_label(&result),
+        | "companion_strk20RemoveOwner"
+        | "companion_strk20Plan" => decision_label(&result),
         _ => "n/a".into(),
     };
 

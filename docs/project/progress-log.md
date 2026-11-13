@@ -8,6 +8,58 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-13 — STRK20 external owners, part 2: the plan step (#48)
+
+**Did**
+- `companion_strk20Plan` plans a register, transfer or withdraw batch for an
+  enrolled owner or a strkd account, prompts once (a grant covers it), stores
+  the plan and returns `plan_hash` with its SNIP-12 `typed_data` and a summary.
+  It signs nothing and proves nothing. `companion_strk20DiscardPlan` drops a
+  plan without a prompt.
+- `plan_at_reference` is the shared first half of `prepare()` (reference block,
+  deployed check, double discovery, one draw of `OsRandomness`, `UserLinkage`).
+  For an owner it also checks SRC5 at the reference block. The existing
+  one-shot methods behave as before.
+- `strk20::plan::plan_hash` is the single implementation of the §5.3 hash. Its
+  unit test reproduces PR #53's vector exactly (`actions_hash 0x03342f41…f84a`,
+  `plan_hash 0x062a76d3…3301`), and dispatch tests check
+  `companion_typedDataHash` gives the same digest.
+- `reveal_actions: true` adds a separate prompt that a grant never covers,
+  worded from the #49 finding: the actions carry channel keys, which disclose
+  every past and future payment on those channels, irrevocably, and cannot
+  spend. The request log redacts the revealed actions.
+- `PlanStore` (in the unlocked session): 128-bit random ids bound to the
+  client, TTL 1 h (max 24 h), one live plan per (owner, pool), 4 per client,
+  32 in all. Plans are wiped on lock, discard and expiry, and gone after a
+  restart.
+- `strk20::hashes::poseidon_hash_many`, usage-doc entries, docs, and the design
+  note's Cairo sketch now uses `version() = 1`.
+
+**Decisions**
+- The store lives inside `WalletSession`'s unlocked state instead of directly
+  on `ServerState`, so every lock path drops it with no extra hook (§11.1).
+- Plans also work for strkd accounts, as §2.1 says. Deposits are refused for
+  both (`DEPOSIT_UNSUPPORTED`): plan/prove proves locally.
+- New reason `ALREADY_REGISTERED` for `register: true` on a registered subject.
+- Felt wiping is best effort with `black_box`: `starknet-types-core`'s zeroize
+  support needs a feature that would change `Cargo.lock`.
+
+**Verify**
+- `cargo test --locked` → green across the workspace (11 new plan dispatch
+  tests, 5 new unit tests in `strk20/plan.rs`).
+- `cargo clippy --locked --all-targets -- -D warnings` → clean.
+
+**Next / Resume**
+- #48 part 3: `companion_strk20Prove` (prove-time checks §5.5, `submit: "none" |
+  "account"`, `enqueue_prove_unrecorded`, client-scoped jobs with retention).
+
+**Notes / caveats**
+- Not run against a live owner contract; no transactions were sent.
+- The caller's signature for an owner is supplied at prove time; strkd never
+  signs for an owner.
+
+---
+
 ## 2026-11-13 — STRK20 external owners, part 1: enrolment and key derivation (#48)
 
 **Did**

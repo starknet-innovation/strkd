@@ -30,6 +30,11 @@ pub fn short_string(s: &str) -> Felt {
     Felt::from_bytes_be_slice(s.as_bytes())
 }
 
+/// Cairo's `poseidon_hash_span` / starknet.js `poseidon.hashMany` over `values`.
+pub fn poseidon_hash_many(values: &[Felt]) -> Felt {
+    Poseidon::hash_array(values)
+}
+
 fn hash(tag: &str, inputs: &[Felt]) -> Felt {
     let mut values = Vec::with_capacity(inputs.len() + 1);
     values.push(short_string(tag));

@@ -15,9 +15,13 @@
 //! [`prover::prove_unrecorded`], which keeps the invocation (and so the key) off
 //! disk. Only a deposit's invocation leaves the machine, to the screening prover
 //! the approval prompt names.
+//!
+//! External owner contracts (#48) go through [`owners`] (enrolment) and
+//! [`plan`] (`companion_strk20Plan`: plan now, approve on-chain, prove later).
 
 pub mod owners;
 pub mod paymaster;
+pub mod plan;
 pub mod remote;
 
 use std::collections::BTreeMap;
@@ -141,17 +145,27 @@ fn is_contract_not_found(e: &NodeError) -> bool {
     code == Some(20) || (code.is_none() && m.to_lowercase().contains("contract not found"))
 }
 
-/// Refuse to prove for an account that has no contract at `block`, the proving
-/// block, with an error that says why and when to retry.
+/// Refuse to prove for an account (or owner contract) that has no contract at
+/// `block`, the proving block, with an error that says why and when to retry.
 async fn ensure_deployed_at(ctx: &Ctx, block: u64) -> Result<(), WalletRpcError> {
     let params = json!({ "block_id": { "block_number": block }, "contract_address": hex(&ctx.user) });
     match ctx.node.raw("starknet_getClassHashAt", params).await {
         Ok(_) => Ok(()),
-        Err(e) if is_contract_not_found(&e) => Err(WalletRpcError::Precondition(format!(
-            "account {} is not deployed at reference block {block} (proofs run {PROVING_LAG} blocks behind the chain \
-             head). If you just deployed it, retry in about a minute.",
-            ctx.address()
-        ))),
+        Err(e) if is_contract_not_found(&e) => {
+            let what = match ctx.subject {
+                Subject::Account => "account",
+                Subject::Owner(_) => "owner contract",
+            };
+            let err = WalletRpcError::Precondition(format!(
+                "{what} {} is not deployed at reference block {block} (proofs run {PROVING_LAG} blocks behind the chain \
+                 head). If you just deployed it, retry in about a minute.",
+                ctx.address()
+            ));
+            Err(match ctx.subject {
+                Subject::Account => err,
+                Subject::Owner(_) => err.with_reason("OWNER_NOT_DEPLOYED"),
+            })
+        }
         Err(e) => Err(node_err(e)),
     }
 }
@@ -220,6 +234,7 @@ impl Caller<'_> {
 }
 
 /// Whose notes an operation acts on (design note #48 §3.1).
+#[derive(Clone)]
 enum Subject {
     /// A strkd account: its own key derives `user_sk` and signs the invocation.
     Account,
@@ -480,21 +495,39 @@ fn same_state(a: &State, b: &State) -> bool {
     a.registered == b.registered && a.outgoing_channels == b.outgoing_channels && a.channels == b.channels && a.notes == b.notes
 }
 
-async fn prepare(
-    state: &ServerState,
-    caller: Caller<'_>,
-    method: &str,
-    ctx: &Ctx,
-    intent: &Intent,
-    proving: Proving,
-    submission: &str,
-) -> Result<Prepared, WalletRpcError> {
-    let prover = prover_or_err(state)?;
+/// A batch planned against the reference block: the part of the pipeline that
+/// `prepare()` (one-shot) and `companion_strk20Plan` share.
+struct Planned {
+    /// The reference block the state was discovered at (`head − PROVING_LAG`).
+    block: u64,
+    user_sk: Felt,
+    /// The discovered state at `block` (it carries `user_sk`).
+    state: State,
+    plan: Plan,
+}
+
+/// Discover the subject's state at `head − PROVING_LAG` and at `latest`,
+/// refuse if they differ, and plan `intent` with randomness drawn once from the
+/// OS. Refuses a batch that would link channels (`PRIVACY_LEAK`). For an owner,
+/// also checks that it still advertises SRC5 custom validation at the
+/// reference block (§4, "Failing early").
+async fn plan_at_reference(state: &ServerState, ctx: &Ctx, intent: &Intent) -> Result<Planned, WalletRpcError> {
     let head = block_number(ctx.node.as_ref()).await?;
     let block = head.saturating_sub(PROVING_LAG);
     // The prover executes the account's signature check at `block`. An account
     // deployed after it (e.g. just now) would revert in the prover (#50).
     ensure_deployed_at(ctx, block).await?;
+    if let Subject::Owner(_) = ctx.subject {
+        if !owners::supports_custom_validation(ctx, json!({ "block_number": block })).await? {
+            return Err(WalletRpcError::Precondition(format!(
+                "owner contract {} does not advertise SRC5 interface {} (is_custom_signature_valid) at reference \
+                 block {block}, so the pool would not let it approve this batch.",
+                ctx.address(),
+                owners::CUSTOM_SIGNATURE_INTERFACE_ID
+            ))
+            .with_reason("OWNER_NO_CUSTOM_VALIDATION"));
+        }
+    }
     let reader = ctx.reader(json!({ "block_number": block }));
     let user_sk = ctx.viewing_key(state).await?;
 
@@ -510,6 +543,7 @@ async fn prepare(
              {PROVING_LAG} blocks behind the chain head. Retry in about a minute."
         )));
     }
+    // Randomness is drawn here, once: a stored plan never redraws it (§5.2).
     let plan: Plan = planner::plan(intent, &st, &mut OsRandomness).map_err(map_strk20)?;
     if plan.warnings.contains(&Warning::UserLinkage) {
         return Err(WalletRpcError::PrivacyLeak(
@@ -518,12 +552,31 @@ async fn prepare(
                 .into(),
         ));
     }
+    Ok(Planned { block, user_sk, state: st, plan })
+}
 
-    let where_proved = match &proving {
+/// How the prompt names where the batch is proved.
+fn where_proved(prover: &prover::ProverState, proving: &Proving) -> String {
+    match proving {
         Proving::Local if prover.prover.kind() == "native" => "proved on this machine".to_string(),
         Proving::Local => "proved by your configured remote prover, which will see your viewing key".to_string(),
         Proving::Remote(p) => format!("proved by {}, which screens the depositor and will see your viewing key", p.describe()),
-    };
+    }
+}
+
+async fn prepare(
+    state: &ServerState,
+    caller: Caller<'_>,
+    method: &str,
+    ctx: &Ctx,
+    intent: &Intent,
+    proving: Proving,
+    submission: &str,
+) -> Result<Prepared, WalletRpcError> {
+    let prover = prover_or_err(state)?;
+    let Planned { block, user_sk, plan, .. } = plan_at_reference(state, ctx, intent).await?;
+
+    let where_proved = where_proved(prover, &proving);
     caller
         .approve(
             state,

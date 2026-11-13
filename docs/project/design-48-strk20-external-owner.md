@@ -1,8 +1,9 @@
 # STRK20 for an external contract owner, with a plan/prove split — design note
 
 **Status:** Design agreed 2026-11-13 (§2). Phase 1 part 1 of 3 built (2026-11-13): owner records,
-enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11). Plan/prove are
-not built yet.
+enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11). Part 2 of 3 built
+(2026-11-13): `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 plan hash and the plan store
+(§11.1). Prove is not built yet.
 **Issue:** [#48](https://github.com/starknet-innovation/strkd/issues/48)
 **Relates to:** [`strk20-plan.md`](./strk20-plan.md), [`../code/strk20.md`](../code/strk20.md),
 [`../code/wallet-rpc.md`](../code/wallet-rpc.md), and the #49 note on channel-key disclosure
@@ -214,9 +215,10 @@ The owner approves a SNIP-12 (revision 1) message hash, which strkd's existing
 `typed_data_message_hash` computes (`wallet-core/src/keys.rs:158`):
 
 ```
-domain  = StarknetDomain { name: 'strkd.Strk20Plan', version: '1', chainId, revision: '1' }
+domain  = StarknetDomain { name: 'strkd.Strk20Plan', version: 1, chainId, revision: 1 }
 type    = Strk20Plan { pool: ContractAddress, owner: ContractAddress, actions_hash: felt }
 message = { pool, owner, actions_hash = poseidon_hash_many(client_actions_felts) }
+          // client_actions_felts = compile_actions calldata[2..], Span length prefix included
 plan_hash = SNIP-12 message hash with account_address = owner
 ```
 
@@ -243,7 +245,9 @@ impl StructHashImpl of StructHash<Strk20Plan> {
 }
 impl SNIP12MetadataImpl of SNIP12Metadata {
     fn name() -> felt252 { 'strkd.Strk20Plan' }
-    fn version() -> felt252 { '1' }
+    // The felt 1, not the shortstring '1' (0x31): krusty and starknet.js encode
+    // the typed-data string "1" as a number, like "revision": "1" (PR #53 vector).
+    fn version() -> felt252 { 1 }
 }
 
 fn is_custom_signature_valid(self: @ContractState, calls: Span<Call>,
@@ -522,3 +526,45 @@ section wins.
 - **`data.reason`.** `WalletRpcError::with_reason(&'static str)` wraps any error. The code stays
   the same, the message gets a `REASON: ` prefix, and the error object gets `data: { reason }`.
   Errors without a reason serialize exactly as before.
+
+### 11.1 Implementation notes (phase 1, part 2: plan)
+
+Built on branch `feat/strk20-plan-48`, stacked on part 1. Where the code differs from the text
+above, this section wins.
+
+- **Shared pipeline.** `plan_at_reference` (`strk20/mod.rs`) is the first half of `prepare()`:
+  reference block, deployed at `B`, discovery at `B` and `latest` with `same_state`, `planner::plan`
+  with `OsRandomness` drawn once, and the `UserLinkage` check. `prepare()` calls it and is
+  otherwise unchanged. For an owner it also checks SRC5 at `B`, and an owner that is not deployed at
+  `B` gets `OWNER_NOT_DEPLOYED`.
+- **Store location.** The `PlanStore` lives in the unlocked `WalletSession` rather than directly on
+  `ServerState`. Every lock path (RPC auto-lock, the desktop's two direct `session.lock()` calls,
+  tests) then drops the plans without a separate hook, and nothing can read a plan while locked
+  (`-32001`). It is still in memory only and empty after a restart.
+- **Wiping.** Dropping a plan (discard, expiry, lock) overwrites its felts. `starknet-types-core`'s
+  `zeroize` support sits behind its `secret-felt` feature, which would change `Cargo.lock`, so the
+  overwrite uses `black_box` and no `unsafe`. It is best effort: copies made while serializing a
+  revealed result are not wiped. `StoredPlan` has no `Debug`.
+- **Params.** Exactly one of `register: true` or `actions` (else 114). `deposit` actions are
+  refused for accounts as well as owners (`DEPOSIT_UNSUPPORTED`, `-32601`): plan/prove proves
+  locally, and deposits need a screening prover. `ttl_secs` is an integer from 1 to 86400.
+- **Registered state.** `register: true` on a subject that is already registered fails with
+  `ALREADY_REGISTERED` (-32006, new). Transfers and withdrawals for an unregistered subject fail
+  in the planner with 118, as today.
+- **Accounts.** Plans work for strkd accounts (§2.1). There is no SRC5 check, `owner` in the result
+  and in the typed data is the account address, and the prompt says strkd signs at prove time.
+- **Result.** Adds `subject` (`"owner"` or `"account"`), `controller`, `actions_hash` and, when
+  `reveal_actions` was asked, `actions_revealed`. `expires_at` is Unix milliseconds, like a
+  grant's. `summary` holds `description`, `register`, `transfers`, `withdrawals`, `action_count`,
+  `notes_spent`, `change`, `pool`, `pool_fee` and `pool_fee_token`.
+- **Prompts.** The plan prompt uses method `companion_strk20Plan`. The reveal prompt uses
+  `companion_strk20Plan (reveal_actions)` so the desktop and tests can tell them apart. It runs
+  after the plan is stored; refusing it returns the plan with `actions_revealed: false`.
+- **Caps.** The one-per-(owner, pool) cap holds across clients. When another client holds the
+  plan, the error says so without its id.
+- **Log.** `dispatch::redact_for_log` replaces `client_actions` and `client_actions_felts` in the
+  logged result with `"<redacted>"`, even with full payloads on.
+- **Stored for prove.** Subject, controller `AccountRef`, `user`, chain, pool, `plan_block`,
+  intent, actions, `client_actions_felts`, `plan_hash`, the state snapshot (`user_sk` zeroed), the
+  prover kind and submission route (`"none"`) the prompt named, the prompt, and timestamps.
+  `PlanStore::get` and `PlanStore::take` (client-bound) are the API part 3 uses.
