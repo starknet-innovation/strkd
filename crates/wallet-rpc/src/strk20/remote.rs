@@ -4,7 +4,8 @@
 //! screener, and only the operator's prover issues one (it screens the
 //! depositor while proving). So a deposit — unlike register, transfer and
 //! withdraw — cannot be proved on this machine. The proof invocation, which
-//! carries `user_sk` in its calldata, is sent to one of (first match wins):
+//! carries `user_sk` in its calldata, is sent to one of (first match wins,
+//! after a testnet pool's local screener key, see [`super::screener`]):
 //!
 //! 1. the user's own `deposit_prover_url` (a `starknet_proveTransaction`
 //!    JSON-RPC endpoint, e.g. an operator's Sepolia prover);
@@ -45,8 +46,9 @@ impl DepositProver {
                 Ok(DepositProver::Starkscan { api_key: cfg.starkscan_api_key.trim().to_string() })
             }
             ChainId::Mainnet => Ok(DepositProver::JsonRpc { url: BRAMBLE_PROVER_URL.into(), label: "the bramble gateway" }),
-            ChainId::Sepolia => Err("deposits on Sepolia need a screening prover: set a deposit prover URL in \
-                                     Settings → STRK20 (Starkscan and the bramble gateway are mainnet-only)"
+            ChainId::Sepolia => Err("deposits on Sepolia need a screening source: set a deposit prover URL in \
+                                     Settings → STRK20, or, for a pool you deployed yourself, its screener key \
+                                     (Starkscan and the bramble gateway are mainnet-only)"
                 .into()),
         }
     }

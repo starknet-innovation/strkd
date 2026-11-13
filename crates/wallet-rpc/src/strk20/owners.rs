@@ -196,12 +196,13 @@ pub async fn add_owner(
             state,
             "companion_strk20AddOwner",
             format!(
-                "Enrol contract {owner} as a STRK20 owner on {}, pool {pool_hex}, controlled by your account {}.{label_note} \
+                "Enrol contract {owner} as a STRK20 owner on {}, {}, controlled by your account {}.{label_note} \
                  strkd will derive and hold a private key for this contract's private notes. strkd cannot check who \
                  controls this contract; its own signature check decides every spend. The contract's code also sees \
                  that key and the private channel keys of every batch while it is proved (the pool hands them to \
                  its check), so it could leak them: enrol only a contract whose code you trust. {}",
                 chain_name(ctx.chain),
+                ctx.pool_label(),
                 ctx.account.address,
                 if registered.is_some() {
                     "It is already registered with the pool under the key this account derives."

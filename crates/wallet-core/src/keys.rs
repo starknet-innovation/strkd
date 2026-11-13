@@ -216,3 +216,17 @@ pub fn sign_hash(
     let sk = private_key(mnemonic, domain, index, passphrase)?;
     sign_stark_hash(&sk, hash).map_err(|_| CoreError::Signing)
 }
+
+/// Sign `hash` with a caller-held Stark private key (RFC 6979), for keys that
+/// are not derived from the seed: today only a STRK20 *test* screener key for a
+/// self-deployed testnet pool (`strk20::screening`). The caller owns the key's
+/// storage and must not log or return it.
+pub fn sign_hash_with_key(private_key: &Felt, hash: &Felt) -> Result<StarkSignature> {
+    sign_stark_hash(private_key, hash).map_err(|_| CoreError::Signing)
+}
+
+/// The Stark public key of a caller-held private key. Errors (rather than
+/// panicking) on zero or an out-of-range key.
+pub fn public_key_of_key(private_key: &Felt) -> Result<Felt> {
+    stark_public_key(private_key).map_err(|_| CoreError::Derivation)
+}

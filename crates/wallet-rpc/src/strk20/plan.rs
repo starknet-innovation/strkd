@@ -515,11 +515,11 @@ fn plan_prompt(
         ),
     };
     format!(
-        "STRK20 plan on {} for {}: {}. {n_actions} action(s), pool {:#x}. {next}",
+        "STRK20 plan on {} for {}: {}. {n_actions} action(s), {}. {next}",
         chain_name(ctx.chain),
         subject_text(ctx),
         describe(intent),
-        ctx.pool,
+        ctx.pool_label(),
     )
 }
 

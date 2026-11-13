@@ -162,7 +162,9 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 - **STRK20 (`wallet_strk20*`)** — built on the canonical pool
   ([`code/strk20.md`](../code/strk20.md), plan [`strk20-plan.md`](./strk20-plan.md)).
   Remaining: mainnet end-to-end (Starkscan / bramble gateway deposits, AVNU
-  relay), open notes / invokes / shadow accounts.
+  relay), open notes / invokes / shadow accounts. Per-network pool + testnet
+  local screener (#57): Sepolia test-pool deposits are proved on-device; a
+  submitted deposit through strkd is still to be run.
 - **Invoke end-to-end** — prove the computed invoke tx hash is accepted by a
   Sepolia node / matches a golden vector (belongs with the security-reviewed
   test plan).

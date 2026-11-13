@@ -7,7 +7,8 @@
 //!   [`discovery`] over a [`discovery::PoolReader`], with [`crypto`] and [`hashes`];
 //! - plan a batch of [`actions::ClientAction`]s (indices, change notes): [`planner`];
 //! - wrap them in the virtual invoke a prover runs: [`invocation`];
-//! - turn the proof's output into the on-chain `apply_actions` call: [`apply`].
+//! - turn the proof's output into the on-chain `apply_actions` call: [`apply`];
+//! - sign a test screener's deposit attestation (testnet pools only): [`screening`].
 //!
 //! The pool's own `compile_actions` performs every encryption inside the proof,
 //! so this crate only decrypts. It holds no keys of its own: the caller passes
@@ -21,6 +22,7 @@ pub mod discovery;
 pub mod hashes;
 pub mod invocation;
 pub mod planner;
+pub mod screening;
 
 use starknet_types_core::felt::Felt;
 

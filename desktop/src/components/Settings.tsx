@@ -6,6 +6,7 @@ import {
   type ProverNetworkConfig,
   type StorageStats,
   type Strk20Config,
+  type Strk20PoolInfo,
 } from "../api";
 import { RevealSeed } from "./RevealSeed";
 
@@ -15,7 +16,11 @@ const EMPTY_STRK20: Strk20Config = {
   deposit_prover_url: "",
   avnu_api_key: "",
   paymaster_url: "",
+  screener_key: "",
 };
+
+/** strkd's self-deployed Sepolia test pool (screener: the public test key 0xCAFEBABE). */
+const SEPOLIA_TEST_POOL = "0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323";
 
 const EMPTY_PROVER: ProverSettings = {
   mainnet: { rpc_url: "", prover_url: "", prover_api_key: "", strk20: EMPTY_STRK20 },
@@ -39,6 +44,7 @@ export function Settings({ onChange }: { onChange: () => void }) {
   const [prover, setProver] = useState<ProverSettings>(EMPTY_PROVER);
   const [proverSaved, setProverSaved] = useState(false);
   const [stats, setStats] = useState<StorageStats | null>(null);
+  const [poolInfo, setPoolInfo] = useState<Record<string, Strk20PoolInfo | string>>({});
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch(() => {});
@@ -67,7 +73,23 @@ export function Settings({ onChange }: { onChange: () => void }) {
     setProverSaved(false);
   }
 
+  async function checkPool(net: "mainnet" | "testnet") {
+    const c = { ...EMPTY_STRK20, ...prover[net].strk20 };
+    setPoolInfo((p) => ({ ...p, [net]: "Checking…" }));
+    try {
+      const info = await api.strk20CheckPool(
+        net,
+        c.pool,
+        net === "testnet" ? c.screener_key : undefined,
+      );
+      setPoolInfo((p) => ({ ...p, [net]: info }));
+    } catch (e) {
+      setPoolInfo((p) => ({ ...p, [net]: String(e) }));
+    }
+  }
+
   async function saveProver() {
+    setErr("");
     try {
       await api.setProverSettings(prover);
       setProverSaved(true);
@@ -220,6 +242,16 @@ export function Settings({ onChange }: { onChange: () => void }) {
               value={c.pool}
               onChange={(e) => strk20Field(net, "pool", e.target.value)}
             />
+            {c.pool.trim() !== "" && (
+              <p className="error small">
+                Not the canonical pool: every STRK20 call on this network, from this window and from
+                paired agents, uses this contract. Approval prompts flag it.
+              </p>
+            )}
+            <button className="small-btn" onClick={() => checkPool(net)}>
+              Check pool
+            </button>
+            <PoolInfoView info={poolInfo[net]} />
             <input
               className="input"
               type="password"
@@ -248,12 +280,36 @@ export function Settings({ onChange }: { onChange: () => void }) {
               value={c.paymaster_url}
               onChange={(e) => strk20Field(net, "paymaster_url", e.target.value)}
             />
+            {net === "testnet" && (
+              <>
+                <input
+                  className="input"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Test pool screener key (testnet only; optional)"
+                  value={c.screener_key}
+                  onChange={(e) => strk20Field(net, "screener_key", e.target.value)}
+                />
+                <p className="muted small">
+                  For a pool you deployed yourself with your own screener key (strkd's test pool{" "}
+                  <code>{SEPOLIA_TEST_POOL.slice(0, 10)}…</code> uses the public test key{" "}
+                  <code>0xCAFEBABE</code>). Deposits are then proved on this device and strkd signs the
+                  screening attestation, so nothing leaves the machine.{" "}
+                  <strong>
+                    Never enter a real screener's key: it is stored unencrypted in this device's
+                    settings file (owner-only), like the API keys.
+                  </strong>{" "}
+                  Refused on mainnet; checked against the pool before each deposit.
+                </p>
+              </>
+            )}
           </div>
         );
       })}
       <button className="primary" onClick={saveProver}>
         {proverSaved ? "Saved ✓" : "Save STRK20 settings"}
       </button>
+      {err && <p className="error">{err}</p>}
 
       <h3>Proof storage</h3>
       <div className="row">
@@ -267,6 +323,28 @@ export function Settings({ onChange }: { onChange: () => void }) {
       <button className="primary danger" onClick={clearStorage}>
         Clear proof storage
       </button>
+    </div>
+  );
+}
+
+function PoolInfoView({ info }: { info?: Strk20PoolInfo | string }) {
+  if (!info) return null;
+  if (typeof info === "string") return <p className="muted small">{info}</p>;
+  return (
+    <div className="small">
+      {info.deployed && (
+        <p className="muted small">
+          {info.known_class ? "Privacy pool (known class)" : "Unknown class"}
+          {info.version ? `, version ${info.version}` : ""}
+          {info.fee_amount != null ? `, fee ${info.fee_amount} (base units of STRK)` : ""}
+          {info.screener_matches === true ? ". The screener key matches this pool." : "."}
+        </p>
+      )}
+      {info.warnings.map((w) => (
+        <p key={w} className="error small">
+          {w}
+        </p>
+      ))}
     </div>
   );
 }
