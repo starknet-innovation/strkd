@@ -69,7 +69,7 @@ pub struct WalletSession {
 /// ## Why this is not reachable over RPC
 ///
 /// It is deliberately absent from [`crate::dispatch`] and from the usage doc.
-/// strkd's entire premise is that the loopback service never returns key
+/// Bramble Companion's entire premise is that the loopback service never returns key
 /// material — spec §5.1 and §10 — and that service is reachable by any local
 /// process, including the AI agents it exists to serve. This function is for the
 /// desktop app's own IPC surface only, behind a screen the user drives.
@@ -274,7 +274,7 @@ impl WalletSession {
             .map_err(WalletRpcError::from)
     }
 
-    /// The STRK20 viewing key strkd holds for the external owner contract
+    /// The STRK20 viewing key Bramble Companion holds for the external owner contract
     /// `owner`, derived from `controller`'s key and scoped to `pool` on `chain`
     /// (`wallet_core::strk20_owner_viewing_key`; design note #48 §3.2).
     ///

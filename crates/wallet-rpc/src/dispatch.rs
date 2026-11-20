@@ -192,7 +192,7 @@ pub const STRK_TOKEN_ADDRESS: &str =
 /// Default GitHub repo (`owner/name`) that `companion_reportIssue` builds its
 /// prefilled "new issue" links against. Overridable via
 /// [`ServerState::with_issue_repo`].
-const DEFAULT_ISSUE_REPO: &str = "starknet-innovation/strkd";
+const DEFAULT_ISSUE_REPO: &str = "starknet-innovation/bramble-companion";
 
 /// `owner/name` with only GitHub-legal slug characters, exactly one `/`.
 fn is_valid_repo_slug(s: &str) -> bool {
@@ -427,7 +427,7 @@ const REDACTED_RESULT_FIELDS: &[(&str, &[&str])] = &[
 /// A STRK20 proving job's `result` and `error`, as `companion_proveStatus`
 /// returns them, stay out of the request log too: the jobs are unrecorded by
 /// design (#48 §5.7), and their errors come from proving contract code that
-/// could carry secrets (strkd already returns only fixed text; this is the
+/// could carry secrets (Bramble Companion already returns only fixed text; this is the
 /// second line). Their status and `error_reason` are still logged.
 const REDACTED_STRK20_JOB_FIELDS: &[&str] = &["result", "error"];
 
@@ -837,7 +837,7 @@ async fn handle_sign_typed_data(
 /// that `wallet_signTypedData` would sign for `{ account_address, typed_data }`.
 ///
 /// Pure and key-free: `wallet_signTypedData` returns only the signature
-/// (account-encoded; `[r, s]` for OpenZeppelin), so this lets a caller confirm strkd hashes a typed message the
+/// (account-encoded; `[r, s]` for OpenZeppelin), so this lets a caller confirm Bramble Companion hashes a typed message the
 /// same way starknet.js `typedData.getMessageHash` does — and thus that a Cairo
 /// account's `is_valid_signature` will accept the resulting signature — without
 /// signing anything. Needs no unlock and prompts no approval.
@@ -1156,7 +1156,7 @@ fn summarize_calls(calls: &[Call]) -> String {
 /// one. So when `contract_class` is given we derive the hash ourselves
 /// (`SierraClass::class_hash`) and sign that; a caller-supplied `class_hash` is
 /// cross-checked and a mismatch is a `114` naming both hashes, instead of an
-/// opaque on-chain "invalid signature" (strkd #9). Without `contract_class`
+/// opaque on-chain "invalid signature" (#9). Without `contract_class`
 /// (hash-only signing), `class_hash` is required and taken on trust.
 ///
 /// Estimation and `submit:true` need `contract_class`. Sign-only returns a
@@ -1436,7 +1436,7 @@ async fn handle_add_invoke(
 }
 
 /// Turn an agent's structured feedback into a **prefilled GitHub "new issue"
-/// link**. strkd is alpha; when an agent hits a limitation it should report it
+/// link**. Bramble Companion is alpha; when an agent hits a limitation it should report it
 /// (see the `alpha_notice` in the usage doc) rather than work around it. This
 /// files NOTHING and stores no credential — it returns a URL the operator opens,
 /// reviews, edits, and submits in their own browser under their own GitHub
@@ -1448,7 +1448,7 @@ fn handle_report_issue(
     params: &Value,
 ) -> Result<Value, WalletRpcError> {
     // goal + needed are the two fields a fix actually needs; the rest mirror the
-    // STRKD-FEEDBACK template and are optional.
+    // COMPANION-FEEDBACK template and are optional.
     let goal = param_str(params, "goal")?;
     let needed = param_str(params, "needed")?;
     if goal.trim().is_empty() || needed.trim().is_empty() {
@@ -1477,7 +1477,7 @@ fn handle_report_issue(
         }
     }
     body.push_str(&format!(
-        "---\n_Filed via strkd `companion_reportIssue` by **{}** ({}). strkd is alpha — \
+        "---\n_Filed via Bramble Companion `companion_reportIssue` by **{}** ({}). Bramble Companion is alpha — \
 review and edit before submitting, and remove anything sensitive._",
         client.label, client.id
     ));
@@ -1497,10 +1497,10 @@ review and edit before submitting, and remove anything sensitive._",
         "title": title,
         "body": body,
         "repo": state.issue_repo,
-        // Make it unambiguous that strkd posted nothing.
+        // Make it unambiguous that Bramble Companion posted nothing.
         "filed": false,
         "instructions": "Give this `url` to your operator. Opening it loads a prefilled GitHub \
-issue draft; they review, edit, and submit it in their browser. strkd does not file it for you, \
+issue draft; they review, edit, and submit it in their browser. Bramble Companion does not file it for you, \
 and stores no GitHub credential."
     }))
 }
@@ -1640,7 +1640,7 @@ async fn handle_sign_and_prove(
     })?;
 
     // Signing a real tx on the user's account → gate it (proven locally, never
-    // broadcast by strkd).
+    // broadcast by Bramble Companion).
     let decision = gated_approval(
         state,
         client,

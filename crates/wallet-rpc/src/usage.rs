@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 /// `ServerState`.
 pub fn usage_doc(api_version: &str, spec_versions: &[String]) -> Value {
     json!({
-        "service": "strkd — Starknet wallet companion",
+        "service": "Bramble Companion — Starknet wallet companion",
         "version": env!("CARGO_PKG_VERSION"),
         "wallet_api_version": api_version,
         "supported_specs": spec_versions,
@@ -28,32 +28,32 @@ never keys. It also PROVES SNIP-36 transactions on-device (sign + prove a privat
 one call, then broadcast the verifier tx) — see concepts.proving + snip36_proving.",
 
         "alpha_notice": {
-            "status": "strkd is ALPHA software under active development. Expect missing methods, \
+            "status": "Bramble Companion is ALPHA software under active development. Expect missing methods, \
 rough edges, partial features, and capabilities that simply do not exist yet.",
             "do_not_work_around": "If you hit a limitation — a missing method, a confusing or \
 unexpected error, a parameter that isn't accepted, or behaviour that blocks your task — DO NOT \
 invent a workaround, fake or guess a result, fall back to handling keys/seeds/signing yourself, \
 or silently abandon the step. A workaround hides the gap and makes it permanent. STOP and report \
-it instead. The maintainer reads these reports and fixes strkd, so a clear report is the FASTEST \
+it instead. The maintainer reads these reports and fixes Bramble Companion, so a clear report is the FASTEST \
 path to the capability you want.",
-            "call_to_action": "Tell your operator (the human running strkd) exactly what you need, \
+            "call_to_action": "Tell your operator (the human running Bramble Companion) exactly what you need, \
 using the report format below. Emit the filled-in block VERBATIM in your reply to them — don't \
-just mention it in passing. They relay it to the strkd maintainer.",
+just mention it in passing. They relay it to the Bramble Companion maintainer.",
             "github_shortcut": "Faster path when your operator can reach the repo: call \
 companion_reportIssue with these same fields and you get back a PREFILLED GitHub new-issue `url`. \
-Hand them the url — they open it, review/edit, and submit in their own browser. strkd files nothing \
-itself and holds no GitHub token. The STRKD-FEEDBACK block below is the universal fallback when \
+Hand them the url — they open it, review/edit, and submit in their own browser. Bramble Companion files nothing \
+itself and holds no GitHub token. The COMPANION-FEEDBACK block below is the universal fallback when \
 they can't (or don't want to) use GitHub.",
             "report_format": "Copy this block, fill every field, and hand it to your operator verbatim:\n\n\
-=== STRKD-FEEDBACK ===\n\
+=== COMPANION-FEEDBACK ===\n\
 goal:        <the task you were trying to accomplish, one line>\n\
 attempted:   <method(s) + params you called — or \"no method exists for this\">\n\
 observed:    <the exact JSON-RPC error code + message, or \"capability missing\">\n\
-limitation:  <what strkd could not do, stated plainly>\n\
+limitation:  <what Bramble Companion could not do, stated plainly>\n\
 needed:      <the specific method / param / behaviour that would unblock you>\n\
 impact:      <blocked | degraded | cosmetic> — <what you could NOT do as a result>\n\
 workaround_avoided: <what you were tempted to do instead, so we can design it away; \"none\" if N/A>\n\
-context:     strkd v<version> · network <from companion_getStatus> · <UTC timestamp>\n\
+context:     Bramble Companion v<version> · network <from companion_getStatus> · <UTC timestamp>\n\
 === END ===",
             "guidance": [
                 "One report per distinct limitation — don't batch unrelated gaps into one block.",
@@ -103,7 +103,7 @@ grant your client a time-bounded auto-approval window (up to 3 months, revocable
 own-account operations (sign/invoke/declare/deploy/create) run WITHOUT a prompt. \
 companion_requestFunding ALWAYS prompts, grant or not. Check companion_getStatus.grant to see if a \
 grant is active; request one yourself with companion_requestGrant (always prompts).",
-            "proving": "strkd bundles an ON-DEVICE prover for SNIP-36 (prove a private Starknet \
+            "proving": "Bramble Companion bundles an ON-DEVICE prover for SNIP-36 (prove a private Starknet \
 computation off-chain, verify only the result on-chain). The prover holds NO keys — it proves an \
 ALREADY-SIGNED transaction. SNIP-36 is TWO transactions: (Tx A) a PRIVATE virtual invoke (e.g. \
 your contract's create_proof(public, private)) that is signed + proven off-chain and NEVER \
@@ -111,7 +111,7 @@ broadcast; (Tx B) a verifier invoke (e.g. verify_result(public_message)) broadca
 carrying proof_facts + proof. Fastest path: companion_signAndProve signs Tx A and proves it in one \
 call (your private inputs never leave this machine), then you broadcast Tx B yourself with \
 wallet_addInvokeTransaction {proof_facts, proof, submit:true}. See the snip36_proving flow below. \
-CRITICAL: a virtual tx carries PRIVATE calldata, so you MUST pass explicit resource_bounds — strkd \
+CRITICAL: a virtual tx carries PRIVATE calldata, so you MUST pass explicit resource_bounds — Bramble Companion \
 refuses to fee-estimate it (estimating online would send your private inputs to the RPC node). \
 Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving, not in Tx A's hash). Proving \
 needs the native prover (bundled on-device) or a configured remote prover, plus a per-network RPC, \
@@ -142,21 +142,21 @@ nonce + fee are auto-filled; without one, supply nonce + resource_bounds yoursel
         "snip36_proving": {
             "what": "Prove a PRIVATE Starknet computation off-chain (SNIP-36) and verify only the \
 result on-chain — your private inputs never leave this machine. It is a TWO-transaction flow; \
-strkd automates the key-holding half (sign + prove), you broadcast the verifier tx. See \
+Bramble Companion automates the key-holding half (sign + prove), you broadcast the verifier tx. See \
 concepts.proving.",
             "steps": [
                 "1. Build the VIRTUAL call (Tx A) — your contract's virtual function, e.g. create_proof(public_input, private_input). Choose resource_bounds MANUALLY (~2× current gas prices); do NOT estimate (that would leak your private calldata to the RPC node).",
-                "2. Sign + prove in one step: companion_signAndProve {account_address, calls, resource_bounds, nonce, block_number?, chainId?} → {job_id}. strkd signs Tx A and proves it on-device; the signed tx is never broadcast. (nonce must equal the account nonce at the reference block.)",
+                "2. Sign + prove in one step: companion_signAndProve {account_address, calls, resource_bounds, nonce, block_number?, chainId?} → {job_id}. Bramble Companion signs Tx A and proves it on-device; the signed tx is never broadcast. (nonce must equal the account nonce at the reference block.)",
                 "3. Poll companion_proveStatus {job_id} until status is \"succeeded\" → result = {proof, proof_facts, l2_to_l1_messages} (or \"failed\" with an error).",
                 "4. Decode l2_to_l1_messages[0].payload into your verifier's public_message and build Tx B — the ON-CHAIN verifier call, e.g. verify_result(public_message).",
-                "5. Broadcast Tx B: wallet_addInvokeTransaction {account_address, calls:[<verifier call>], proof_facts, proof, resource_bounds, submit:true}. proof_facts extend the signed hash; proof rides along on broadcast (both required on submit). strkd cannot build Tx B for you — its calldata is app-specific.",
+                "5. Broadcast Tx B: wallet_addInvokeTransaction {account_address, calls:[<verifier call>], proof_facts, proof, resource_bounds, submit:true}. proof_facts extend the signed hash; proof rides along on broadcast (both required on submit). Bramble Companion cannot build Tx B for you — its calldata is app-specific.",
                 "Already hold a signed virtual tx (signed elsewhere)? Skip step 2 and call companion_prove {payload:{transaction:<signed invoke-v3>, block_number?}, network?} instead — same proof result."
             ]
         },
 
         "strk20_privacy": {
             "what": "Private balances in the Starknet privacy pool (STRK20, wallet-API 0.10.4). \
-Funds in the pool are notes only your account's viewing key can read or spend; strkd derives that \
+Funds in the pool are notes only your account's viewing key can read or spend; Bramble Companion derives that \
 key per call (same derivation as bramble, so the same seed sees the same notes) and never returns it.",
             "how_it_runs": "register, transfer and withdraw are PROVED ON THIS MACHINE (~20-70 s). \
 A deposit must be screened, so it is proved by a remote screening prover (the user's own, else \
@@ -176,17 +176,17 @@ other account. Each call is approval-gated and synchronous (expect up to ~1-2 mi
             "owner_contracts": "A deployed contract that advertises SRC5 is_custom_signature_valid \
 (interface 0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded) can own private notes: the pool asks \
 the contract itself to approve each spend. Enrol it with companion_strk20AddOwner (always prompts, even under a \
-grant); strkd then holds its viewing key, derived from one of your accounts (the controller). The contract's code \
+grant); Bramble Companion then holds its viewing key, derived from one of your accounts (the controller). The contract's code \
 sees that key and the channel keys of every batch while it is proved (the pool passes them to its check), so enrol \
 only contracts whose code you trust. List with \
 companion_strk20ListOwners, forget with companion_strk20RemoveOwner. Then PLAN a batch with \
-companion_strk20Plan {owner_address, register:true | actions:[…]}: strkd fixes the actions (signs and proves \
+companion_strk20Plan {owner_address, register:true | actions:[…]}: Bramble Companion fixes the actions (signs and proves \
 nothing) and returns plan_hash, the SNIP-12 digest of typed_data (companion_typedDataHash reproduces it with \
 account_address = the owner). The owner contract approves plan_hash on-chain; then PROVE it with \
 companion_strk20Prove {plan_id, signature:[…]} → {job_id} and poll companion_proveStatus. The owner's approval \
 must be in state at or before the reference block B, which defaults to head − 12: wait about 12 blocks after the \
 approval lands, or pass block_number ≥ the approval's block. Plans also work for your own accounts \
-(account_address); strkd signs those at prove time. owner_address on the wallet_strk20* methods still returns \
+(account_address); Bramble Companion signs those at prove time. owner_address on the wallet_strk20* methods still returns \
 -32601, and owner_address together with account_address is a 114.",
             "plans": "A plan lives in memory only: bound to the client that made it, expires_at (Unix ms) after \
 ttl_secs (default 3600, max 86400), and wiped when the wallet locks or restarts. One live plan per owner and pool \
@@ -202,10 +202,10 @@ in one transaction shows the pool that they share a sender (error 120). An owner
 recipients atomically can pass allow_linkage:true; the user then sees the list of recipients it links, even under a \
 grant, and summary.linkage_allowed is true. Accounts can't (114 LINKAGE_OWNERS_ONLY).",
             "prove": "companion_strk20Prove runs every check before queueing (errors come back at once with \
-data.reason), consumes the plan, and queues a proving job only your client can poll. strkd never signs for an \
+data.reason), consumes the plan, and queues a proving job only your client can poll. Bramble Companion never signs for an \
 owner: signature is the felts its is_custom_signature_valid reads, passed verbatim (required; [] if it only checks \
 the on-chain approval). submit:\"none\" (default) → result {call, proof}, submit it yourself like \
-wallet_strk20PrepareInvoke's; submit:\"account\" → strkd submits from submitter_address (default: the owner's \
+wallet_strk20PrepareInvoke's; submit:\"account\" → Bramble Companion submits from submitter_address (default: the owner's \
 controller), which pays the gas and the pool fee and is publicly linked to the owner → result {transaction_hash, \
 submitter_address, call}. A rejected owner signature fails the job with error_reason OWNER_SIGNATURE_REJECTED; the \
 plan is spent either way, so make and approve a new one. Results are kept 1 h and dropped when the wallet locks; \
@@ -257,7 +257,7 @@ that disclosure."
             { "method": "companion_reportIssue", "auth": true, "prompts": false,
               "params": "{ goal, needed, attempted?, observed?, limitation?, impact?, workaround_avoided?, title? }",
               "returns": "{ url, title, body, repo, filed:false, instructions }",
-              "note": "strkd is alpha — when you hit a limitation, call this to turn your STRKD-FEEDBACK fields into a PREFILLED GitHub new-issue link. goal + needed are required; the rest mirror the report template. It files NOTHING and stores no credential — your operator opens the returned `url`, reviews/edits it, and submits it in their own browser (so repo access + human review are the gate). Works whether the wallet is locked or not. See alpha_notice." },
+              "note": "Bramble Companion is alpha — when you hit a limitation, call this to turn your COMPANION-FEEDBACK fields into a PREFILLED GitHub new-issue link. goal + needed are required; the rest mirror the report template. It files NOTHING and stores no credential — your operator opens the returned `url`, reviews/edits it, and submits it in their own browser (so repo access + human review are the gate). Works whether the wallet is locked or not. See alpha_notice." },
             { "method": "companion_requestGrant", "auth": true, "prompts": true,
               "params": "{ days? }", "returns": "{ granted, expires_at, days }",
               "note": "Ask the user for an auto-approval window (1–90 days, default 30). Always prompts — a permission escalation is never auto-approved. While granted, your own-account ops skip prompts (funding still prompts). The user can also grant/revoke from the desktop Agents panel." },
@@ -288,14 +288,14 @@ that disclosure."
             { "method": "companion_signAndProve", "auth": true, "prompts": true,
               "params": "{ account_address, calls, resource_bounds, nonce?, block_number?, chainId?, label? }",
               "returns": "{ job_id, status: \"queued\", transaction_hash, next }",
-              "note": "ONE-STEP sign + on-device prove for SNIP-36: signs the VIRTUAL tx (\"Tx A\" — a normal v3 invoke calling your contract's virtual function, e.g. create_proof(public, private)) and hands the signed tx straight to the local prover, so the secret never leaves the machine and you skip the manual addInvoke(sign-only)→companion_prove round-trip. Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving). resource_bounds is REQUIRED — the virtual tx holds private calldata, so strkd refuses to fee-estimate it online (that would leak the inputs to the RPC); set bounds manually (~2× gas). nonce must equal the account nonce at the reference block. Returns a job id — poll companion_proveStatus; on success take result.proof / proof_facts / l2_to_l1_messages, decode the message into the verifier call, and BROADCAST the verifier invoke (\"Tx B\", e.g. verify_result(public_message)) via wallet_addInvokeTransaction { proof_facts, proof, submit:true }. strkd does not build Tx B — its calldata is app-specific. Approval-gated (signs a real tx, though it's proven locally and never broadcast)." },
+              "note": "ONE-STEP sign + on-device prove for SNIP-36: signs the VIRTUAL tx (\"Tx A\" — a normal v3 invoke calling your contract's virtual function, e.g. create_proof(public, private)) and hands the signed tx straight to the local prover, so the secret never leaves the machine and you skip the manual addInvoke(sign-only)→companion_prove round-trip. Tx A is NOT proof-carrying (proof_facts are an OUTPUT of proving). resource_bounds is REQUIRED — the virtual tx holds private calldata, so Bramble Companion refuses to fee-estimate it online (that would leak the inputs to the RPC); set bounds manually (~2× gas). nonce must equal the account nonce at the reference block. Returns a job id — poll companion_proveStatus; on success take result.proof / proof_facts / l2_to_l1_messages, decode the message into the verifier call, and BROADCAST the verifier invoke (\"Tx B\", e.g. verify_result(public_message)) via wallet_addInvokeTransaction { proof_facts, proof, submit:true }. Bramble Companion does not build Tx B — its calldata is app-specific. Approval-gated (signs a real tx, though it's proven locally and never broadcast)." },
 
             { "method": "wallet_signTypedData", "auth": true, "prompts": true,
-              "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "signature felts, encoded for the account's contract ([r, s] for OpenZeppelin, the only class strkd deploys today)",
+              "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "signature felts, encoded for the account's contract ([r, s] for OpenZeppelin, the only class Bramble Companion deploys today)",
               "note": "account_address must be one of yours. SNIP-12 REVISION 1 (Poseidon; StarkNet-Message prefix = short-string 'StarkNet Message'). The digest signed is exactly starknet.js typedData.getMessageHash(typed_data, account_address), so the account's on-chain is_valid_signature accepts the returned signature — that's the standard SNIP-12 committee/multisig approval pattern. To confirm the hash before/after signing, call companion_typedDataHash (no signing, no prompt)." },
             { "method": "companion_typedDataHash", "auth": true, "prompts": false,
               "params": "{ account_address, typed_data (SNIP-12 doc) }", "returns": "{ hash, revision: \"1\" }",
-              "note": "Pure, key-free: returns the SNIP-12 rev-1 message hash wallet_signTypedData would sign (== starknet.js typedData.getMessageHash). Use it to verify strkd's hashing matches yours and to know exactly which felt a returned signature covers for is_valid_signature. Works while locked; no approval." },
+              "note": "Pure, key-free: returns the SNIP-12 rev-1 message hash wallet_signTypedData would sign (== starknet.js typedData.getMessageHash). Use it to verify Bramble Companion's hashing matches yours and to know exactly which felt a returned signature covers for is_valid_signature. Works while locked; no approval." },
             { "method": "wallet_addInvokeTransaction", "auth": true, "prompts": true,
               "params": "{ account_address, calls, submit?, nonce?, resource_bounds?, proof_facts?, proof?, chainId? }",
               "call_shape": "calls = [{ contract_address, entry_point_selector, calldata: [felt…] }]. \
@@ -306,7 +306,7 @@ contractAddress/to for the address; entrypoint/entry_point/selector for the sele
               "snip36": "Proof-carrying invoke: pass proof_facts (felt[]) and the signed V3 hash is \
 extended with Poseidon(proof_facts) so the signature covers them (required at sign time). On \
 submit:true also pass proof (standard-base64 STWO string; surrounding whitespace is stripped and \
-url-safe '-'/'_' is rejected) — required to broadcast. With submit:true and the proof, strkd \
+url-safe '-'/'_' is rejected) — required to broadcast. With submit:true and the proof, Bramble Companion \
 estimates the fee WITH the proof attached (its on-chain verification dominates the fee), so \
 resource_bounds may be omitted. Sign-only without the proof needs explicit resource_bounds \
 (~2× current gas prices); companion_estimateFee does not include the proof and undercharges. Sign-only echoes proof_facts/proof so you can assemble the broadcast yourself. Omit both for a \
@@ -322,7 +322,7 @@ normal invoke." },
             { "method": "companion_strk20AddOwner", "auth": true, "prompts": true,
               "params": "{ owner_address, account_address?, label?, chainId? }",
               "returns": "{ owner_address, chain, pool, controller: { address, domain, index }, label, registered, viewing_public_key }",
-              "note": "Enrols an external contract as a STRK20 owner for the active (or given) chain's pool. account_address picks the controller (default: your first account); strkd derives the owner's viewing key from it and never returns the key, only its public key. ALWAYS prompts, even under a grant. Errors carry data.reason: OWNER_NOT_DEPLOYED (-32006, no contract at the address), OWNER_NO_CUSTOM_VALIDATION (-32006, supports_interface(0x2eb9…ded) is not true), OWNER_KEY_MISMATCH (-32006, already registered with the pool under a key this controller does not derive: it cannot be enrolled), OWNER_ALREADY_ENROLLED (-32006). An agent only ever sees owners it enrolled." },
+              "note": "Enrols an external contract as a STRK20 owner for the active (or given) chain's pool. account_address picks the controller (default: your first account); Bramble Companion derives the owner's viewing key from it and never returns the key, only its public key. ALWAYS prompts, even under a grant. Errors carry data.reason: OWNER_NOT_DEPLOYED (-32006, no contract at the address), OWNER_NO_CUSTOM_VALIDATION (-32006, supports_interface(0x2eb9…ded) is not true), OWNER_KEY_MISMATCH (-32006, already registered with the pool under a key this controller does not derive: it cannot be enrolled), OWNER_ALREADY_ENROLLED (-32006). An agent only ever sees owners it enrolled." },
             { "method": "companion_strk20ListOwners", "auth": true, "prompts": false,
               "params": "{}", "returns": "[{ owner_address, chain, pool, controller: { address, domain, index }, label }]",
               "note": "The owners you enrolled (an app client: the user's). No prompt." },
@@ -336,7 +336,7 @@ normal invoke." },
             { "method": "companion_strk20Prove", "auth": true, "prompts": "only if the prover changed since the plan or submit is \"account\"",
               "params": "{ plan_id, block_number?, signature?: [felt…], submit?: \"none\"|\"account\", submitter_address? }",
               "returns": "{ job_id, status: \"queued\", plan_id, plan_hash, plan_created_at, block_number, subject, submit, submitter_address?, next }",
-              "note": "Proves a stored plan against reference block B (default head − 12; must be ≤ head − 12, ≥ plan_block, and young enough that the proof lands inside the pool's proof window, keeping 120 blocks in hand). The owner's on-chain approval must be at or before B. Checks run first, synchronously: plan (PLAN_NOT_FOUND 114), subject still enrolled (OWNER_NOT_ENROLLED -32002), BLOCK_TOO_RECENT / BLOCK_BEFORE_PLAN / BLOCK_TOO_OLD (-32006), OWNER_NOT_DEPLOYED / OWNER_NO_CUSTOM_VALIDATION at B (-32006), PLAN_STALE (-32006: the subject's private state moved since the plan; the plan is dropped). Owner plans need signature (missing → 114 SIGNATURE_REQUIRED; passed verbatim, strkd never signs for an owner); account plans are signed by strkd (a signature → 114 SIGNATURE_NOT_ALLOWED). submit:\"relay\" → -32601 RELAY_UNSUPPORTED. The plan is consumed when the job is queued. Poll companion_proveStatus: result {call, proof, notes} (submit none) or {transaction_hash, submitter_address, call, notes} (account), notes being the plan's transfer-note locators; a failed job has error + error_reason (OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK, SUBMITTER_NOT_IN_SCOPE, or a submission reason); error is fixed text by class, never the prover's own output or a revert reason (contract code chooses those, and could put secrets in them). The job is never written to proof storage; its result is dropped 1 h after it finishes or when the wallet locks." },
+              "note": "Proves a stored plan against reference block B (default head − 12; must be ≤ head − 12, ≥ plan_block, and young enough that the proof lands inside the pool's proof window, keeping 120 blocks in hand). The owner's on-chain approval must be at or before B. Checks run first, synchronously: plan (PLAN_NOT_FOUND 114), subject still enrolled (OWNER_NOT_ENROLLED -32002), BLOCK_TOO_RECENT / BLOCK_BEFORE_PLAN / BLOCK_TOO_OLD (-32006), OWNER_NOT_DEPLOYED / OWNER_NO_CUSTOM_VALIDATION at B (-32006), PLAN_STALE (-32006: the subject's private state moved since the plan; the plan is dropped). Owner plans need signature (missing → 114 SIGNATURE_REQUIRED; passed verbatim, Bramble Companion never signs for an owner); account plans are signed by Bramble Companion (a signature → 114 SIGNATURE_NOT_ALLOWED). submit:\"relay\" → -32601 RELAY_UNSUPPORTED. The plan is consumed when the job is queued. Poll companion_proveStatus: result {call, proof, notes} (submit none) or {transaction_hash, submitter_address, call, notes} (account), notes being the plan's transfer-note locators; a failed job has error + error_reason (OWNER_SIGNATURE_REJECTED, INVALID_SIGNATURE, PROVING_FAILED, WIPED_ON_LOCK, SUBMITTER_NOT_IN_SCOPE, or a submission reason); error is fixed text by class, never the prover's own output or a revert reason (contract code chooses those, and could put secrets in them). The job is never written to proof storage; its result is dropped 1 h after it finishes or when the wallet locks." },
             { "method": "companion_strk20DiscardPlan", "auth": true, "prompts": false,
               "params": "{ plan_id }", "returns": "true",
               "note": "Drops one of your plans (it is wiped). Unknown, expired, already discarded or another client's → 114 with data.reason PLAN_NOT_FOUND." },
@@ -383,7 +383,7 @@ commitment comes with shadow-account invokes.",
             "-32003": "TRANSPORT_REJECTED — missing X-Companion-Client, non-loopback Host, or Origin present",
             "-32004": "NODE_ERROR — fee estimate / nonce / broadcast failed at the Starknet node",
             "-32005": "NO_NODE — broadcast/estimate needs a node; pass nonce + resource_bounds, or ask the user to set an RPC URL",
-            "-32006": "PRECONDITION_FAILED — the request is valid but on-chain state blocks it (e.g. the manager/funding-source account is not deployed on the active network, or the account is already deployed). The message names the account + the human fix. Surface it to the user. With data.reason INSUFFICIENT_BALANCE_FOR_BOUNDS: the paying account's STRK can't cover the fee bounds even after strkd tightened them toward the estimate (the message gives estimated fee, max fee and balance in STRK) — fund the account or pass explicit resource_bounds.",
+            "-32006": "PRECONDITION_FAILED — the request is valid but on-chain state blocks it (e.g. the manager/funding-source account is not deployed on the active network, or the account is already deployed). The message names the account + the human fix. Surface it to the user. With data.reason INSUFFICIENT_BALANCE_FOR_BOUNDS: the paying account's STRK can't cover the fee bounds even after Bramble Companion tightened them toward the estimate (the message gives estimated fee, max fee and balance in STRK) — fund the account or pass explicit resource_bounds.",
             "-32601": "NOT_IMPLEMENTED — method not available in this build",
             "-32700": "PARSE_ERROR — body is not valid JSON"
         },

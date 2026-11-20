@@ -12,7 +12,7 @@
 //! Requests carry the user's AVNU key in `x-paymaster-api-key` (verified
 //! against AVNU's mainnet and Sepolia endpoints, which reject a missing key).
 //! Only the deposit-free `apply_action` route is supported: deposits are public
-//! anyway and strkd submits them from the user's own account.
+//! anyway and Bramble Companion submits them from the user's own account.
 
 use std::time::Duration;
 

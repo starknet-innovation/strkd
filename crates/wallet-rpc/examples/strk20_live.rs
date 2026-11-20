@@ -1,4 +1,4 @@
-//! Live check of strkd's STRK20 JSON-RPC methods on Sepolia, through the real
+//! Live check of Bramble Companion's STRK20 JSON-RPC methods on Sepolia, through the real
 //! `dispatch` path (pairing, approval, session, prover, node).
 //!
 //! ```text
@@ -31,9 +31,9 @@
 //!
 //! `<account>`, `<from>`, `<to>` are test-seed user account indices (the
 //! published BIP-39 all-`abandon` vector; never real keys) already deployed and
-//! registered on the pool. The pool defaults to strkd's Sepolia test pool
+//! registered on the pool. The pool defaults to Bramble Companion's Sepolia test pool
 //! (`STRK20_POOL` overrides). Proving uses the bundled native prover:
-//! `STRKD_SNIP36_BIN` / `STRKD_SNIP36_WORK_DIR` must point at it (the desktop
+//! `BRAMBLE_COMPANION_SNIP36_BIN` / `BRAMBLE_COMPANION_SNIP36_WORK_DIR` must point at it (the desktop
 //! app's `resources/prover`). Approvals are automatic.
 //!
 //! `prepare-deposit` exercises the testnet local screener (#57): it prepares a
@@ -87,7 +87,7 @@ async fn main() {
         });
     }
     let session = WalletSession::new_unlocked(ChainId::Sepolia, MNEMONIC, "live-check", reg);
-    let data_dir = std::env::temp_dir().join(format!("strkd-strk20-live-{}", std::process::id()));
+    let data_dir = std::env::temp_dir().join(format!("bramble-companion-strk20-live-{}", std::process::id()));
     let prover = prover::build_prover_state(data_dir.clone(), &prover::ProverConfig { prover_backend: "native".into() });
     let mut settings = prover.settings.get().await;
     settings.testnet.rpc_url = RPC.into();

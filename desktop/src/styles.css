@@ -3,7 +3,7 @@
  * (packages/presentation/ui-kit/src/theme/) so the two wallets read as one
  * product. Scales are values, so they port exactly; the component vocabulary
  * they serve is a reimplementation, since bramble is framework-free HTML-string
- * renderers and this is React. See strkd#18.
+ * renderers and this is React. See bramble-companion#18.
  *
  * The system is deliberately ACHROMATIC: hierarchy comes from contrast, weight,
  * space and motion, with colour reserved for positive/danger/degraded
@@ -216,7 +216,7 @@ h3 {
  * controls.ts`): variants primary | secondary | ghost, a `small` size, and
  * `danger` as a TONE that combines with a variant rather than a fourth variant.
  * The templates cannot be shared — bramble renders HTML strings, this is React —
- * so this is the same contract reimplemented, not a port. See strkd#19.
+ * so this is the same contract reimplemented, not a port. See bramble-companion#19.
  * ------------------------------------------------------------------------- */
 
 .input {

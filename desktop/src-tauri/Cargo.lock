@@ -587,6 +587,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bramble-companion-desktop"
+version = "0.4.0"
+dependencies = [
+ "image",
+ "prover",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tokio",
+ "wallet-core",
+ "wallet-rpc",
+ "zeroize",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5122,23 +5139,6 @@ dependencies = [
  "starknet-types-core",
  "thiserror 1.0.69",
  "wallet-core",
-]
-
-[[package]]
-name = "strkd-desktop"
-version = "0.4.0"
-dependencies = [
- "image",
- "prover",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tokio",
- "wallet-core",
- "wallet-rpc",
- "zeroize",
 ]
 
 [[package]]

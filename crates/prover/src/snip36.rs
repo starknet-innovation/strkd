@@ -2,7 +2,7 @@
 //!
 //! Backend-independent logic lives here: nonce preflight, the env the CLI needs,
 //! output parsing, and the process-group-managed CLI runner. (`../dinner` shared
-//! this between a native and a docker backend; strkd ships only the native one,
+//! this between a native and a docker backend; Bramble Companion ships only the native one,
 //! so `run_and_parse` — the process-group reaper that lived in `docker_prover` —
 //! now lives here next to the other shared helpers.)
 
@@ -185,7 +185,7 @@ pub fn classify_prover_error(stderr: &str) -> String {
             raw(stderr)
         )
     } else if low.contains("port") && low.contains("already in use") {
-        format!("prover port in use (stale runner) — retry; strkd picks a fresh port per prove. raw: {}", raw(stderr))
+        format!("prover port in use (stale runner) — retry; Bramble Companion picks a fresh port per prove. raw: {}", raw(stderr))
     } else if low.contains("invalid starknet version") || low.contains("convert block header") {
         format!(
             "the bundled prover does not support this network's Starknet protocol version — it \
@@ -219,7 +219,7 @@ pub struct ProveInputs {
 
 /// Invariant: the prover never signs, so it rejects an unsigned transaction up
 /// front. The `signature` field must be an array; it must also be non-empty
-/// unless `allow_empty` (strkd's STRK20 paths only: an owner contract decides
+/// unless `allow_empty` (Bramble Companion's STRK20 paths only: an owner contract decides
 /// what its signature means, and `[]` can be valid for it).
 fn check_signed(tx: &Value, allow_empty: bool) -> Result<(), String> {
     let signed = match tx.get("signature").and_then(|s| s.as_array()) {
@@ -337,7 +337,7 @@ async fn check_nonce(http: &reqwest::Client, rpc: &str, tx: &Value, block: u64) 
 /// Run a configured `prove virtual-os` command and parse its outputs from `dir`.
 ///
 /// Runs the CLI in its own process group (unix) with a timeout
-/// (`STRKD_PROVE_TIMEOUT_SECS`, default 900): on timeout or failure the whole
+/// (`BRAMBLE_COMPANION_PROVE_TIMEOUT_SECS`, default 900): on timeout or failure the whole
 /// group is killed, so the runner the CLI spawns can't outlive the job and leak
 /// its port. The group is also killed if this future is dropped while the CLI
 /// runs (a cancelled job: the wallet locked). Recognized failures get a
@@ -437,7 +437,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn dropping_a_running_prove_kills_its_process_group() {
-        let dir = std::env::temp_dir().join(format!("strkd-snip36-cancel-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bramble-companion-snip36-cancel-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let pidfile = dir.join("grandchild.pid");

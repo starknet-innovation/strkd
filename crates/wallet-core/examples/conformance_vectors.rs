@@ -43,7 +43,7 @@ fn main() {
     // SNIP-12 rev 1 digests (the #7 defect lived here): a minimal message and
     // one that exercises the common basic types and a nested struct.
     // `string` and `selector` were wrong/unsupported before the krusty#111 pin
-    // (strkd#32), so they are pinned here explicitly.
+    // (bramble-companion#32), so they are pinned here explicitly.
     //
     // `i128` is written as a JSON number: krusty's encoder (starknet-rust-core
     // 0.19.1) rejects it as a string, and rejects non-negative values entirely.
@@ -158,16 +158,16 @@ fn main() {
     let doc = serde_json::json!({
         "_provenance": {
             "purpose": "Cross-wallet conformance: seed -> public key -> account address. \
-strkd asserts against this in tests/conformance.rs; bramble can adopt the same file.",
+Bramble Companion asserts against this in tests/conformance.rs; bramble can adopt the same file.",
             "generated_by": "cargo run --example conformance_vectors (wallet-core)",
             "verified_against": "conformance/verify.mjs (pinned starknet.js + @scure/bip32 + @scure/bip39), run in CI: \
 re-derives every public key from the mnemonic (BIP-32 path -> EIP-2645 grindKey), every address via \
 hash.calculateContractAddressFromHash (exactly the call bramble makes), every SNIP-12 digest via \
 typedData.getMessageHash and every invoke hash via hash.calculateInvokeTransactionHash, independently of krusty.",
             "warning": "Regenerating is not verifying. If a value here changes, re-check it against an \
-independent implementation before committing, or this file just asserts strkd against itself.",
+independent implementation before committing, or this file just asserts Bramble Companion against itself.",
             "seed": "Published BIP-39 test vector. Never a real seed — see spec §14.",
-            "issue": "https://github.com/starknet-innovation/strkd/issues/17"
+            "issue": "https://github.com/starknet-innovation/bramble-companion/issues/17"
         },
         "mnemonic": TEST_MNEMONIC,
         "coin_type": wallet_core::STARKNET_COIN_TYPE,
@@ -178,7 +178,7 @@ independent implementation before committing, or this file just asserts strkd ag
         "typed_data_vectors": typed_vectors,
         "known_divergences": [
             "SNIP-12 rev 1 `i128`: krusty (via starknet-rust-core 0.19.1) accepts only a negative JSON number; \
-it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. strkd refuses \
+it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. Bramble Companion refuses \
 to sign such messages (fails closed); when it does sign, the digest matches."
         ],
         "invoke_v3_vectors": invoke_vectors,

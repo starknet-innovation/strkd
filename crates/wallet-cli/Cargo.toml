@@ -1,13 +1,13 @@
 [package]
-name = "strkd"
+name = "bramble-companion"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "strkd CLI: a thin client for the local wallet-companion service. Discovers the running app via port.lock, pairs, and speaks the wallet_*/companion_* JSON-RPC API."
+description = "Bramble Companion CLI: a thin client for the local wallet-companion service. Discovers the running app via port.lock, pairs, and speaks the wallet_*/companion_* JSON-RPC API."
 
 [[bin]]
-name = "strkd"
+name = "bramble-companion"
 path = "src/main.rs"
 
 # Deliberately a *thin client*: it talks to the loopback service over HTTP and

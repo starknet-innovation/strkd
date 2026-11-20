@@ -6,7 +6,7 @@
 //! goes into the transaction hash the account's `__validate_declare__` checks
 //! the signature against. A wallet that signs a caller-supplied `class_hash`
 //! which does not match the class actually broadcast therefore produces a
-//! signature the node rejects as invalid (strkd #9). Deriving the hash here,
+//! signature the node rejects as invalid (#9). Deriving the hash here,
 //! from the exact object we broadcast, closes that gap.
 //!
 //! Algorithm (`cairo-lang-starknet-classes` `ContractClass::hash`, matched by

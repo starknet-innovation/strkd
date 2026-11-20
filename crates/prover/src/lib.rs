@@ -1,4 +1,4 @@
-//! `prover` — strkd's on-device proving companion (ported from `../dinner`).
+//! `prover` — Bramble Companion's on-device proving companion (ported from `../dinner`).
 //!
 //! Hand it an opaque, **already-signed** payload + a network; it proves
 //! on-device (native SNIP-36 / stwo) or via a network's configured remote
@@ -8,7 +8,7 @@
 //! `wallet-core`.
 //!
 //! Unlike `../dinner`, this crate has **no standalone HTTP server**: proving is
-//! exposed over strkd's authenticated loopback JSON-RPC service (`wallet-rpc`)
+//! exposed over Bramble Companion's authenticated loopback JSON-RPC service (`wallet-rpc`)
 //! and the desktop app's IPC. The shared orchestration ([`enqueue_prove`]) and
 //! state ([`ProverState`]) live here so both callers run one code path.
 //!

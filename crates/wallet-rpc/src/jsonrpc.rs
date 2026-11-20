@@ -15,7 +15,7 @@ pub struct Request {
     pub id: Value,
 }
 
-/// A JSON-RPC error object. `data` is optional and omitted when unset; strkd
+/// A JSON-RPC error object. `data` is optional and omitted when unset; Bramble Companion
 /// puts `{ reason }` there for errors that carry a machine-readable reason
 /// (`WalletRpcError::with_reason`).
 #[derive(Debug, Clone, Serialize)]

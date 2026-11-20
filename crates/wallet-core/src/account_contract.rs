@@ -11,7 +11,7 @@
 //! it threads through signing, broadcasting, and the sign-only responses, and
 //! every caller that reaches for `(r, s)` directly is a site that would need
 //! revisiting. See
-//! [issue #15](https://github.com/starknet-innovation/strkd/issues/15).
+//! [issue #15](https://github.com/starknet-innovation/bramble-companion/issues/15).
 //!
 //! ## Adding a class
 //!
@@ -75,7 +75,7 @@ impl AccountContract {
     /// OpenZeppelin uses **zero**, matching bramble, which passes `"0x0"`
     /// explicitly rather than relying on any library default. Bramble has
     /// deployed mainnet accounts at those addresses and cannot cheaply move;
-    /// strkd was alpha, so strkd moved (strkd#16).
+    /// Bramble Companion was alpha, so Bramble Companion moved (bramble-companion#16).
     ///
     /// This is deliberately **not** krusty's default. krusty defaults both of
     /// its OZ address entry points to the public key (since `4639de5`,

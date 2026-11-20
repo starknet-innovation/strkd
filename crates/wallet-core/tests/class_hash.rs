@@ -1,4 +1,4 @@
-//! Sierra class-hash derivation (strkd #9): our hash must equal what a node
+//! Sierra class-hash derivation (#9): our hash must equal what a node
 //! derives from the broadcast `contract_class`, or the DECLARE signature fails
 //! on-chain validation. Fixtures are public artifacts; no key material.
 

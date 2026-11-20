@@ -13,7 +13,7 @@ cd desktop
 
 The pinned prover version lives in [`../../scripts/prover-pin.env`](../../scripts/prover-pin.env).
 After staging, this dir contains `snip36`, `deps/`, and `sample-input/`. At
-runtime `src-tauri/src/lib.rs` points `STRKD_SNIP36_BIN` / `STRKD_SNIP36_WORK_DIR`
+runtime `src-tauri/src/lib.rs` points `BRAMBLE_COMPANION_SNIP36_BIN` / `BRAMBLE_COMPANION_SNIP36_WORK_DIR`
 here so a packaged app proves with no external checkout.
 
 Only this `README.md` is tracked in git (so the `resources/prover/**/*` bundle

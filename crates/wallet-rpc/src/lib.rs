@@ -13,6 +13,7 @@
 
 pub mod approval;
 pub mod auth;
+pub mod data_migration;
 pub mod dispatch;
 pub mod error;
 pub mod fee;

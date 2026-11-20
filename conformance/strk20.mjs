@@ -1,6 +1,6 @@
 // Independent re-derivation of crates/strk20/tests/fixtures/strk20-vectors.json.
 //
-// strkd generates that fixture with its Rust port of StarkWare's privacy SDK.
+// Bramble Companion generates that fixture with its Rust port of StarkWare's privacy SDK.
 // This script recomputes every value from the protocol definitions with pinned,
 // unrelated libraries (starknet.js poseidon/curve/signing, @scure for the seed),
 // following the formulas in the pool's hashes.cairo / utils.cairo and the SDK's

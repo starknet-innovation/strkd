@@ -89,7 +89,7 @@ pub async fn channel_key(
     if recipient == ctx.user {
         return Err(invalid(
             "recipient is the sender itself: its channel to itself carries all of its change and deposit notes, \
-             so strkd never discloses it",
+             so Bramble Companion never discloses it",
         )
         .with_reason("SELF_CHANNEL"));
     }

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "On-device proving companion for strkd: hand it an already-signed payload, it proves locally (SNIP-36 / stwo) and returns the proof. Holds no key material."
+description = "On-device proving companion for Bramble Companion: hand it an already-signed payload, it proves locally (SNIP-36 / stwo) and returns the proof. Holds no key material."
 
 [dependencies]
 serde = { workspace = true }

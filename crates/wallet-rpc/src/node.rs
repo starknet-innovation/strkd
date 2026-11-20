@@ -180,7 +180,7 @@ pub fn invoke_v3_tx_json(
     let mut tx = json!({
         "type": "INVOKE",
         "version": "0x3",
-        // Zero-padded to 64 hex, matching strkd's account addresses elsewhere so
+        // Zero-padded to 64 hex, matching Bramble Companion's account addresses elsewhere so
         // callers can compare sender_address directly.
         "sender_address": format!("0x{:064x}", sender),
         "calldata": calldata.iter().map(fh).collect::<Vec<_>>(),

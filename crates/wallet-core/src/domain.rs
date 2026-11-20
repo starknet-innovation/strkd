@@ -17,7 +17,7 @@
 //! **User accounts walk the account index**, because that is what bramble's
 //! recovery scan enumerates (`accountIndex` 0–19, address index fixed at 0). A
 //! seed imported into either wallet therefore surfaces the same accounts. Before
-//! [#16](https://github.com/starknet-innovation/strkd/issues/16) strkd walked
+//! [#16](https://github.com/starknet-innovation/bramble-companion/issues/16) Bramble Companion walked
 //! the address index instead, so only account 0 agreed.
 //!
 //! **Agent accounts sit under one reserved account index and walk the address
@@ -37,7 +37,7 @@
 //! wallet given a manual index could still derive here. Bramble is being asked
 //! to exclude it explicitly (`mc-wallet#336`).
 //!
-//! **strkd enforces it.** Because user account *n* sits at account index *n*, an
+//! **Bramble Companion enforces it.** Because user account *n* sits at account index *n*, an
 //! unbounded user index *would* reach the agent branch (and, at `0x80000000` or
 //! above, wrap: the hardened bit is ORed in, so `0xC1474E54` derives the same
 //! key as `0x41474E54`). [`Domain::check_index`] bounds both branches, and every

@@ -5,7 +5,7 @@ use wallet_rpc::{ClientKind, ClientStore};
 
 #[test]
 fn pairings_and_grants_persist_across_reopen() {
-    let dir = std::env::temp_dir().join(format!("strkd-clients-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-clients-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("clients.json");
 
@@ -37,7 +37,7 @@ fn pairings_and_grants_persist_across_reopen() {
 
 #[test]
 fn revoked_grant_persists_as_revoked() {
-    let dir = std::env::temp_dir().join(format!("strkd-clients2-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-clients2-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("clients.json");
 

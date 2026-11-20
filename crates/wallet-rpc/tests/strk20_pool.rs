@@ -1,7 +1,7 @@
 //! STRK20 pool selection (#57): the per-network pool from Settings → STRK20
 //! reaches every method, approval prompts name a non-canonical pool, callers
 //! can't redirect the pool, and a testnet pool's local screener key attests
-//! deposits without ever leaving strkd (and is refused on mainnet).
+//! deposits without ever leaving Bramble Companion (and is refused on mainnet).
 //!
 //! Dispatch-level, against a mock node and a stub prover: no network, no
 //! chain. Keys: the published BIP-39 all-`abandon` vector and starknet-privacy's
@@ -18,7 +18,7 @@ use wallet_rpc::{dispatch, ChannelApprover, Decision, FeeBounds, NodeError, Requ
 
 const TEST_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-/// strkd's self-deployed Sepolia test pool (mainnet class, screener `0xCAFEBABE`).
+/// Bramble Companion's self-deployed Sepolia test pool (mainnet class, screener `0xCAFEBABE`).
 const TEST_POOL: &str = "0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323";
 const TEST_SCREENER: &str = "0xCAFEBABE";
 
@@ -177,7 +177,7 @@ async fn harness(tag: &str, node: Arc<PoolNode>, reject: &'static [&'static str]
             let _ = pending.respond.send(decision);
         }
     });
-    let dir = std::env::temp_dir().join(format!("strkd-strk20-pool-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-strk20-pool-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let settings = prover::SettingsStore::load(dir.join("settings.json"));
     let mut s = settings.get().await;
@@ -302,7 +302,7 @@ async fn plan_uses_and_flags_the_configured_pool() {
     assert!(p.contains(&format!("NON-CANONICAL pool {:#x}", felt(TEST_POOL))), "prompt len {}", p.len());
 }
 
-/// A caller can't point strkd at another contract: `pool_address` must be the
+/// A caller can't point Bramble Companion at another contract: `pool_address` must be the
 /// configured pool, and only asserts it.
 #[tokio::test]
 async fn pool_address_param_must_match_the_configured_pool() {

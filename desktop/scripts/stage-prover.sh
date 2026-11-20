@@ -3,7 +3,7 @@
 #
 # Copies only the runtime artifacts `snip36 prove virtual-os` needs (~286 MB:
 # the CLI, the sequencer runner + sierra compiler, and the crates' resource
-# JSONs) — NOT the ~9.6 GB of build intermediates. Verified: strkd's native
+# JSONs) — NOT the ~9.6 GB of build intermediates. Verified: Bramble Companion's native
 # backend proves against exactly this set.
 #
 # Run before `npm run tauri build`. The staged dir is gitignored.

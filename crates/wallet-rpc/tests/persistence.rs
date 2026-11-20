@@ -41,7 +41,7 @@ async fn pair_agent(state: &ServerState) -> String {
 
 #[tokio::test]
 async fn agent_account_creation_persists_to_disk_and_survives_reopen() {
-    let dir = std::env::temp_dir().join(format!("strkd-persist-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-persist-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let vault_path = dir.join("vault.bin");
 
@@ -89,7 +89,7 @@ async fn agent_account_creation_persists_to_disk_and_survives_reopen() {
 
 #[tokio::test]
 async fn wrong_passphrase_cannot_open_persisted_vault() {
-    let dir = std::env::temp_dir().join(format!("strkd-persist2-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-persist2-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let vault_path = dir.join("vault.bin");
     let store = VaultStore::new(&vault_path);

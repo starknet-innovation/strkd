@@ -1,11 +1,11 @@
 [package]
-name = "strkd-desktop"
+name = "bramble-companion-desktop"
 version = "0.4.0"
 edition = "2021"
-description = "strkd — Starknet wallet companion (desktop menu-bar app)"
+description = "Bramble Companion — Starknet wallet companion (desktop menu-bar app)"
 
 [lib]
-name = "strkd_desktop_lib"
+name = "bramble_companion_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

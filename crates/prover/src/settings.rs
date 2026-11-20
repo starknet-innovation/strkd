@@ -43,7 +43,7 @@ pub struct Strk20Config {
     #[serde(default)]
     pub deposit_prover_url: String,
     /// AVNU paymaster API key: transfers and withdrawals are relayed privately
-    /// through AVNU's `sponsored_private` mode. Without it, strkd only prepares
+    /// through AVNU's `sponsored_private` mode. Without it, Bramble Companion only prepares
     /// them (`wallet_strk20PrepareInvoke`) for submission from another account.
     #[serde(default)]
     pub avnu_api_key: String,
@@ -52,10 +52,10 @@ pub struct Strk20Config {
     pub paymaster_url: String,
     /// **Testnet only.** The screener private key of a privacy pool you
     /// deployed yourself (the pool's constructor takes its screener public
-    /// key). With it, deposits are proved on this machine and strkd signs the
+    /// key). With it, deposits are proved on this machine and Bramble Companion signs the
     /// screening attestation, instead of asking a screening prover. A secret:
     /// IPC-only like the API keys, never logged, never returned over the
-    /// loopback service, and masked when read back by the desktop UI. strkd
+    /// loopback service, and masked when read back by the desktop UI. Bramble Companion
     /// refuses it on mainnet (settings validation and at deposit time) and
     /// checks it against the pool's `get_screener_public_key` before use.
     #[serde(default)]
@@ -102,7 +102,7 @@ pub struct Settings {
     pub mainnet: NetworkConfig,
     #[serde(default)]
     pub testnet: NetworkConfig,
-    /// Prover backend: `""` (use the `STRKD_PROVER` env / default), `native`, or
+    /// Prover backend: `""` (use the `BRAMBLE_COMPANION_PROVER` env / default), `native`, or
     /// `remote` (legacy: `companion`). Applied at startup, so changes take
     /// effect on restart.
     #[serde(default)]
@@ -230,7 +230,7 @@ mod tests {
     #[tokio::test]
     async fn settings_file_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("strkd-settings-perm-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("bramble-companion-settings-perm-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = SettingsStore::load(dir.join("settings.json"));
         store.update(Settings::default()).await.unwrap();

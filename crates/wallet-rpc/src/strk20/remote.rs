@@ -236,7 +236,7 @@ fn random_key() -> String {
     hex::encode(b)
 }
 
-/// Turn a prover result into the pieces strkd uses.
+/// Turn a prover result into the pieces Bramble Companion uses.
 pub struct ProvedInvocation {
     pub proof: String,
     pub proof_facts: Vec<Felt>,

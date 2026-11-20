@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    strkd_desktop_lib::run()
+    bramble_companion_desktop_lib::run()
 }

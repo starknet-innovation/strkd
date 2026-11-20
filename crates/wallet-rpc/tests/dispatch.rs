@@ -371,7 +371,7 @@ async fn sign_typed_data_returns_signature_when_approved() {
     assert!(arr[0].as_str().unwrap().starts_with("0x"));
 }
 
-/// strkd #7 regression: `companion_typedDataHash` reports the exact SNIP-12
+/// #7 regression: `companion_typedDataHash` reports the exact SNIP-12
 /// rev-1 digest that `wallet_signTypedData` signs, and the account's own public
 /// key validates the `[r, s]` over that digest — i.e. the account's on-chain
 /// `is_valid_signature(hash, [r, s])` would accept it. Before the krusty-kms
@@ -384,7 +384,7 @@ async fn typed_data_hash_is_the_signed_digest_and_verifies_under_account_key() {
     let token = pair(&state, "app").await;
     let td = sample_typed_data();
 
-    // The hash strkd would sign (no prompt, no key).
+    // The hash Bramble Companion would sign (no prompt, no key).
     let hash_resp = call(
         &state,
         Some(&token),
@@ -537,7 +537,7 @@ async fn strk20_balances_need_approval() {
 
 /// The loopback service must never expose seed reveal. It is IPC-only by
 /// design (see `wallet_rpc::reveal_mnemonic`): this service is reachable by any
-/// local process, including the AI agents strkd exists to serve, and spec §5.1
+/// local process, including the AI agents Bramble Companion exists to serve, and spec §5.1
 /// is that it never returns key material.
 ///
 /// This test exists so that adding such a method is a deliberate act that
@@ -700,7 +700,7 @@ async fn add_declare_sign_only_returns_a_broadcastable_transaction() {
     assert_eq!(r["class_hash"], json!("0x1234"));
     assert_eq!(r["signature"].as_array().unwrap().len(), 2);
 
-    // strkd #9: the sign-only transaction must be COMPLETE — every field the
+    // #9: the sign-only transaction must be COMPLETE — every field the
     // RPC's BROADCASTED_DECLARE_TXN_V3 requires, signature included — not the
     // handful of fields the caller happened to pass in.
     let tx = &r["signed_transaction"];
@@ -752,7 +752,7 @@ async fn add_declare_signs_the_hash_the_account_will_validate() {
     // The reported tx hash is the canonical DECLARE_V3 hash over that class
     // hash, and the account's own key validates the signature over it — the
     // on-chain __validate_declare__ check, done locally with a test seed
-    // (strkd #9: this is what was failing as "invalid signature" on Sepolia).
+    // (#9: this is what was failing as "invalid signature" on Sepolia).
     let expected = declare_v3_hash(
         &Felt::from_hex(&address).unwrap(),
         &Felt::from_hex(COUNTER_CLASS_HASH).unwrap(),
@@ -946,7 +946,7 @@ async fn add_invoke_submit_proof_carrying_requires_proof() {
 
 #[tokio::test]
 async fn add_invoke_proof_normalizes_whitespace() {
-    // Prover CLI artifacts are often newline-terminated / line-wrapped. strkd
+    // Prover CLI artifacts are often newline-terminated / line-wrapped. Bramble Companion
     // strips ASCII whitespace so the broadcast carries clean base64 (a stray
     // newline is a likely cause of node error 69 'proof field invalid').
     let state = state_with(Decision::Approve, false);
@@ -983,7 +983,7 @@ async fn add_invoke_proof_carrying_without_bounds_refuses_estimation() {
     // A proof-carrying invoke must carry explicit resource_bounds. Auto fee
     // estimation simulates the call without proof_facts in tx_info, so a contract
     // reading them (e.g. proof_facts.at(8)) reverts during estimation. A node is
-    // configured here, so this proves strkd refuses to estimate rather than
+    // configured here, so this proves Bramble Companion refuses to estimate rather than
     // merely lacking a node to estimate against.
     let state = state_with_node(Decision::Approve, "0x0", "0xc0ffee");
     let (_, address) = user_registry();
@@ -1744,7 +1744,7 @@ async fn report_issue_builds_prefilled_github_url() {
     let v = resp.result.expect("report_issue should succeed");
     let url = v["url"].as_str().unwrap();
     assert!(
-        url.starts_with("https://github.com/starknet-innovation/strkd/issues/new?title="),
+        url.starts_with("https://github.com/starknet-innovation/bramble-companion/issues/new?title="),
         "url = {url}"
     );
     assert!(url.contains("&body="));
@@ -1753,7 +1753,7 @@ async fn report_issue_builds_prefilled_github_url() {
     assert!(!url.contains('\n'));
     assert!(v["title"].as_str().unwrap().starts_with("[agent-feedback] "));
     assert_eq!(v["filed"], json!(false));
-    assert_eq!(v["repo"], json!("starknet-innovation/strkd"));
+    assert_eq!(v["repo"], json!("starknet-innovation/bramble-companion"));
     let body = v["body"].as_str().unwrap();
     assert!(body.contains("paymaster"));
     assert!(body.contains("**Needed:**"));
@@ -1854,7 +1854,7 @@ impl prover::Prover for StubProver {
 /// binary or network needed).
 fn state_with_prover(tag: &str) -> Arc<ServerState> {
     let data_dir =
-        std::env::temp_dir().join(format!("strkd-rpc-prove-test-{}-{}", tag, std::process::id()));
+        std::env::temp_dir().join(format!("bramble-companion-rpc-prove-test-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
     let pstate = Arc::new(prover::ProverState {
         prover: Arc::new(StubProver),
@@ -1966,7 +1966,7 @@ async fn sign_and_prove_signs_the_virtual_tx_and_enqueues_it() {
 
 #[tokio::test]
 async fn sign_and_prove_requires_explicit_resource_bounds() {
-    // The virtual tx carries private calldata, so strkd must NOT fee-estimate it
+    // The virtual tx carries private calldata, so Bramble Companion must NOT fee-estimate it
     // online — missing resource_bounds is rejected up front (114), not estimated.
     let state = state_with_prover("signprove-bounds");
     let (_, address) = user_registry();
@@ -1993,7 +1993,7 @@ async fn sign_and_prove_rejected_maps_to_113() {
             let _ = pending.respond.send(decision);
         }
     });
-    let dir = std::env::temp_dir().join(format!("strkd-rpc-prove-rej-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-rpc-prove-rej-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let pstate = Arc::new(prover::ProverState {
         prover: Arc::new(StubProver),
@@ -2134,7 +2134,7 @@ async fn strk20_register_with(tag: &str, node: Arc<Strk20Node>) -> Response {
             let _ = pending.respond.send(decision);
         }
     });
-    let dir = std::env::temp_dir().join(format!("strkd-rpc-strk20-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-rpc-strk20-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let pstate = Arc::new(prover::ProverState {
         prover: Arc::new(StubProver),
@@ -2316,7 +2316,7 @@ fn reason(resp: &Response) -> Option<String> {
     resp.error.as_ref()?.data.as_ref()?["reason"].as_str().map(str::to_string)
 }
 
-/// The owner's viewing public key as strkd derives it from user account 0
+/// The owner's viewing public key as Bramble Companion derives it from user account 0
 /// (test seed) on Sepolia's canonical pool.
 fn expected_owner_public_key() -> Felt {
     let key = wallet_core::strk20_owner_viewing_key(
@@ -2433,7 +2433,7 @@ async fn add_owner_validates_its_params() {
     for params in [json!({}), json!({ "owner_address": "0x0" }), json!({ "owner_address": "nope" })] {
         assert_eq!(err_code(&call(&state, Some(&token), "companion_strk20AddOwner", params).await), 114);
     }
-    // A strkd account is not an external owner.
+    // A Bramble Companion account is not an external owner.
     let own = call(&state, Some(&token), "companion_strk20AddOwner", json!({ "owner_address": controller })).await;
     assert_eq!(err_code(&own), 114);
     // The controller must be in the caller's scope.
@@ -2633,7 +2633,7 @@ fn plan_state(
     node: Arc<PlanNode>,
     reject: &'static [&'static str],
 ) -> (Arc<ServerState>, Arc<RecordingApprover>) {
-    let dir = std::env::temp_dir().join(format!("strkd-rpc-plan-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-rpc-plan-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let pstate = Arc::new(prover::ProverState {
         prover: Arc::new(StubProver),
@@ -2904,10 +2904,10 @@ async fn locking_the_wallet_wipes_plans() {
     assert_eq!(reason(&gone).as_deref(), Some("PLAN_NOT_FOUND"));
 }
 
-/// §2.1: plans also work for strkd accounts, without an SRC5 check; strkd
+/// §2.1: plans also work for Bramble Companion accounts, without an SRC5 check; Bramble Companion
 /// signs at prove time.
 #[tokio::test]
-async fn plans_work_for_strkd_accounts() {
+async fn plans_work_for_own_accounts() {
     let node = plan_node(false, Felt::ZERO);
     let (state, approver) = plan_state("account", node.clone(), &[]);
     let token = pair(&state, "app").await;
@@ -2919,7 +2919,7 @@ async fn plans_work_for_strkd_accounts() {
     assert_eq!(p["controller"], json!(account));
     assert_eq!(typed_data_hash(&state, &token, &p).await, felt_of(&p["plan_hash"]));
     let text = &prompted(&approver, PLAN)[0];
-    assert!(text.contains("strkd signs with this account") && text.contains(&account), "prompt lacks the signing account ({} chars)", text.len());
+    assert!(text.contains("Bramble Companion signs with this account") && text.contains(&account), "prompt lacks the signing account ({} chars)", text.len());
     assert!(node.src5_blocks().is_empty());
     assert!(node.methods().iter().all(|m| m != "starknet_getNonce"));
 }
@@ -3158,7 +3158,7 @@ struct ProveFixture {
 }
 
 fn prove_fixture(tag: &str, node: Arc<ProveNode>, reject: &'static [&'static str]) -> ProveFixture {
-    let dir = std::env::temp_dir().join(format!("strkd-rpc-prove48-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-rpc-prove48-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let prover = Arc::new(RecordingProver {
         kind: std::sync::Mutex::new("stub"),
@@ -3211,7 +3211,7 @@ fn hexes(v: &Value) -> Vec<Felt> {
 }
 
 /// The happy path for an owner: the caller's signature goes into the virtual
-/// tx verbatim (strkd signs nothing), the job is unrecorded, only its client
+/// tx verbatim (Bramble Companion signs nothing), the job is unrecorded, only its client
 /// sees it, the result is `{call, proof}`, and the plan is consumed.
 #[tokio::test]
 async fn owner_prove_passes_the_signature_through_verbatim() {
@@ -3288,7 +3288,7 @@ async fn owner_prove_with_an_empty_signature_signs_nothing() {
     assert_eq!(payloads[0]["transaction"]["signature"], json!([]));
 }
 
-/// For a strkd account, strkd signs the invocation hash with the account key.
+/// For a Bramble Companion account, Bramble Companion signs the invocation hash with the account key.
 #[tokio::test]
 async fn account_prove_signs_with_the_account_key() {
     let f = prove_fixture("account", prove_node(), &[]);

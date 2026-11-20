@@ -1,6 +1,6 @@
 //! Planning: turning a user's intent into an ordered list of client actions.
 //!
-//! A port of the SDK's `ActionCompiler` for the operations strkd supports:
+//! A port of the SDK's `ActionCompiler` for the operations Bramble Companion supports:
 //! register, deposit, private transfer and withdraw, in any combination within
 //! one batch. It follows the SDK's rules:
 //! - per token, `deposits + spent notes = transfers + withdrawals + change`;

@@ -3,7 +3,7 @@
 //! Each expected value is the viewing **public** key the Sepolia pool stored for a
 //! test account (`get_public_key`), registered by a proof built from this
 //! derivation (phase 0, `docs/project/strk20-plan.md` §2b). Matching them means
-//! strkd derives the same `user_sk` the pool saw, and therefore the same one
+//! Bramble Companion derives the same `user_sk` the pool saw, and therefore the same one
 //! bramble derives for this seed.
 //!
 //! The mnemonic is the published BIP-39 all-`abandon` test vector; never a real
@@ -24,7 +24,7 @@ fn felt(hex: &str) -> Felt {
 /// The Sepolia pool running the mainnet class (deployed by a third party).
 const CANONICAL_SEPOLIA_POOL: &str =
     "0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e";
-/// strkd's own Sepolia test pool (same class, test screener key).
+/// Bramble Companion's own Sepolia test pool (same class, test screener key).
 const TEST_POOL: &str = "0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323";
 
 fn registered_key(index: u32, pool: &str) -> Felt {

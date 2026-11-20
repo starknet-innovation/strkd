@@ -1,8 +1,8 @@
-//! Live wire-format check for DECLARE v3 against a real node (strkd #9).
+//! Live wire-format check for DECLARE v3 against a real node (#9).
 //!
 //! Not a unit test: it needs the network. **Read-only** — it never broadcasts.
 //! Run with `cargo run -p wallet-rpc --example live_declare_check`
-//! (override the endpoint with `STRKD_RPC=…`).
+//! (override the endpoint with `BRAMBLE_COMPANION_RPC=…`).
 //!
 //! It establishes three things against the node itself, with no key material:
 //!   1. our derived class hash equals the node's, for a class the node already
@@ -61,7 +61,7 @@ fn brief(v: &Value, n: usize) -> String {
 
 #[tokio::main]
 async fn main() {
-    let url = std::env::var("STRKD_RPC").unwrap_or_else(|_| DEFAULT_RPC.to_string());
+    let url = std::env::var("BRAMBLE_COMPANION_RPC").unwrap_or_else(|_| DEFAULT_RPC.to_string());
     println!("node: {url}\n");
 
     // (1) Derive the class hash from the node's own class object.

@@ -4,7 +4,7 @@
 //! A pool's constructor takes its screener public key, and the pool accepts a
 //! deposit only with an attestation that key signed (`strk20::screening`). On
 //! the canonical pools only the operator's screening prover holds it. For a
-//! pool you deployed yourself on Sepolia you hold it, so strkd can prove the
+//! pool you deployed yourself on Sepolia you hold it, so Bramble Companion can prove the
 //! deposit on this machine and sign the attestation itself: nothing leaves the
 //! machine, not even the viewing key.
 //!
@@ -21,8 +21,8 @@ use wallet_core::{get_selector_from_name, ChainId, Felt};
 use crate::error::WalletRpcError;
 use crate::node::StarknetRpc;
 
-/// The privacy pool class strkd is built against (mainnet's canonical pool,
-/// Sepolia's canonical pool and strkd's Sepolia test pool all run it).
+/// The privacy pool class Bramble Companion is built against (mainnet's canonical pool,
+/// Sepolia's canonical pool and Bramble Companion's Sepolia test pool all run it).
 pub const KNOWN_POOL_CLASS: &str = "0x6d163f2b27df0f53c5b0d019366261ba8034af1bef949dee920a60fe58bcf83";
 
 fn http_or_empty(name: &str, url: &str) -> Result<(), String> {
@@ -51,7 +51,7 @@ pub fn validate(cfg: &prover::Strk20Config, chain: ChainId) -> Result<(), String
     http_or_empty("paymaster URL", &cfg.paymaster_url)?;
     if !cfg.screener_key.trim().is_empty() {
         if chain == ChainId::Mainnet {
-            return Err("a local STRK20 screener key is testnet-only: strkd refuses it on mainnet".into());
+            return Err("a local STRK20 screener key is testnet-only: Bramble Companion refuses it on mainnet".into());
         }
         parse_key(&cfg.screener_key)?;
     }
@@ -129,7 +129,7 @@ pub async fn pool_info(node: &dyn StarknetRpc, pool: &Felt, screener_key: Option
     let mut warnings = Vec::new();
     if !known {
         warnings.push(format!(
-            "class {class:#x} is not the privacy-pool class strkd is built against ({KNOWN_POOL_CLASS}); STRK20 calls may fail"
+            "class {class:#x} is not the privacy-pool class Bramble Companion is built against ({KNOWN_POOL_CLASS}); STRK20 calls may fail"
         ));
     }
     if screener.is_none() {

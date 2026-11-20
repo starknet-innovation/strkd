@@ -33,7 +33,7 @@ export function VaultUnsupported({ onArchived }: { onArchived: () => void }) {
       <h2>This wallet needs to be set up again</h2>
 
       <p>
-        Your vault was made by an earlier version of strkd. This version changed how accounts are
+        Your vault was made by an earlier version of Bramble Companion. This version changed how accounts are
         derived from your recovery phrase, so it deliberately won't open older vaults — opening one
         would point the wallet at accounts that are no longer yours.
       </p>

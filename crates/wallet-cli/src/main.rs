@@ -1,4 +1,4 @@
-//! `strkd` — command-line companion for the strkd menu-bar wallet.
+//! `bramble-companion` — command-line client for the Bramble Companion menu-bar wallet.
 //!
 //! A thin client over the loopback JSON-RPC service. It holds no keys: signing
 //! and approvals stay in the desktop app, which pops a confirmation for any
@@ -6,7 +6,7 @@
 //! listing, off-chain signing, and invoke transactions.
 //!
 //! Output convention: the requested result is JSON on **stdout**; human
-//! progress notes go to **stderr**, so `strkd accounts | jq` works as-is. See
+//! progress notes go to **stderr**, so `bramble-companion accounts | jq` works as-is. See
 //! [`Output`] for how `--json` / `--quiet` adjust this.
 
 mod client;
@@ -18,11 +18,11 @@ use serde_json::{json, Value};
 
 #[derive(Parser)]
 #[command(
-    name = "strkd",
+    name = "bramble-companion",
     version,
-    about = "CLI companion for the strkd menu-bar wallet",
-    long_about = "Talks to the running strkd menu-bar app over its local service.\n\
-                  Start the app first, run `strkd pair` once, then use the other commands."
+    about = "CLI for the Bramble Companion menu-bar wallet",
+    long_about = "Talks to the running Bramble Companion menu-bar app over its local service.\n\
+                  Start the app first, run `bramble-companion pair` once, then use the other commands."
 )]
 struct Cli {
     /// Machine-readable mode: only JSON on stdout, no human progress text.
@@ -41,7 +41,7 @@ enum Command {
     /// Pair this CLI with the wallet (approve the prompt in the menu bar).
     Pair {
         /// Display name shown in the approval prompt and request log.
-        #[arg(long, default_value = "strkd-cli")]
+        #[arg(long, default_value = "bramble-companion-cli")]
         name: String,
         /// Client kind: `app` (interactive) or `agent` (scoped accounts).
         #[arg(long, default_value = "app", value_parser = ["app", "agent"])]
@@ -141,7 +141,7 @@ async fn run(command: Command, out: &Output) -> Result<(), String> {
     let client = client::Client::connect()?;
     match command {
         Command::Pair { name, kind } => {
-            out.note("Requesting pairing — approve the prompt in the strkd menu bar…");
+            out.note("Requesting pairing — approve the prompt in the Bramble Companion menu bar…");
             let result = client
                 .call(
                     "companion_requestPairing",
@@ -183,7 +183,7 @@ async fn run(command: Command, out: &Output) -> Result<(), String> {
         Command::Sign { account, data } => {
             let token = require_token()?;
             let typed_data = read_json_arg(&data)?;
-            out.note("Signing typed data — approve the prompt in the strkd menu bar…");
+            out.note("Signing typed data — approve the prompt in the Bramble Companion menu bar…");
             let result = client
                 .call(
                     "wallet_signTypedData",
@@ -227,7 +227,7 @@ async fn run(command: Command, out: &Output) -> Result<(), String> {
                 params["chainId"] = Value::String(chain_id_felt(&net)?);
             }
             out.note(&format!(
-                "{} transaction — approve the prompt in the strkd menu bar…",
+                "{} transaction — approve the prompt in the Bramble Companion menu bar…",
                 if submit { "Submitting" } else { "Signing" }
             ));
             let result = client
@@ -239,11 +239,11 @@ async fn run(command: Command, out: &Output) -> Result<(), String> {
     Ok(())
 }
 
-/// Load the saved pairing token, or fail with a pointer to `strkd pair`.
+/// Load the saved pairing token, or fail with a pointer to `bramble-companion pair`.
 fn require_token() -> Result<String, String> {
     token::load()
         .map(|p| p.token)
-        .ok_or_else(|| "not paired yet — run `strkd pair` first".to_string())
+        .ok_or_else(|| "not paired yet — run `bramble-companion pair` first".to_string())
 }
 
 /// Read a JSON argument that is either inline JSON or `@path-to-file`.

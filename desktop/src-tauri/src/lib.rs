@@ -1,4 +1,4 @@
-//! strkd desktop (Tauri 2). Menu-bar companion that hosts the wallet core:
+//! Bramble Companion desktop (Tauri 2). Menu-bar companion that hosts the wallet core:
 //! starts the loopback JSON-RPC service (so agents/apps can call it), surfaces
 //! approval prompts from the service as menu-bar confirmation dialogs, and
 //! exposes IPC commands for the app's own UI (onboarding, unlock, accounts,
@@ -26,7 +26,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
-const TRAY_ID: &str = "strkd-tray";
+const TRAY_ID: &str = "bramble-companion-tray";
 /// The tray icon is derived from the same generated icon as the app/Dock icon
 /// (`tauri icon` regenerates `128x128.png`), so changing `app-icon.png` updates
 /// the menu-bar icon too. The pending "red dot" variant is overlaid at runtime.
@@ -70,23 +70,23 @@ fn refresh_tray(app: &AppHandle, pending: usize) {
         if let Some(tray) = handle.tray_by_id(TRAY_ID) {
             let _ = tray.set_icon(tray_image(pending > 0));
             let tip = if pending > 0 {
-                format!("strkd — {pending} pending request(s)")
+                format!("Bramble Companion — {pending} pending request(s)")
             } else {
-                "strkd — Starknet wallet companion".to_string()
+                "Bramble Companion — Starknet wallet companion".to_string()
             };
             let _ = tray.set_tooltip(Some(&tip));
         } else {
-            eprintln!("[strkd] refresh_tray: tray '{TRAY_ID}' not found");
+            eprintln!("[bramble-companion] refresh_tray: tray '{TRAY_ID}' not found");
         }
         // Dock-tile badge: visible on the Dock icon regardless of notification perms.
         if let Some(w) = handle.get_webview_window("main") {
             let _ = w.set_badge_count(if pending > 0 { Some(pending as i64) } else { None });
         } else {
-            eprintln!("[strkd] refresh_tray: main window not found");
+            eprintln!("[bramble-companion] refresh_tray: main window not found");
         }
     });
     if let Err(e) = res {
-        eprintln!("[strkd] refresh_tray: run_on_main_thread failed: {e}");
+        eprintln!("[bramble-companion] refresh_tray: run_on_main_thread failed: {e}");
     }
 }
 
@@ -142,9 +142,9 @@ fn show_main(app: &AppHandle) {
 /// ones a user most wants to catch).
 fn notif_title(method: &str) -> &'static str {
     match method {
-        "companion_requestPairing" => "strkd — pairing request",
-        "companion_requestFunding" => "strkd — funding (top-up) request",
-        _ => "strkd — approval needed",
+        "companion_requestPairing" => "Bramble Companion — pairing request",
+        "companion_requestFunding" => "Bramble Companion — funding (top-up) request",
+        _ => "Bramble Companion — approval needed",
     }
 }
 
@@ -184,7 +184,7 @@ async fn status(state: State<'_, DesktopState>) -> Result<serde_json::Value, Str
         "service_url": state.service_url,
         "accounts": accounts,
         // When false, the wallet is sign-only (no broadcast / fee estimation):
-        // set STRKD_RPC_URL to enable. No URL echoed (it may embed an API key).
+        // set an RPC URL in Settings to enable. No URL echoed (it may embed an API key).
         "node_configured": state.server.has_node_for(session.chain()),
     }))
 }
@@ -251,7 +251,7 @@ async fn unlock(state: State<'_, DesktopState>, passphrase: String) -> Result<()
     }
     opened.map_err(|e| match e {
         wallet_core::CoreError::UnsupportedVaultVersion(found) => format!(
-            "this vault is version {found}; this build of strkd uses version {}. \
+            "this vault is version {found}; this build of Bramble Companion uses version {}. \
 Your vault is not damaged and your passphrase is not wrong — this version changed how \
 accounts are derived, so old vaults are deliberately not opened. Start over from your \
 recovery phrase; the old vault file is kept as a backup.",
@@ -1020,7 +1020,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // macOS: run as a regular app so the strkd icon shows in the Dock
+            // macOS: run as a regular app so the Bramble Companion icon shows in the Dock
             // (clicking it re-shows the window — see the Reopen handler in run()).
             // The app still lives in the menu bar via the tray; closing the
             // window only hides it.
@@ -1031,7 +1031,7 @@ pub fn run() {
             // not depend on the webview being awake). The approval bridge posts a
             // banner for every signing request; without permission macOS silently
             // drops them. First launch shows the system prompt; if the user misses
-            // it, they can enable "strkd" under System Settings → Notifications.
+            // it, they can enable "Bramble Companion" under System Settings → Notifications.
             {
                 use tauri_plugin_notification::PermissionState;
                 let n = app.notification();
@@ -1045,6 +1045,28 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("no app data dir: {e}"))?;
+            // First launch after the rename from strkd: carry the old data dir
+            // over. A failure stops the launch, since going on would show
+            // onboarding to a user who already has a wallet.
+            if let Some(parent) = data_dir.parent() {
+                use wallet_rpc::data_migration::{migrate_legacy_data_dir, Migration, LEGACY_APP_IDENTIFIER};
+                let legacy = parent.join(LEGACY_APP_IDENTIFIER);
+                match migrate_legacy_data_dir(&legacy, &data_dir) {
+                    Ok(Migration::Migrated { files }) => eprintln!(
+                        "[bramble-companion] copied {files} file(s) from {} (left in place)",
+                        legacy.display()
+                    ),
+                    Ok(Migration::NotNeeded) => {}
+                    Err(e) => {
+                        return Err(format!(
+                            "could not copy the wallet data from {} to {}: {e}. Nothing was changed in the old folder.",
+                            legacy.display(),
+                            data_dir.display()
+                        )
+                        .into())
+                    }
+                }
+            }
             std::fs::create_dir_all(&data_dir)?;
             let vault_path = data_dir.join("vault.bin");
             let log_path = data_dir.join("requests.db");
@@ -1066,7 +1088,7 @@ pub fn run() {
             // If a prover bundle shipped with the app (staged by
             // scripts/stage-prover.sh into resources/prover), point the native
             // backend at it — so a packaged app proves with no external checkout.
-            // Skipped if STRKD_SNIP36_BIN is already set; in dev (no bundle) this
+            // Skipped if BRAMBLE_COMPANION_SNIP36_BIN is already set; in dev (no bundle) this
             // is a no-op and NativeProver falls back to its sibling-checkout
             // default (only consulted when the backend is "native").
             if prover::config::env_var("SNIP36_BIN").is_none() {
@@ -1164,11 +1186,11 @@ pub fn run() {
             });
 
             // Menu-bar tray.
-            let open = MenuItemBuilder::with_id("open", "Open strkd").build(app)?;
+            let open = MenuItemBuilder::with_id("open", "Open Bramble Companion").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
             let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-                .tooltip("strkd — Starknet wallet companion")
+                .tooltip("Bramble Companion — Starknet wallet companion")
                 .menu(&menu);
             if let Some(icon) = tray_image(false) {
                 tray = tray.icon(icon);
@@ -1222,7 +1244,7 @@ pub fn run() {
             strk20_check_pool
         ])
         .build(tauri::generate_context!())
-        .expect("error while building strkd desktop")
+        .expect("error while building Bramble Companion desktop")
         .run(|_app, _event| {
             // Clicking the Dock icon while the window is hidden re-shows it.
             #[cfg(target_os = "macos")]

@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"   # desktop/
 # shellcheck source=prover-pin.env
 source "$HERE/scripts/prover-pin.env"      # SNIP36_REPO, SNIP36_RELEASE
 DST="$HERE/src-tauri/resources/prover"
-SRC="${SNIP36_SRC:-$HOME/.cache/strkd/snip36-src}"
+SRC="${SNIP36_SRC:-$HOME/.cache/bramble-companion/snip36-src}"
 RUNNER_NIGHTLY="nightly-2025-07-14"        # STWO_NIGHTLY for the RC.6 stack
 
 echo "=== build RC.6 prover from source ($SNIP36_RELEASE) -> $SRC ==="

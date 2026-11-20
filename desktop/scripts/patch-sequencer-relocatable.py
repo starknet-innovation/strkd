@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Make the RC.6 sequencer resolve the bundled sierra-compile relative to the
-running binary, so a relocated strkd bundle finds `shared_executables` next to
+running binary, so a relocated Bramble Companion bundle finds `shared_executables` next to
 the runner.
 
 RC.6's `out_dir()` returns the build-time-baked `RUNTIME_ACCESSIBLE_OUT_DIR` (an
@@ -26,7 +26,7 @@ OLD = '''fn out_dir() -> PathBuf {
 }'''
 
 NEW = '''fn out_dir() -> PathBuf {
-    // strkd relocatable-bundle patch: resolve shared_executables relative to the
+    // Bramble Companion relocatable-bundle patch: resolve shared_executables relative to the
     // running binary. shared_folder_dir() = out_dir.ancestors().nth(3)/shared_executables,
     // and the binary is staged in that dir next to the runner, so return a path
     // three levels below the executable's directory. Fall back to the baked build

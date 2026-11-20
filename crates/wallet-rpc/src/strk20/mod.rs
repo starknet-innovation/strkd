@@ -107,7 +107,7 @@ fn is_invalid_signature(text: &str) -> bool {
     text.contains("INVALID_SIGNATURE") || text.to_ascii_lowercase().contains(INVALID_SIGNATURE_HEX)
 }
 
-/// Prover error prefixes strkd itself writes (the `prover` crate's messages,
+/// Prover error prefixes Bramble Companion itself writes (the `prover` crate's messages,
 /// `snip36::classify_prover_error` first of all), each with a fixed message.
 /// Only the start of the error is matched: whatever follows it can quote the
 /// prover's output, which the code being proved controls.
@@ -122,7 +122,7 @@ const KNOWN_PROVER_ERRORS: &[(&str, &str)] = &[
     ("prover port in use", "the prover's local port was in use: retry"),
     (
         "the bundled prover does not support",
-        "the bundled prover does not support this network's Starknet version: update strkd, or use a compatible          remote prover",
+        "the bundled prover does not support this network's Starknet version: update Bramble Companion, or use a compatible          remote prover",
     ),
     ("prover timed out", "the prover timed out"),
     ("snip36 binary not found", "the on-device prover is not installed (snip36 binary not found)"),
@@ -148,9 +148,9 @@ const KNOWN_PROVER_ERRORS: &[(&str, &str)] = &[
 /// any subject, the pool) inside the prover, with the full `compile_actions`
 /// call — `user_sk` and every channel key — as its argument. A revert reason
 /// is text that code chose: a malicious contract could panic with a secret,
-/// encoded so no scrubbing finds it. So strkd never returns, logs or stores
+/// encoded so no scrubbing finds it. So Bramble Companion never returns, logs or stores
 /// the prover's text for these jobs; it classifies the error by the prefix
-/// strkd itself wrote and returns that class (§6).
+/// Bramble Companion itself wrote and returns that class (§6).
 fn safe_prover_error(err: &str, owner: bool, block: u64) -> (&'static str, String) {
     let err = err.trim_start();
     if err == prover::WIPED_MESSAGE {
@@ -339,15 +339,15 @@ impl Caller<'_> {
 /// Whose notes an operation acts on (design note #48 §3.1).
 #[derive(Clone)]
 enum Subject {
-    /// A strkd account: its own key derives `user_sk` and signs the invocation.
+    /// A Bramble Companion account: its own key derives `user_sk` and signs the invocation.
     Account,
     /// An enrolled external owner contract. [`Ctx::account`] is its controller,
-    /// whose key derives the owner's `user_sk`; strkd never signs for it.
+    /// whose key derives the owner's `user_sk`; Bramble Companion never signs for it.
     Owner(Strk20Owner),
 }
 
 struct Ctx {
-    /// The strkd account whose key is used: the subject itself, or the owner's
+    /// The Bramble Companion account whose key is used: the subject itself, or the owner's
     /// controller.
     account: AccountRef,
     subject: Subject,
@@ -828,7 +828,7 @@ async fn prepare(
     Ok(Prepared { call, proved, notes: plan.notes })
 }
 
-/// A prover result strkd can't parse. Fixed text: the result came from the
+/// A prover result Bramble Companion can't parse. Fixed text: the result came from the
 /// prover, whose output the proved contracts influence.
 fn unreadable_proof() -> WalletRpcError {
     WalletRpcError::Unknown("the prover's result could not be read (its text is withheld)".into())
@@ -970,11 +970,11 @@ impl SubmitGuard {
 }
 
 /// Submit `apply_actions` (plus the ERC-20 approvals the pool will
-/// `transfer_from`) as a proof-carrying invoke from `submitter`, a strkd
+/// `transfer_from`) as a proof-carrying invoke from `submitter`, a Bramble Companion
 /// account in the caller's scope, which signs and pays the gas and the pool's
 /// fee. For an account's own batch the submitter is the account itself; for an
 /// owner's plan (`companion_strk20Prove` with `submit: "account"`) it is any
-/// in-scope strkd account, publicly linked to the owner by doing so.
+/// in-scope Bramble Companion account, publicly linked to the owner by doing so.
 async fn submit_from(
     target: &SubmitTarget,
     submitter: &AccountRef,

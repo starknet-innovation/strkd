@@ -1,9 +1,9 @@
-//! `proof_payload_diff` — diagnose why a Starknet node rejects strkd's SNIP-36
+//! `proof_payload_diff` — diagnose why a Starknet node rejects Bramble Companion's SNIP-36
 //! proof-carrying broadcast (`error 69: "The proof field in the invoke v3
 //! transaction is invalid"`).
 //!
 //! It does three things:
-//!   1. Emits the EXACT `invoke_transaction` object strkd POSTs for a
+//!   1. Emits the EXACT `invoke_transaction` object Bramble Companion POSTs for a
 //!      proof-carrying `verify_move_forward` invoke — via the real
 //!      `wallet_rpc::invoke_v3_tx_json`, so this never drifts from production.
 //!   2. Checks that payload against the JSON-RPC spec shape for
@@ -11,7 +11,7 @@
 //!      `resource_bounds` sub-structure, `proof` as a base64 string sibling, and
 //!      `proof_facts` as a FELT array (pattern `^0x(0|[a-fA-F1-9][a-fA-F0-9]{0,62})$`
 //!      — i.e. NO leading zeros / zero-padding).
-//!   3. When given a reference payload, diffs strkd's payload against it so any
+//!   3. When given a reference payload, diffs Bramble Companion's payload against it so any
 //!      field/format/nesting delta is obvious. The reference is a known-good
 //!      broadcast body — see "capturing a reference" below.
 //!
@@ -193,7 +193,7 @@ fn spec_checks(tx: &Value) -> Checks {
     }
 
     // FELT-format the other felt-typed fields. sender_address is zero-padded by
-    // strkd (0x{:064x}); flag it as a deviation from the strict FELT pattern —
+    // Bramble Companion (0x{:064x}); flag it as a deviation from the strict FELT pattern —
     // most nodes accept padded addresses, but it is worth ruling out.
     if let Some(s) = tx["nonce"].as_str() {
         c.require(is_spec_felt(s), format!("nonce matches FELT pattern ({s})"));
@@ -229,7 +229,7 @@ fn diff(path: &str, a: &Value, b: &Value, structural: &mut Vec<String>, values: 
         (Value::Object(am), Value::Object(bm)) => {
             for k in am.keys() {
                 if !bm.contains_key(k) {
-                    structural.push(format!("- only in strkd:     {path}/{k}"));
+                    structural.push(format!("- only in Bramble Companion:     {path}/{k}"));
                 }
             }
             for k in bm.keys() {
@@ -246,7 +246,7 @@ fn diff(path: &str, a: &Value, b: &Value, structural: &mut Vec<String>, values: 
         (Value::Array(aa), Value::Array(ba)) => {
             if aa.len() != ba.len() {
                 structural.push(format!(
-                    "~ array length: {path} strkd={} reference={}",
+                    "~ array length: {path} Bramble Companion={} reference={}",
                     aa.len(),
                     ba.len()
                 ));
@@ -257,12 +257,12 @@ fn diff(path: &str, a: &Value, b: &Value, structural: &mut Vec<String>, values: 
         }
         _ if ty(a) != ty(b) => {
             structural.push(format!(
-                "~ type: {path} strkd={} reference={}",
+                "~ type: {path} Bramble Companion={} reference={}",
                 ty(a),
                 ty(b)
             ));
         }
-        _ if a != b => values.push(format!("~ {path}: strkd={a} reference={b}")),
+        _ if a != b => values.push(format!("~ {path}: Bramble Companion={a} reference={b}")),
         _ => {}
     }
 }
@@ -279,7 +279,7 @@ fn unwrap_invoke(v: Value) -> Value {
 
 fn main() {
     // A representative proof-carrying verify_move_forward(MoveMessage) invoke.
-    // Felt VALUES are illustrative; their FORMATTING is strkd's real `fh`
+    // Felt VALUES are illustrative; their FORMATTING is Bramble Companion's real `fh`
     // (unpadded lowercase hex), so the spec checks reflect production output.
     let sender = felt("0x49d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7");
     let calldata: Vec<Felt> = ["0x1", "0x6d6f7665", "0x7665726966795f6d6f7665", "0x3", "0xa", "0xb", "0xc"]
@@ -311,7 +311,7 @@ fn main() {
         return;
     }
 
-    println!("== strkd broadcast payload (params.invoke_transaction) ==");
+    println!("== Bramble Companion broadcast payload (params.invoke_transaction) ==");
     println!("{}\n", serde_json::to_string_pretty(&tx).unwrap());
 
     println!("== spec checks (BROADCASTED_INVOKE_TXN, RPC 0.10.1) ==");
@@ -338,7 +338,7 @@ fn main() {
 
                     println!("== structural differences vs {path} (these matter for error 69) ==");
                     if structural.is_empty() {
-                        println!("  none — strkd's payload is structurally identical to the reference.");
+                        println!("  none — Bramble Companion's payload is structurally identical to the reference.");
                     } else {
                         for l in &structural {
                             println!("  {l}");

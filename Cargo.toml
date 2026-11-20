@@ -10,14 +10,14 @@ exclude = [".probe", "desktop"]
 version = "0.4.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/starknet-innovation/strkd"
+repository = "https://github.com/starknet-innovation/bramble-companion"
 
 # krusty-kms is experimental and not published to crates.io. Pin to an exact
 # commit; bumps must go through review (see spec/wallet-companion-spec.md §14).
 # Pinned to krusty main 2b6b7b5 (2026-10-01). It includes krusty#111
 # (canonical SNIP-12 via starknet-rust-core's reference encoder), which fixed
-# `string` digests and `selector` support (strkd#32), on top of the earlier
-# PR #36 prefix/shortstring fix (strkd#7). Known gap at this pin: `i128` is
+# `string` digests and `selector` support (bramble-companion#32), on top of the earlier
+# PR #36 prefix/shortstring fix (bramble-companion#7). Known gap at this pin: `i128` is
 # accepted only as a negative JSON number (fails closed; see the conformance
 # fixture's known_divergences).
 [workspace.dependencies]
@@ -59,7 +59,7 @@ libc = "0.2"
 # re-run `dist generate` rather than editing the workflow. That file does carry
 # ONE deliberate local modification (a narrowed tag glob, so `desktop-v*` tags
 # don't trigger the CLI release); its top-of-file banner says how to re-apply it
-# after a regenerate. Only `strkd` (crates/wallet-cli) is a binary, so it's the
+# after a regenerate. Only `bramble-companion` (crates/wallet-cli) is a binary, so it's the
 # sole shipped artifact. A `v*` tag triggers the CLI release; the desktop app
 # ships separately on `desktop-v*`.
 #

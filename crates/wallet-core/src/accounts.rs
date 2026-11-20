@@ -29,7 +29,7 @@ pub struct AccountRef {
     pub owner_client_id: Option<String>,
 }
 
-/// The strkd account whose key an owner's STRK20 viewing key is derived from.
+/// The Bramble Companion account whose key an owner's STRK20 viewing key is derived from.
 /// Recorded so the key can be derived again (seed + owner + this).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OwnerController {

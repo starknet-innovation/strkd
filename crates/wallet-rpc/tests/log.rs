@@ -68,7 +68,7 @@ fn toggle_applies_to_subsequent_records() {
 
 #[test]
 fn file_backed_log_persists_across_reopen() {
-    let dir = std::env::temp_dir().join(format!("strkd-log-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-log-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("requests.db");
 

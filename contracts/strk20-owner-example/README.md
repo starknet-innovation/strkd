@@ -1,8 +1,8 @@
 # strk20-owner-example
 
-A reference STRK20 note owner that is a contract, for strkd issue
-[#48](https://github.com/starknet-innovation/strkd/issues/48). An admin approves
-strkd plans on-chain, and the privacy pool accepts a proof only for an approved plan.
+A reference STRK20 note owner that is a contract, for Bramble Companion issue
+[#48](https://github.com/starknet-innovation/bramble-companion/issues/48). An admin approves
+Bramble Companion plans on-chain, and the privacy pool accepts a proof only for an approved plan.
 
 > **Not audited. Testnet reference only.** It shows the checks an owner contract
 > needs. It is not a wallet. Deploy your own reviewed contract for real funds.
@@ -41,7 +41,7 @@ It returns 0 without panicking on every failure:
 3. `call.selector == selector!("compile_actions")`;
 4. `calldata.len() >= 3` and `calldata[0] == get_contract_address()`;
 5. `actions_hash = poseidon_hash_span(calldata[2..])`: the serialized
-   `Span<ClientAction>`, **including its length prefix**, exactly strkd's
+   `Span<ClientAction>`, **including its length prefix**, exactly Bramble Companion's
    `client_actions_felts` (`serialize_actions`);
 6. `plan_hash` = the SNIP-12 rev 1 message hash of
    `Strk20Plan { pool, owner: this, actions_hash }`, with domain
@@ -57,7 +57,7 @@ reads it from storage at the proof's reference block. A signature on top would o
 prove what the approval already proves, and it would need its own replay rules. The
 pool always passes `additional_data` empty. A contract that wants a signature as well
 (for example "admin approved and a co-signer signed `plan_hash`") can add that check.
-strkd passes the caller's `signature` felts through verbatim (§4).
+Bramble Companion passes the caller's `signature` felts through verbatim (§4).
 
 **Why `is_valid_signature` exists at all.** If it were missing, the pool's safe
 dispatcher would see an "entrypoint not found" error and treat it as not accepted, so
@@ -94,7 +94,7 @@ Three implementations check it:
 | Input | Value |
 |---|---|
 | chainId | `SN_SEPOLIA` = `0x534e5f5345504f4c4941` |
-| pool | `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e` (strkd's Sepolia pool) |
+| pool | `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e` (Bramble Companion's Sepolia pool) |
 | owner (= signer) | `0x0712d1ab5b6e5d3e3c0b2a1f9e8d7c6b5a4938271605f4e3d2c1b0a998877665` (made up) |
 | client_actions_felts | `[0x2, 0x7, 0x2a, 0x3, 0x1]` (opaque stand-ins) |
 | actions_hash | `0x03342f4106e584ae6fa004f9a518687fa0160dfd61720b8aae0edf25fe89f84a` |
@@ -103,7 +103,7 @@ Three implementations check it:
 
 ## Approving a plan
 
-1. The app calls strkd `companion_strk20Plan { owner_address, actions }` (§5.1) and
+1. The app calls Bramble Companion `companion_strk20Plan { owner_address, actions }` (§5.1) and
    gets `plan_hash`, `typed_data` and a summary. An approver who wants to check the
    hash themselves asks for `reveal_actions: true`, then recomputes `plan_hash` from
    `typed_data` (`companion_typedDataHash`, starknet.js, or this contract's
@@ -111,9 +111,9 @@ Three implementations check it:
 2. The admin sends `approve_plan(plan_hash)` to this contract. That transaction lands
    in block `A`.
 3. The app calls `companion_strk20Prove { plan_id }` with a reference block `B ≥ A`.
-   strkd defaults to `head − 12`, so wait about 12 blocks after `A`, or pass
+   Bramble Companion defaults to `head − 12`, so wait about 12 blocks after `A`, or pass
    `block_number`. The pool reads the approval from storage at `B`, and a proof built
-   at `B < A` fails with `INVALID_SIGNATURE` (strkd: `OWNER_SIGNATURE_REJECTED`).
+   at `B < A` fails with `INVALID_SIGNATURE` (Bramble Companion: `OWNER_SIGNATURE_REJECTED`).
 4. Submit `apply_actions`. The proof is single-use: nullifiers and write-once slots
    make a replay revert.
 5. Once the batch has landed (or the plan is abandoned), the admin sends
@@ -123,7 +123,7 @@ Three implementations check it:
 
 **Revocation.** `revoke_plan(plan_hash)` stops proofs whose reference block is after
 the revocation. A proof already built against an earlier block, while the approval was
-live, stays valid for the pool's `proof_validity_blocks` window (450 on strkd's
+live, stays valid for the pool's `proof_validity_blocks` window (450 on Bramble Companion's
 Sepolia pool). Revoke before that window opens, or treat the approval as final.
 
 **No expiry.** Approvals stay valid until revoked. A view call can't consume an
@@ -142,18 +142,18 @@ stale approvals with `revoke_plan`.
   put it (or the channel keys in the actions) in a panic message.
 - **Your code is trusted with the keys.** The pool hands this contract the whole
   `compile_actions` call, so its code sees the owner's viewing key and the batch's
-  channel keys while each proof runs. Whoever enrols an owner contract in strkd is
-  trusting its code with them (design §6). strkd withholds revert text from callers and
+  channel keys while each proof runs. Whoever enrols an owner contract in Bramble Companion is
+  trusting its code with them (design §6). Bramble Companion withholds revert text from callers and
   logs, but a malicious contract has other ways to try. Enrol only contracts whose code
   you have reviewed.
 - **Revoke approvals after use.** See "Approving a plan", step 5.
 - **Never accept a controller signature as plan approval.** A third-party owner
-  contract must not treat a signature by the strkd controller account (for example
+  contract must not treat a signature by the Bramble Companion controller account (for example
   from `wallet_signTypedData` over the `Strk20Plan` typed data) as approval. The
-  controller key lives in strkd, next to the viewing key it derives. If strkd or the
+  controller key lives in Bramble Companion, next to the viewing key it derives. If Bramble Companion or the
   agent driving it can produce the approval, the contract's check stops being a
-  separate party. Approval has to come from an authority strkd doesn't hold: this
-  contract's admin transaction, or a co-signer key kept outside strkd.
+  separate party. Approval has to come from an authority Bramble Companion doesn't hold: this
+  contract's admin transaction, or a co-signer key kept outside Bramble Companion.
 - **Approval must come before the reference block.** See "Approving a plan" step 3.
 - **Bound to chain, pool and owner.** `chainId` comes from `tx_info` (whether it is
   the real chain id inside the virtual OS is listed as unverified in design §10). The
@@ -163,7 +163,7 @@ stale approvals with `revoke_plan`.
   account as admin if you need more than one approver. To change the admin or the
   pool, deploy a new owner. The new owner's notes and viewing key are separate.
 - **No funds handling.** Notes live in the pool. This contract holds no tokens.
-- **What the admin approves.** Without `reveal_actions`, the admin trusts strkd's
+- **What the admin approves.** Without `reveal_actions`, the admin trusts Bramble Companion's
   summary for what `actions_hash` stands for (design §6).
 
 ## Build and test
@@ -188,7 +188,7 @@ Use a funded test account, never a real key.
 **Deployed on Sepolia (live test, 2026-11-13).** Class
 `0x03b786469d016b45571809c14bff10a055b94d743e31bd9bf62d18cf7a5931e7` (sncast release
 build of this directory). Instance `0x01f03e564a8a07244e5e895fb2428e4fbe01c1bd838c84c786f2e2636fef27f4`,
-with admin = test-seed account 0 (`0x0497e8…7b4f`) and pool = strkd's test pool
+with admin = test-seed account 0 (`0x0497e8…7b4f`) and pool = Bramble Companion's test pool
 `0x03016a…6323`. It is registered on that pool, so only transfer and withdraw plans
 work for it. Use it to reproduce `owner-flow` against the test pool. For any other pool,
 or a different admin, deploy your own. Declaring the class cost about 5.35 STRK at Sepolia
@@ -204,7 +204,7 @@ sncast --account owner-admin declare --network sepolia \
   --contract-name Strk20OwnerExample
 # → class_hash
 
-# constructor(admin, pool): pool must be the pool strkd uses (see below)
+# constructor(admin, pool): pool must be the pool Bramble Companion uses (see below)
 sncast --account owner-admin deploy --network sepolia \
   --class-hash 0x<class_hash> \
   --constructor-calldata 0x<admin_account> 0x<pool>
@@ -221,13 +221,13 @@ sncast call --network sepolia --contract-address 0x<owner> \
 
 Flags vary between sncast versions; check `sncast <cmd> --help`.
 
-**The `pool` argument must be the pool strkd plans against**, or every approval
+**The `pool` argument must be the pool Bramble Companion plans against**, or every approval
 fails: the contract checks `call.to == pool`, and `plan_hash` binds the pool.
-- strkd's default Sepolia pool is
+- Bramble Companion's default Sepolia pool is
   `0x03ce2d315cb201ac87f4ff1736d366b39e18fdcac669ea007a51a74407803a3e`. A pool
   override in the app's STRK20 settings replaces it.
 - `crates/wallet-rpc/examples/strk20_live.rs` (the `owner-flow` live run) defaults to
-  strkd's test pool `TEST_POOL` =
+  Bramble Companion's test pool `TEST_POOL` =
   `0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323`, unless
   `STRK20_POOL` is set.
 

@@ -13,7 +13,7 @@
 //!
 //! On the canonical pools only the operator's screener holds that key. A pool
 //! someone deploys for testing names its own screener key in the constructor,
-//! and then whoever holds it can attest deposits locally. strkd does that only
+//! and then whoever holds it can attest deposits locally. Bramble Companion does that only
 //! on testnets (`wallet-rpc`'s `strk20::screener`). The attestation is not bound
 //! to the proof, so it is signed after proving.
 

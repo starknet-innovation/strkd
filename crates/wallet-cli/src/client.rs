@@ -8,7 +8,7 @@
 use serde_json::{json, Value};
 
 /// Identifies this caller in the `X-Companion-Client` header and request log.
-const CLIENT_HEADER: &str = "strkd-cli";
+const CLIENT_HEADER: &str = "bramble-companion-cli";
 
 pub struct Client {
     http: reqwest::Client,
@@ -78,5 +78,5 @@ impl Client {
 }
 
 fn unreachable_err(e: &reqwest::Error) -> String {
-    format!("could not reach the wallet service ({e}). Is the strkd app still running?")
+    format!("could not reach the wallet service ({e}). Is the Bramble Companion app still running?")
 }

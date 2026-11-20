@@ -19,7 +19,7 @@ const EMPTY_STRK20: Strk20Config = {
   screener_key: "",
 };
 
-/** strkd's self-deployed Sepolia test pool (screener: the public test key 0xCAFEBABE). */
+/** Bramble Companion's self-deployed Sepolia test pool (screener: the public test key 0xCAFEBABE). */
 const SEPOLIA_TEST_POOL = "0x03016a46eec8b164e8a89337c048b5cd1463ea4c4de120b9cb76b3df88646323";
 
 const EMPTY_PROVER: ProverSettings = {
@@ -291,9 +291,9 @@ export function Settings({ onChange }: { onChange: () => void }) {
                   onChange={(e) => strk20Field(net, "screener_key", e.target.value)}
                 />
                 <p className="muted small">
-                  For a pool you deployed yourself with your own screener key (strkd's test pool{" "}
+                  For a pool you deployed yourself with your own screener key (Bramble Companion's test pool{" "}
                   <code>{SEPOLIA_TEST_POOL.slice(0, 10)}…</code> uses the public test key{" "}
-                  <code>0xCAFEBABE</code>). Deposits are then proved on this device and strkd signs the
+                  <code>0xCAFEBABE</code>). Deposits are then proved on this device and Bramble Companion signs the
                   screening attestation, so nothing leaves the machine.{" "}
                   <strong>
                     Never enter a real screener's key: it is stored unencrypted in this device's

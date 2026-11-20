@@ -307,6 +307,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bramble-companion"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "dirs",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2559,18 +2571,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "wallet-core",
-]
-
-[[package]]
-name = "strkd"
-version = "0.4.0"
-dependencies = [
- "clap",
- "dirs",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

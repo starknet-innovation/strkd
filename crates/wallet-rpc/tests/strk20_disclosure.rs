@@ -418,7 +418,7 @@ struct Fixture {
 
 fn fixture(tag: &str, node: Arc<FakePool>, reject: &'static [&'static str]) -> Fixture {
     let dir =
-        std::env::temp_dir().join(format!("strkd-rpc-disclosure-{tag}-{}", std::process::id()));
+        std::env::temp_dir().join(format!("bramble-companion-rpc-disclosure-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let pstate = Arc::new(prover::ProverState {
         prover: Arc::new(StubProver),
@@ -904,7 +904,7 @@ async fn an_agent_cannot_reach_subjects_outside_its_scope() {
     assert!(f.approver.prompts(METHOD).is_empty());
 }
 
-/// An enrolled owner contract's channel, keyed by the viewing key strkd holds
+/// An enrolled owner contract's channel, keyed by the viewing key Bramble Companion holds
 /// for it.
 #[tokio::test]
 async fn an_owner_subject_discloses_the_owners_channel() {
@@ -1301,7 +1301,7 @@ async fn reveal_actions_on_a_transfer_prompts_even_under_a_grant_and_returns_the
 }
 
 /// Refusing the reveal prompt still returns (and keeps) the plan, without
-/// actions and without a `reveal_refused` reason (the user refused, not strkd).
+/// actions and without a `reveal_refused` reason (the user refused, not Bramble Companion).
 #[tokio::test]
 async fn refusing_the_reveal_returns_the_plan_without_actions() {
     let (node, _) = funded_pool();

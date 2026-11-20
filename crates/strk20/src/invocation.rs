@@ -8,7 +8,7 @@
 //!   forwards it to the user account's `is_valid_signature`.
 //!
 //! `user_sk` (the viewing key) sits in the calldata in the clear. That is how the
-//! protocol works, and it is why strkd proves locally: the invocation never has
+//! protocol works, and it is why Bramble Companion proves locally: the invocation never has
 //! to leave the machine except for deposits (`docs/project/strk20-plan.md` P1).
 
 use krusty_kms_common::ChainId;

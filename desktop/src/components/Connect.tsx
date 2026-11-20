@@ -9,7 +9,7 @@ export function Connect({ status }: { status: Status | null }) {
 
   const url = status.service_url;
   const prompt =
-    `You have a local Starknet wallet companion "strkd" at ${url}.\n` +
+    `You have a local Starknet wallet companion "Bramble Companion" at ${url}.\n` +
     `GET ${url}/ for usage and follow it. It manages Starknet accounts and signs ` +
     `transactions on your behalf; every sensitive action asks the human for on-screen ` +
     `approval, and private keys never leave the wallet.\n` +
@@ -42,11 +42,11 @@ export function Connect({ status }: { status: Status | null }) {
         Agents and apps on this machine call the wallet here. Point any client at{" "}
         <code>{url}/</code> — it returns its own usage.
         {!status.node_configured &&
-          " Set STRKD_RPC_URL (a Starknet RPC endpoint) to enable fee estimation and broadcasting."}
+          " Set a Starknet RPC URL in the Settings tab to enable fee estimation and broadcasting."}
       </p>
 
       <div className="prompt-block">
-        <p className="muted small">Copy-paste this prompt for your agent to use strkd:</p>
+        <p className="muted small">Copy-paste this prompt for your agent to use Bramble Companion:</p>
         <pre className="prompt">{prompt}</pre>
         <button className="primary" onClick={() => void copy()}>
           {copied ? "Copied ✓" : "Copy prompt"}

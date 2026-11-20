@@ -38,7 +38,7 @@ async fn loopback_server_serves_requests_and_writes_port_lock() {
         Arc::new(AutoApprover(Decision::Approve)),
     ));
 
-    let dir = std::env::temp_dir().join(format!("strkd-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("bramble-companion-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let port_lock = dir.join("port.lock");
 
@@ -129,7 +129,7 @@ async fn usage_endpoint_is_open_and_self_describing() {
     assert_eq!(resp.status().as_u16(), 200);
     let doc: Value = resp.json().await.unwrap();
 
-    assert!(doc["service"].as_str().unwrap().contains("strkd"));
+    assert!(doc["service"].as_str().unwrap().contains("Bramble Companion"));
     assert!(doc["methods"].is_array());
     assert!(doc["quickstart"].is_array());
     // Core sections the agent contract must carry.
@@ -142,7 +142,7 @@ async fn usage_endpoint_is_open_and_self_describing() {
     // The alpha disclaimer carries the "don't work around it, report it" CTA and a
     // copy-pasteable feedback template the operator relays to the maintainer.
     let report = doc["alpha_notice"]["report_format"].as_str().unwrap();
-    assert!(report.contains("=== STRKD-FEEDBACK ==="), "feedback template missing its sentinel");
+    assert!(report.contains("=== COMPANION-FEEDBACK ==="), "feedback template missing its sentinel");
     assert!(doc["alpha_notice"]["do_not_work_around"].as_str().unwrap().contains("workaround"));
     // The full method catalogue is present (every implemented method is listed,
     // so the doc can't silently drift from the dispatcher).

@@ -144,7 +144,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">strkd</span>
+        <span className="brand">Bramble Companion</span>
         <span className="spacer" />
         {status && (
           <span className="muted small">

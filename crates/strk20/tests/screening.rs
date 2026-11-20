@@ -34,7 +34,7 @@ fn reproduces_every_screening_vector() {
         let hash = screening::message_hash(chain_id, depositor, issued_at, pk);
         assert_eq!(hash, f(&v["message_hash"]), "{name}: message hash");
 
-        // RFC 6979 is deterministic, so strkd's signature is the vector's.
+        // RFC 6979 is deterministic, so Bramble Companion's signature is the vector's.
         let a = screening::attest(&sk, chain_id, depositor, issued_at).unwrap();
         assert_eq!(a.issued_at, issued_at, "{name}");
         assert_eq!((a.sig_r, a.sig_s), (f(&v["sig_r"]), f(&v["sig_s"])), "{name}: signature");

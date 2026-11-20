@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn locked_port_round_trips_through_port_lock() {
-        let path = std::env::temp_dir().join(format!("strkd-portlock-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("bramble-companion-portlock-{}.json", std::process::id()));
         write_port_lock(&path, 54321).unwrap();
         assert_eq!(read_locked_port(&path), Some(54321));
         let _ = std::fs::remove_file(&path);
@@ -232,10 +232,10 @@ mod tests {
 
     #[test]
     fn locked_port_is_none_when_absent_or_malformed() {
-        let missing = std::env::temp_dir().join("strkd-portlock-does-not-exist.json");
+        let missing = std::env::temp_dir().join("bramble-companion-portlock-does-not-exist.json");
         assert_eq!(read_locked_port(&missing), None);
 
-        let bad = std::env::temp_dir().join(format!("strkd-portlock-bad-{}.json", std::process::id()));
+        let bad = std::env::temp_dir().join(format!("bramble-companion-portlock-bad-{}.json", std::process::id()));
         std::fs::write(&bad, b"not json").unwrap();
         assert_eq!(read_locked_port(&bad), None);
         let _ = std::fs::remove_file(&bad);

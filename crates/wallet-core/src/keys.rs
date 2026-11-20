@@ -87,7 +87,7 @@ pub fn strk20_owner_viewing_key_message(chain_id: &Felt, pool: &Felt, owner: &Fe
     ))
 }
 
-/// Derive the STRK20 viewing key (`user_sk`) strkd holds for an external owner
+/// Derive the STRK20 viewing key (`user_sk`) Bramble Companion holds for an external owner
 /// contract at `owner`, from the key of the controller account `(domain, index)`
 /// (`docs/project/design-48-strk20-external-owner.md` §3.2).
 ///
@@ -198,7 +198,7 @@ pub fn sign_typed_data(
 /// value starknet.js `typedData.getMessageHash(typed_data, account)` produces
 /// and that a Cairo account's `is_valid_signature` checks against. It needs no
 /// key material (it depends only on the document and the account address), so
-/// callers can use it to verify strkd's hashing matches their expectation both
+/// callers can use it to verify Bramble Companion's hashing matches their expectation both
 /// before and after signing. Delegated to `krusty-kms`.
 pub fn typed_data_message_hash(typed_data_json: &str, account_address: &Felt) -> Result<Felt> {
     compute_typed_data_message_hash(typed_data_json, account_address).map_err(|_| CoreError::Signing)

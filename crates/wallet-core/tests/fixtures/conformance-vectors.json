@@ -1,11 +1,11 @@
 {
   "_provenance": {
-    "purpose": "Cross-wallet conformance: seed -> public key -> account address. strkd asserts against this in tests/conformance.rs; bramble can adopt the same file.",
+    "purpose": "Cross-wallet conformance: seed -> public key -> account address. Bramble Companion asserts against this in tests/conformance.rs; bramble can adopt the same file.",
     "generated_by": "cargo run --example conformance_vectors (wallet-core)",
     "verified_against": "conformance/verify.mjs (pinned starknet.js + @scure/bip32 + @scure/bip39), run in CI: re-derives every public key from the mnemonic (BIP-32 path -> EIP-2645 grindKey), every address via hash.calculateContractAddressFromHash (exactly the call bramble makes), every SNIP-12 digest via typedData.getMessageHash and every invoke hash via hash.calculateInvokeTransactionHash, independently of krusty.",
-    "warning": "Regenerating is not verifying. If a value here changes, re-check it against an independent implementation before committing, or this file just asserts strkd against itself.",
+    "warning": "Regenerating is not verifying. If a value here changes, re-check it against an independent implementation before committing, or this file just asserts Bramble Companion against itself.",
     "seed": "Published BIP-39 test vector. Never a real seed — see spec §14.",
-    "issue": "https://github.com/starknet-innovation/strkd/issues/17"
+    "issue": "https://github.com/starknet-innovation/bramble-companion/issues/17"
   },
   "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
   "coin_type": 9004,
@@ -219,7 +219,7 @@
     }
   ],
   "known_divergences": [
-    "SNIP-12 rev 1 `i128`: krusty (via starknet-rust-core 0.19.1) accepts only a negative JSON number; it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. strkd refuses to sign such messages (fails closed); when it does sign, the digest matches."
+    "SNIP-12 rev 1 `i128`: krusty (via starknet-rust-core 0.19.1) accepts only a negative JSON number; it rejects strings (\"-5\", \"5\") and non-negative numbers (5), all of which starknet.js accepts. Bramble Companion refuses to sign such messages (fails closed); when it does sign, the digest matches."
   ],
   "invoke_v3_vectors": [
     {

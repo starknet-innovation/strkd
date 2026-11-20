@@ -5,7 +5,7 @@
 //! A V3 transaction is charged `amount used × the block's price` per resource;
 //! its bounds are only maxima. The node refuses a transaction whose **max fee**
 //! (`Σ max_amount × max_price_per_unit`) exceeds the payer's balance, so padding
-//! both factors by 1.5× (strkd ≤ 0.4.0) asked for ~2.25× the estimate in balance.
+//! both factors by 1.5× (Bramble Companion ≤ 0.4.0) asked for ~2.25× the estimate in balance.
 //! Now the amount and the price are padded separately:
 //!
 //! - **amount** × [`AMOUNT_MARGIN_PCT`] (1.5×): estimates run with SKIP_VALIDATE,
@@ -49,11 +49,11 @@ pub const L2_GAS_PRICE_HEADROOM_PCT: u128 = 120;
 /// Headroom on the estimate's L1 data gas price (×100).
 pub const L1_DATA_GAS_PRICE_HEADROOM_PCT: u128 = 200;
 
-/// The least amount margin strkd tightens to when the balance can't cover the
+/// The least amount margin Bramble Companion tightens to when the balance can't cover the
 /// padded bounds (×100). Below it a transaction risks reverting out of gas,
 /// which is charged.
 pub const MIN_AMOUNT_MARGIN_PCT: u128 = 110;
-/// The least price headroom strkd tightens to (×100), per resource: above the
+/// The least price headroom Bramble Companion tightens to (×100), per resource: above the
 /// largest 10-minute rise measured (4.35 %).
 pub const MIN_PRICE_HEADROOM_PCT: u128 = 105;
 
@@ -164,13 +164,13 @@ impl FeeEstimate {
         }
     }
 
-    /// The padded bounds strkd submits by default: amounts × 1.5, prices ×
+    /// The padded bounds Bramble Companion submits by default: amounts × 1.5, prices ×
     /// their per-resource headroom.
     pub fn bounds(&self) -> FeeBounds {
         self.bounds_with([AMOUNT_MARGIN_PCT; 3], PRICE_HEADROOM_PCT)
     }
 
-    /// The tightest bounds strkd will submit.
+    /// The tightest bounds Bramble Companion will submit.
     pub fn min_bounds(&self) -> FeeBounds {
         self.bounds_with([MIN_AMOUNT_MARGIN_PCT; 3], [MIN_PRICE_HEADROOM_PCT; 3])
     }
@@ -332,7 +332,7 @@ pub async fn fit_bounds_to_balance(
             };
             Err(WalletRpcError::Precondition(format!(
                 "the paying account's STRK balance can't cover this transaction's fee bounds: estimated fee {} STRK, \
-                 padded max fee {} STRK, tightest bounds strkd will submit {} STRK, balance {} STRK{spent}. Fund the \
+                 padded max fee {} STRK, tightest bounds Bramble Companion will submit {} STRK, balance {} STRK{spent}. Fund the \
                  account with at least {} STRK more, or pass explicit resource_bounds.",
                 strk(estimated),
                 strk(padded_fee),

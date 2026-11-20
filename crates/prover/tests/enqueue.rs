@@ -14,7 +14,7 @@ use prover::{build_prover_state, enqueue_prove, Job, JobStatus, ProverConfig, Pr
 use serde_json::json;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("strkd-prover-test-{}-{}", tag, std::process::id()));
+    let d = std::env::temp_dir().join(format!("bramble-companion-prover-test-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d

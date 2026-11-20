@@ -120,12 +120,12 @@ done <<< "$SNIP36_SAMPLE_INPUT_SHA256"
 check_pins "$DST/sample-input" "$SNIP36_SAMPLE_INPUT_SHA256" "sample-input"
 
 # 4. Gate: the full offline stack check must pass BEFORE we trim. doctor reads
-#    deps/ relative to cwd, exactly as strkd's native backend invokes it. It
+#    deps/ relative to cwd, exactly as Bramble Companion's native backend invokes it. It
 #    exits non-zero on failure; we also assert the explicit ready line so a
 #    future change to its exit behavior can't let a broken stack through.
 echo "=== snip36 doctor (offline stack check, full stack) ==="
-( cd "$DST" && ./snip36 doctor 2>&1 | tee /tmp/strkd-doctor.log )
-grep -q "PROVING STACK READY" /tmp/strkd-doctor.log \
+( cd "$DST" && ./snip36 doctor 2>&1 | tee /tmp/bramble-companion-doctor.log )
+grep -q "PROVING STACK READY" /tmp/bramble-companion-doctor.log \
   || { echo "error: prebuilt stack failed snip36 doctor (see above)" >&2; exit 1; }
 
 # 5. Trim to the lean, relocatable shippable set: drop the venv (not used for

@@ -1,7 +1,7 @@
 // Independent re-derivation of crates/wallet-core/tests/fixtures/conformance-vectors.json
 // and crates/wallet-core/tests/fixtures/strk20-plan-vector.json (issue #48).
 //
-// strkd generates that fixture with krusty-kms. A fixture only ever checked
+// Bramble Companion generates that fixture with krusty-kms. A fixture only ever checked
 // against the code that produced it proves nothing, so this script recomputes
 // every value with different, pinned libraries (see package.json):
 //   seed → public key   @scure/bip39 + @scure/bip32 (BIP-32 path), starknet.js grindKey (EIP-2645)

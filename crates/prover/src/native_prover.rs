@@ -1,6 +1,6 @@
 //! Native prover backend — runs the local `snip36` CLI directly (no Docker).
 //!
-//! This is the **preferred** (and, in strkd, the only real) backend:
+//! This is the **preferred** (and, in Bramble Companion, the only real) backend:
 //! self-contained, native speed, no container runtime. It runs `snip36 prove
 //! virtual-os` from a working directory that contains the prover `deps/` (the
 //! snip-36-prover-backend checkout, or the bundled `resources/prover/`). As long
@@ -8,8 +8,8 @@
 //!
 //! Config (env, with sibling-checkout defaults — the desktop app overrides these
 //! to point at its bundled prover):
-//!   STRKD_SNIP36_BIN       path to the `snip36` binary
-//!   STRKD_SNIP36_WORK_DIR  dir to run it from (must contain `deps/`)
+//!   BRAMBLE_COMPANION_SNIP36_BIN       path to the `snip36` binary
+//!   BRAMBLE_COMPANION_SNIP36_WORK_DIR  dir to run it from (must contain `deps/`)
 //!
 //! Backend-independent logic lives in [`crate::snip36`].
 //!
@@ -37,8 +37,8 @@ fn free_port() -> Option<u16> {
     std::net::TcpListener::bind("127.0.0.1:0").ok()?.local_addr().ok().map(|a| a.port())
 }
 
-/// Prefix of the per-prove temp dirs: `strkd-prove-<pid>-<seq>`.
-const WORKDIR_PREFIX: &str = "strkd-prove-";
+/// Prefix of the per-prove temp dirs: `bramble-companion-prove-<pid>-<seq>`.
+const WORKDIR_PREFIX: &str = "bramble-companion-prove-";
 
 /// A private per-prove temp dir, removed (with everything in it) on drop.
 pub(crate) struct WorkDir {
@@ -46,7 +46,7 @@ pub(crate) struct WorkDir {
 }
 
 impl WorkDir {
-    /// Create `<base>/strkd-prove-<pid>-<seq>`, owner-only (`0700` on unix).
+    /// Create `<base>/bramble-companion-prove-<pid>-<seq>`, owner-only (`0700` on unix).
     pub(crate) fn create(base: &Path, seq: u64) -> std::io::Result<WorkDir> {
         let path = base.join(format!("{WORKDIR_PREFIX}{}-{seq}", std::process::id()));
         let mut b = std::fs::DirBuilder::new();
@@ -82,8 +82,8 @@ impl Drop for WorkDir {
     }
 }
 
-/// Remove `strkd-prove-<pid>-*` dirs under `base` whose process is gone (a
-/// crash or kill mid-prove). Dirs of live processes — another strkd, or this
+/// Remove `bramble-companion-prove-<pid>-*` dirs under `base` whose process is gone (a
+/// crash or kill mid-prove). Dirs of live processes — another Bramble Companion, or this
 /// one — are left alone. Unix only (elsewhere it does nothing).
 pub fn remove_stale_workdirs(base: &Path) {
     #[cfg(unix)]
@@ -216,7 +216,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn base(tag: &str) -> PathBuf {
-        let b = std::env::temp_dir().join(format!("strkd-native-test-{tag}-{}", std::process::id()));
+        let b = std::env::temp_dir().join(format!("bramble-companion-native-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&b);
         std::fs::create_dir_all(&b).unwrap();
         b
@@ -247,7 +247,7 @@ mod tests {
         let stale = b.join(format!("{WORKDIR_PREFIX}{dead}-0"));
         let mine = b.join(format!("{WORKDIR_PREFIX}{}-0", std::process::id()));
         let parent = b.join(format!("{WORKDIR_PREFIX}{}-3", std::os::unix::process::parent_id()));
-        let other = b.join("strkd-prove-notapid");
+        let other = b.join("bramble-companion-prove-notapid");
         for d in [&stale, &mine, &parent, &other] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("tx_a.json"), "{}").unwrap();
