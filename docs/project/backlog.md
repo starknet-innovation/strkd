@@ -9,7 +9,7 @@ this is the "later" pile. Newest first within each group.
 ### Block-sized SNIP-36 proofs (v0.14.4 large-proof path, `PROOF2`) — on hold
 *Issue #29; investigated 2026-10-01 (PR #30 names the current cap). On hold since 2026-10-05:
 StarkWare found soundness issues in the PROOF2 route and is patching it before it reaches
-testnet. strkd stays on `PROOF1` (v1.2.2) until a fixed release lands.*
+testnet. Bramble Companion stays on `PROOF1` (v1.2.2) until a fixed release lands.*
 
 Today a SNIP-36 tx can use at most 2^20 rows per AIR component (the `PROOF1`
 small prover — see [`prover.md` → Proof size limit](../code/prover.md#proof-size-limit)).

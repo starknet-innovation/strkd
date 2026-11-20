@@ -1,4 +1,9 @@
-# strkd — Starknet Wallet Companion
+# Bramble Companion — Starknet wallet companion
+
+> Formerly **strkd**. The app, the CLI (`bramble-companion`) and this repository
+> were renamed for release 0.5.0. Older records under `docs/project/` keep the
+> old name. Upgrading from strkd: see
+> [Upgrading from strkd](./docs/code/desktop.md#upgrading-from-strkd).
 
 A desktop **menu-bar companion wallet** for Starknet. It stores a seed safely,
 derives multiple accounts from it, and exposes a local service that other
@@ -66,9 +71,9 @@ cd desktop
 npm install
 npm run tauri dev           # dev (hot reload; child processes — for development)
 npm run tauri build         # build an installable bundle (recommended for use)
-#   → src-tauri/target/release/bundle/macos/strkd.app  (drag to /Applications)
+#   → src-tauri/target/release/bundle/macos/Bramble Companion.app  (drag to /Applications)
 ```
-Install the built `strkd.app` and launch it like any app — it shows in the Dock
+Install the built `Bramble Companion.app` and launch it like any app — it shows in the Dock
 and lives in the menu bar (the tray); closing the window only hides it, and
 clicking the Dock icon re-shows it. Quit cleanly via the tray → Quit. Set the
 Starknet RPC endpoint in the app's **Settings** tab to enable broadcasting + fee
@@ -83,33 +88,33 @@ reuses the core crates by path.
 > but not run-verified** — confirming the tray/onboarding/approval flows means
 > running the app on a machine with a display.
 
-## The `strkd` CLI
+## The `bramble-companion` CLI
 
-`strkd` (crate `strkd`, under `crates/wallet-cli/`) is a thin command-line
+`bramble-companion` (crate `bramble-companion`, under `crates/wallet-cli/`) is a thin command-line
 client for the running menu-bar app. It holds no keys — it discovers the app's loopback service via
 `port.lock`, pairs once, and speaks the same `wallet_*` / `companion_*` API that
 agents use. Signing and approvals still happen in the app.
 
 ```bash
-strkd pair --name my-cli   # one-time; approve the prompt in the menu bar
-strkd status               # lock state, network, grant
-strkd accounts             # accounts this client may use
-strkd usage                # the wallet's self-describing API doc
-strkd sign  --account 0x… --data @typed_data.json
-strkd send  --account 0x… --to 0x… --function transfer --calldata 0x…,0x…
-strkd send  … --submit     # broadcast (IRREVERSIBLE); default is sign-only
+bramble-companion pair --name my-cli   # one-time; approve the prompt in the menu bar
+bramble-companion status               # lock state, network, grant
+bramble-companion accounts             # accounts this client may use
+bramble-companion usage                # the wallet's self-describing API doc
+bramble-companion sign  --account 0x… --data @typed_data.json
+bramble-companion send  --account 0x… --to 0x… --function transfer --calldata 0x…,0x…
+bramble-companion send  … --submit     # broadcast (IRREVERSIBLE); default is sign-only
 ```
 
 Add `--json` for a clean machine contract (only JSON on stdout; errors as
 `{"error": …}` on stderr) and `-q`/`--quiet` to drop progress text — both work
-before or after the subcommand, so `strkd accounts --json | jq` pipes cleanly.
+before or after the subcommand, so `bramble-companion accounts --json | jq` pipes cleanly.
 
 ### Install
 
 From this repo (needs a Rust toolchain):
 
 ```bash
-cargo install --path crates/wallet-cli   # installs the `strkd` binary
+cargo install --path crates/wallet-cli   # installs the `bramble-companion` binary
 ```
 
 Prebuilt binaries are distributed with [cargo-dist](https://opensource.axo.dev/cargo-dist/).
@@ -117,16 +122,19 @@ Once a release is cut, end users install without a toolchain via the shell
 installer, or by downloading a tarball from the release page:
 
 ```bash
-curl -LsSf https://github.com/starknet-innovation/strkd/releases/latest/download/strkd-installer.sh | sh
+curl -LsSf https://github.com/starknet-innovation/bramble-companion/releases/latest/download/bramble-companion-installer.sh | sh
 ```
 
-It installs to `~/.cargo/bin`. Per-target archives (`strkd-aarch64-apple-darwin.tar.xz`
+It installs to `~/.cargo/bin`. The installer does not remove a `strkd` binary left
+by a release before 0.5.0; delete that one by hand.
+
+ Per-target archives (`bramble-companion-aarch64-apple-darwin.tar.xz`
 and friends, for Apple silicon + Intel macOS and x86_64 + arm64 Linux) are
 attached to the same release, each with a `.sha256`, plus a signed build
 provenance attestation. To verify a download before running it:
 
 ```bash
-gh attestation verify strkd-aarch64-apple-darwin.tar.xz -R starknet-innovation/strkd
+gh attestation verify bramble-companion-aarch64-apple-darwin.tar.xz -R starknet-innovation/bramble-companion
 ```
 
 Homebrew is **not wired up yet**: it needs the `starknet-innovation/homebrew-tap`
@@ -140,7 +148,7 @@ Two independent tracks, each triggered by its own tag shape, each publishing a
 
 | Tag | Workflow | Ships |
 | --- | --- | --- |
-| `v0.4.0` | `release.yml` (generated by dist) | `strkd` CLI: shell installer + per-target tarballs + checksums |
+| `v0.4.0` | `release.yml` (generated by dist) | `bramble-companion` CLI: shell installer + per-target tarballs + checksums |
 | `desktop-v0.4.0` | `desktop-release.yml` | Menu-bar app with the prover bundled: `.dmg`, `.app.tar.gz`, `.deb`, `.rpm`, `.AppImage` |
 
 ```bash
@@ -176,7 +184,7 @@ Before publishing a draft, check the attached files and notes, then press
 
 **Publishing: only the CLI release may be "Latest".** GitHub marks one release
 per repo as Latest, by default the one published most recently. The CLI install
-command fetches `releases/latest/download/strkd-installer.sh`, which exists only
+command fetches `releases/latest/download/bramble-companion-installer.sh`, which exists only
 in the CLI release. If a desktop release becomes Latest, that command breaks for
 everyone. So publish the desktop release with *Set as the latest release*
 **unticked**, and the CLI release with it ticked:
@@ -184,7 +192,7 @@ everyone. So publish the desktop release with *Set as the latest release*
 ```bash
 gh release edit desktop-vX.Y.Z --draft=false --latest=false   # desktop: never Latest
 gh release edit vX.Y.Z         --draft=false --latest         # CLI: Latest
-curl -sI https://github.com/starknet-innovation/strkd/releases/latest | grep -i location
+curl -sI https://github.com/starknet-innovation/bramble-companion/releases/latest | grep -i location
                                                               # must end in /tag/vX.Y.Z
 ```
 
@@ -203,7 +211,7 @@ dist build --artifacts=local --target aarch64-apple-darwin --tag v0.4.0
                            # build the real artifacts for one target, locally
 ```
 
-While strkd is **alpha (test seeds only)**, prefer `cargo install` for internal
+While Bramble Companion is **alpha (test seeds only)**, prefer `cargo install` for internal
 dogfooding and keep the public channels quiet.
 
 ---

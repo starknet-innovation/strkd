@@ -29,7 +29,7 @@ The whole account model sits on one assumption: that a "user" account derived by
 | User | `m/44'/9004'/n'/0/0` | `derive_keypair_with_coin_type(mnemonic, index=0, account_index=n, coin_type=STARKNET_COIN_TYPE, passphrase)` |
 | Agent | `m/44'/9004'/0x41474E54'/0/n` | `derive_keypair_with_coin_type(mnemonic, index=n, account_index=0x41474E54, coin_type=STARKNET_COIN_TYPE, passphrase)` |
 
-> Updated by [#16](https://github.com/starknet-innovation/strkd/issues/16). The
+> Updated by [#16](https://github.com/starknet-innovation/bramble-companion/issues/16). The
 > primary comparison target is now **bramble**, which shares this crypto: both
 > wallets derive through `krusty-kms` with coin type 9004, so the keys should be
 > bit-identical and only the address step could differ. Argent and Braavos remain
@@ -44,7 +44,7 @@ Address from public key: `OpenZeppelinAccount::latest(chain_id).deployment_descr
 ## 4. Test cases
 
 ### T1 — User-branch public-key portability (Argent)
-**Goal:** prove the companion derives the *same key* another wallet does for user account `i`, which strkd now derives at `m/44'/9004'/i'/0/0` (account index `i`, address index 0 — bramble's recovery-scan axis, since #16). Note that Argent's own scan may walk a different axis; record which one it uses.
+**Goal:** prove the companion derives the *same key* another wallet does for user account `i`, which Bramble Companion now derives at `m/44'/9004'/i'/0/0` (account index `i`, address index 0 — bramble's recovery-scan axis, since #16). Note that Argent's own scan may walk a different axis; record which one it uses.
 1. On the test machine, generate a **test-only** mnemonic using official, offline tooling.
 2. In the companion, derive user accounts `i = 0..4`; record the **public keys**.
 3. Using Argent's open-source recover tooling (`argentlabs/argent-starknet-recover`) with the same mnemonic, derive the public keys for the same indices.

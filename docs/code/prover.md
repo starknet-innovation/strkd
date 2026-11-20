@@ -10,7 +10,7 @@ returns the proof. It holds **no key material** — signing happens upstream in
 
 ## What changed from `../dinner`
 
-dinner was a standalone app with its own open HTTP server. In strkd it is a
+dinner was a standalone app with its own open HTTP server. In Bramble Companion it is a
 library crate with **no HTTP layer of its own**: proving is exposed over the
 wallet's authenticated loopback JSON-RPC service (`companion_prove*`) and the
 desktop's IPC. Concretely:
@@ -19,8 +19,8 @@ desktop's IPC. Concretely:
   and the **Docker** backend.
 - **Relocated:** the `run_and_parse` process-group runner (the `libc` user) moved
   from `docker_prover.rs` into `snip36.rs`, since the native backend shares it.
-- **Renamed:** the `DINNER_*` env vars are now `STRKD_*` (see below); the proof
-  temp dir prefix is `strkd-prove-…`.
+- **Renamed:** the `DINNER_*` env vars are now `BRAMBLE_COMPANION_*` (see below); the proof
+  temp dir prefix is `bramble-companion-prove-…`.
 - **Added:** `ProverState` + `build_prover_state(data_dir, cfg)` + `enqueue_prove`
   as the one orchestration path both the RPC handlers and desktop IPC call.
 
@@ -28,7 +28,7 @@ desktop's IPC. Concretely:
 
 | Module | Responsibility |
 |---|---|
-| `config` | `ProverConfig` from env (`STRKD_PROVER`). |
+| `config` | `ProverConfig` from env (`BRAMBLE_COMPANION_PROVER`). |
 | `settings` | `SettingsStore` — per-network `rpc_url` / `prover_url` / `prover_api_key` + `prover_backend`, persisted to `settings.json`, hot-reloaded on external edits. **Carries secrets — IPC-only.** In the desktop, `rpc_url` is **mirrored from the wallet's shared RPC config** (Settings shows one RPC field per network for both wallet + prover), not edited here. |
 | `storage` | `Storage` — one `ProofRecord` JSON per job under `storage/`; `ProofSummary`/`StorageStats` for the UI; `max_seq` seeds the job counter across restarts. |
 | `jobs` | `Jobs` — in-memory job lifecycle (`queued`→`proving`→`succeeded`/`failed`) + a capped activity feed. Jobs can be owned by a client (`JobOptions::client_id`, read with `get_for`) and ephemeral (`result_ttl_ms`: the result is dropped that long after the job finishes, or at once by `wipe_ephemeral`). Failures can carry `error_reason`. |
@@ -38,7 +38,7 @@ desktop's IPC. Concretely:
 | `state` | `ProverState { prover, jobs, settings, storage }` — cheap to clone (all `Arc`). |
 | `lib` | `build_prover_state`, `enqueue_prove` / `enqueue_prove_as` (recorded), `prove_unrecorded` / `enqueue_prove_unrecorded` (nothing persisted). |
 
-## Backends (`STRKD_PROVER` / Settings `prover_backend`)
+## Backends (`BRAMBLE_COMPANION_PROVER` / Settings `prover_backend`)
 
 Both backends produce **real** proofs — there is no mock. An unconfigured backend
 fails the prove with a clear, actionable error rather than returning a fake proof.
@@ -55,12 +55,15 @@ The persisted Settings toggle wins over the env/default, chosen once at startup
 
 | Var | Meaning | Default |
 |---|---|---|
-| `STRKD_PROVER` | backend: `native` \| `remote` | `native` |
-| `STRKD_SNIP36_BIN` | path to the `snip36` binary | bundled `resources/prover/snip36`, else `~/Workshop/snip-36-prover-backend/target/release/snip36` |
-| `STRKD_SNIP36_WORK_DIR` | dir to run the CLI from (must contain `deps/`) | alongside the binary |
-| `STRKD_PROVE_TIMEOUT_SECS` | prove timeout before the process group is killed | `900` |
+| `BRAMBLE_COMPANION_PROVER` | backend: `native` \| `remote` | `native` |
+| `BRAMBLE_COMPANION_SNIP36_BIN` | path to the `snip36` binary | bundled `resources/prover/snip36`, else `~/Workshop/snip-36-prover-backend/target/release/snip36` |
+| `BRAMBLE_COMPANION_SNIP36_WORK_DIR` | dir to run the CLI from (must contain `deps/`) | alongside the binary |
+| `BRAMBLE_COMPANION_PROVE_TIMEOUT_SECS` | prove timeout before the process group is killed | `900` |
 
-The desktop app sets `STRKD_SNIP36_BIN`/`STRKD_SNIP36_WORK_DIR` automatically when
+Each variable is also read under its old `STRKD_` prefix when the new name is unset
+or empty (`config::env_var`).
+
+The desktop app sets `BRAMBLE_COMPANION_SNIP36_BIN`/`BRAMBLE_COMPANION_SNIP36_WORK_DIR` automatically when
 a prover bundle is staged into `resources/prover/` (see
 [native prover bundling](#native-prover-bundling)).
 
@@ -117,7 +120,7 @@ dir (`native_prover::WorkDir`'s `Drop`). `prove_unrecorded` returns
 reads the path once with `read_to_string`, so `/dev/stdin` might work but is
 untested). The native backend writes the transaction (and so the viewing key
 and, for STRK20, the batch's channel keys) to
-`$TMPDIR/strkd-prove-<pid>-<n>/tx_a.json`: the dir is created `0700` and the
+`$TMPDIR/bramble-companion-prove-<pid>-<n>/tx_a.json`: the dir is created `0700` and the
 file `0600` (`create_new`), and the dir is removed when the CLI exits, when the
 prove is cancelled by a lock, and, after a crash or kill, at the next prover
 start (`remove_stale_workdirs`, which skips dirs whose pid is still alive).
@@ -142,7 +145,7 @@ the caller skips the manual `wallet_addInvokeTransaction(sign-only)` →
 `companion_prove` round-trip and the secret never leaves the device.
 
 `resource_bounds` is **required** — the virtual tx carries private calldata, so
-strkd refuses to fee-estimate it online (that would leak the inputs to the RPC
+Bramble Companion refuses to fee-estimate it online (that would leak the inputs to the RPC
 node; matches the SNIP-36 "fee estimation on virtual tx" pitfall). It's
 approval-gated (a real signature, though proven locally and never broadcast).
 
@@ -166,12 +169,12 @@ panics with `Not enough twiddles!`. More RAM or a retry won't help.
   The measured `n_steps` can't be reported: the runner logs it to stdout, which
   the snip36 CLI pipes and never reads.
 
-**PROOF1 → V2 (PROOF2), 2026-11.** Until snip36 v1.3.1 strkd bundled the PROOF1
+**PROOF1 → V2 (PROOF2), 2026-11.** Until snip36 v1.3.1 Bramble Companion bundled the PROOF1
 stack (proving-utils `v0.14.3-rust-bump`), which capped every component at
 exactly 2^20 rows (`CAIRO_TRACE_LOG_SIZE = 20`, blowup 3; issue #29: ~100 ECDSA
 verifies per tx). Sepolia and Mainnet now run 0.14.4 and take V2 proofs
 (snip36 v1.4.1 passed live e2e on both, 2026-11-10), and `starkware-libs/sequencer`
-accepts only V2 from 0.14.5 (#15240). strkd bundles the V2 stack from snip36
+accepts only V2 from 0.14.5 (#15240). Bramble Companion bundles the V2 stack from snip36
 v1.4.2. Its per-tx limit has not been re-measured yet; re-run the #29 batch
 sweep before quoting a number.
 

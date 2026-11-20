@@ -1,5 +1,8 @@
 # Documentation Index
 
+> The project was called **strkd** until release 0.5.0. Dated records under
+> `project/` (the progress log, the convergence and STRK20 plans) keep that name.
+
 The complete map of project documentation. Every doc file must be listed here —
 if it isn't in this index, it doesn't exist as far as navigation is concerned
 (see the [contribution rules](../README.md#contributing-to-the-documentation)).
@@ -41,7 +44,7 @@ Lives in [`docs/project/`](./project/).
 - [`project/backlog.md`](./project/backlog.md) — deferred work (e.g. large SNIP-36
   proofs) with context to pick it up later.
 - [`project/bramble-convergence.md`](./project/bramble-convergence.md) — plan and
-  decision record for aligning strkd with the bramble browser wallet (account
+  decision record for aligning Bramble Companion with the bramble browser wallet (account
   model, krusty pin, design system).
 - [`project/strk20-plan.md`](./project/strk20-plan.md) — plan and decisions for
   STRK20 privacy-pool support (local proving, remote-proved deposits).

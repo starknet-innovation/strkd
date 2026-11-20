@@ -27,7 +27,7 @@ The service speaks the **standard Starknet Wallet RPC API** ([`wallet_rpc.json`]
 ### 1.2 Non-goals (v1)
 - ❌ Hardware-wallet / external-signer support.
 - ❌ Multi-device vault sync (vault stays local).
-- ❌ **Private-key** export (per-account keys are never shown or returned). Recovery-phrase reveal *is* supported as of [#28](https://github.com/starknet-innovation/strkd/issues/28) — see [§6.5](#65-recovery-phrase-reveal) — but only in the app's own window, behind a fresh passphrase check, and never over the service.
+- ❌ **Private-key** export (per-account keys are never shown or returned). Recovery-phrase reveal *is* supported as of [#28](https://github.com/starknet-innovation/bramble-companion/issues/28) — see [§6.5](#65-recovery-phrase-reveal) — but only in the app's own window, behind a fresh passphrase check, and never over the service.
 - ❌ Browser-dApp (`get-starknet`) injection — callers are local native processes only.
 - ❌ Transaction **simulation / effects preview** in the prompt (decode + fee only; see [§8](#8-confirmation-ux)). Note: fee *estimation* is in scope; full simulation is not.
 - ✅ Auto-approval via **time-bounded permission grants** (see §5.8). (Per-call
@@ -229,20 +229,20 @@ Accounts are partitioned into two **non-overlapping branches**:
 
 - **Reserved constant:** `AGENT_ACCOUNT_INDEX = 0x41474E54` — `"AGNT"` in ASCII, 1,095,192,148, inside BIP-32's hardened ceiling `0x7FFFFFFF`. Never reuse it for user accounts.
 - **Why the two branches walk different axes.** BIP-44 offers a hardened *account* index and an *address* index, and wallets differ over which one "add another account" advances. User accounts follow bramble so a seed import agrees; agent accounts use the other axis under a reserved account index so one constant covers the branch.
-- **This changed in [#16](https://github.com/starknet-innovation/strkd/issues/16).** User accounts previously walked the address index under `account' = 0`, and the agent branch was `0x41`. Under the new axis `0x41` (65) is reachable by ordinary use — the 66th account — so the reservation moved. Every address changed; there is no migration (assets were swept out first, [#14](https://github.com/starknet-innovation/strkd/issues/14)), and the vault version is bumped to refuse pre-change vaults rather than open them against the wrong accounts.
+- **This changed in [#16](https://github.com/starknet-innovation/bramble-companion/issues/16).** User accounts previously walked the address index under `account' = 0`, and the agent branch was `0x41`. Under the new axis `0x41` (65) is reachable by ordinary use — the 66th account — so the reservation moved. Every address changed; there is no migration (assets were swept out first, [#14](https://github.com/starknet-innovation/bramble-companion/issues/14)), and the vault version is bumped to refuse pre-change vaults rather than open them against the wrong accounts.
 - **The reservation is a convention, not a chain rule.** Another wallet given a manual index could still derive there. Bramble is asked to exclude it explicitly in `mc-wallet#336`.
 - **Grinding/curve:** EIP-2645 SHA-256 rejection sampling to the STARK order, BIP-32 secp256k1 master (`HMAC-SHA512("Bitcoin seed", …)`) — all internal to krusty.
 
-> **Portability is a claim that must be tested, not assumed.** The concrete target is now **bramble**, which shares strkd's crypto (both derive through `krusty-kms` with the same coin type, so the keys are bit-identical) and whose address formula strkd now matches — `user_account_zero_matches_brambles_address_formula` pins account 0 against a value cross-checked with starknet.js. What remains unverified is the **full round-trip through a running bramble**, and portability to Argent/Braavos, whose recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`) rather than BIP-39→BIP-32 directly. See [Risks](#14-risks--open-questions) and [`portability-test-plan.md`](./portability-test-plan.md).
+> **Portability is a claim that must be tested, not assumed.** The concrete target is now **bramble**, which shares Bramble Companion's crypto (both derive through `krusty-kms` with the same coin type, so the keys are bit-identical) and whose address formula Bramble Companion now matches — `user_account_zero_matches_brambles_address_formula` pins account 0 against a value cross-checked with starknet.js. What remains unverified is the **full round-trip through a running bramble**, and portability to Argent/Braavos, whose recover tool routes the seed through `ethers` (`Wallet.fromMnemonic`) rather than BIP-39→BIP-32 directly. See [Risks](#14-risks--open-questions) and [`portability-test-plan.md`](./portability-test-plan.md).
 
 ### 6.2 Account contract
 - Accounts are **OpenZeppelin** account contracts, resolved through the
-  `AccountContract` seam ([#15](https://github.com/starknet-innovation/strkd/issues/15)),
+  `AccountContract` seam ([#15](https://github.com/starknet-innovation/bramble-companion/issues/15)),
   which owns the class hash, constructor calldata, salt policy, and **how a
   signature is serialized for `__validate__`**. Adding a class means adding a
   variant, not revisiting the signing path.
 - Address computed **counterfactually**: `OpenZeppelinAccount::latest(chain_id).deployment_descriptor(&public_key, SaltPolicy::Zero)` → `OzDeploymentDescriptor { address, class_hash, salt, constructor_calldata, deployer_address }`.
-- **Salt is zero**, matching bramble. It is security-neutral for OZ: the constructor takes `[public_key]`, so the key is bound into the address whatever the salt, and `DEPLOY_ACCOUNT` (deployer `0`) requires the account's own signature — an undeployed address cannot be squatted. A class whose constructor does *not* commit to the owner must not use a zero salt. Note this is **not** krusty's default — krusty defaults both its OZ address entry points to the public key — so zero is an explicit override on strkd's part, matching bramble, which pins `"0x0"` explicitly to protect addresses it has already deployed on mainnet.
+- **Salt is zero**, matching bramble. It is security-neutral for OZ: the constructor takes `[public_key]`, so the key is bound into the address whatever the salt, and `DEPLOY_ACCOUNT` (deployer `0`) requires the account's own signature — an undeployed address cannot be squatted. A class whose constructor does *not* commit to the owner must not use a zero salt. Note this is **not** krusty's default — krusty defaults both its OZ address entry points to the public key — so zero is an explicit override on Bramble Companion's part, matching bramble, which pins `"0x0"` explicitly to protect addresses it has already deployed on mainnet.
 - OZ **class hash is resolved from krusty's embedded per-network manifest** (`OzAccountClassConfig::latest(chain_id)`), not a hardcoded constant — so it tracks the manifest per network.
 - Deployment data is exposed via `wallet_deploymentData`; deployment broadcasting follows the same submit/sign rules as any transaction ([§7.4](#74-broadcast-modes-sign-only-default-submit-opt-in)).
 
@@ -258,11 +258,11 @@ On first run, the user chooses:
 
 ### 6.5 Recovery-phrase reveal
 
-**Reversal of an earlier non-goal ([#28](https://github.com/starknet-innovation/strkd/issues/28)).**
-This spec previously ruled out any re-reveal. That made strkd a one-way door for a seed it had
+**Reversal of an earlier non-goal ([#28](https://github.com/starknet-innovation/bramble-companion/issues/28)).**
+This spec previously ruled out any re-reveal. That made Bramble Companion a one-way door for a seed it had
 generated: a user who lost their written backup could neither move to another device nor to
 bramble, which does offer a reveal flow. Worse, it interacts badly with vault-version changes —
-a vault strkd refuses to open is a seed nobody can recover.
+a vault Bramble Companion refuses to open is a seed nobody can recover.
 
 Settings offers **Show recovery phrase**, subject to all of:
 
@@ -272,7 +272,7 @@ Settings offers **Show recovery phrase**, subject to all of:
   not be the same thing as consenting to show the seed.
 - **Unlocked is necessary but not sufficient.** Refused from the lock screen.
 - **IPC only.** There is no `wallet_*` or `companion_*` equivalent and there must never be: the
-  loopback service is reachable by any local process, including the AI agents strkd exists to
+  loopback service is reachable by any local process, including the AI agents Bramble Companion exists to
   serve, and [§5.1](#51-security-boundary) is that it never returns key material. A test
   (`the_service_exposes_no_way_to_reveal_the_seed`) fails if such a method is added.
 - **Never logged.** The reveal is recorded in the request log as an event (`ui_revealSeed`, with
@@ -281,7 +281,7 @@ Settings offers **Show recovery phrase**, subject to all of:
   two-minute timeout. There is no copy button: the system clipboard is readable by every other
   process on the machine, which is precisely the threat model here.
 
-**Per-account private keys remain a non-goal.** Bramble's equivalent screen reveals both; strkd
+**Per-account private keys remain a non-goal.** Bramble's equivalent screen reveals both; Bramble Companion
 reveals only the phrase, which is the smaller surface and the one that actually enables recovery
 and portability.
 
@@ -323,7 +323,7 @@ Implements all of `wallet_rpc.json`. **P** = phase ([§13](#13-phasing--mileston
 
 ¹ First connection requires pairing approval; thereafter auto-served to the paired caller (within scope).
 ² Proof generation may be heavy; prompt + progress indication.
-³ STRK20 on the canonical privacy pool, wallet-API 0.10.4 (supersedes the strkd#20 park
+³ STRK20 on the canonical privacy pool, wallet-API 0.10.4 (supersedes the bramble-companion#20 park
   and the Tongo PR #11). Register, transfer and withdraw are proved on the device; a deposit
   needs a screening attestation, so it is proved by a remote screening prover (user URL,
   else Starkscan with the user's key, else the bramble gateway). Supported actions:
@@ -419,7 +419,7 @@ goes into the transaction hash the account's `__validate_declare__` checks the
 signature against. So a wallet that signs a caller-supplied `class_hash` which
 does not match the class actually broadcast emits a signature the node rejects
 — surfacing as `Account: invalid signature` (RPC 55, or execution error 41)
-with nothing wrong in the wallet's own transaction hashing (strkd #9).
+with nothing wrong in the wallet's own transaction hashing (Bramble Companion #9).
 
 The wallet therefore derives the class hash itself, from the exact class it
 broadcasts (`wallet_core::SierraClass::class_hash`, the `CONTRACT_CLASS_V0.1.0`

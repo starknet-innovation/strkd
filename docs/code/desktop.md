@@ -38,10 +38,11 @@ desktop/
 
 Reuses `wallet-core` + `wallet-rpc` by path. On `setup`:
 
-1. macOS `Regular` activation policy — the strkd icon shows in the Dock; a
+1. macOS `Regular` activation policy — the Bramble Companion icon shows in the Dock; a
    `RunEvent::Reopen` handler re-shows the window when the Dock icon is clicked.
-2. Resolve the data dir; open the file-backed `RequestLog` and `VaultStore`
-   (`vault.bin`, `requests.db`, `port.lock` — spec §10).
+2. Resolve the data dir, copying a strkd data dir across on the first launch
+   ([Upgrading from strkd](#upgrading-from-strkd)); open the file-backed
+   `RequestLog` and `VaultStore` (`vault.bin`, `requests.db`, `port.lock` — spec §10).
 3. Build a `ServerState` with a `ChannelApprover` + file log + vault store, a
    **locked** session (onboarding/unlock fills it).
 4. Start the loopback service (`bind_loopback` → binds `127.0.0.1`, writes
@@ -72,7 +73,7 @@ menu-bar **notification with Approve / Deny buttons**
 Indicator reliability, in order: the in-app **`ApprovalDialog`** is the
 ground-truth prompt; the **Dock badge** + **tray red-dot** always reflect pending
 count; the **OS notification** is best-effort — it needs notification permission
-(System Settings → Notifications → strkd) and is most reliable from the
+(System Settings → Notifications → Bramble Companion) and is most reliable from the
 **installed, bundled app**, not `tauri dev`. All of this is **GUI, not
 run-verified**.
 
@@ -187,11 +188,11 @@ npm run tauri dev
 
 # Build + install (recommended for actual use). Produces a real bundle:
 npm run tauri build
-#   → src-tauri/target/release/bundle/macos/strkd.app   (drag to /Applications)
-#   → src-tauri/target/release/bundle/dmg/strkd_<ver>_<arch>.dmg
+#   → src-tauri/target/release/bundle/macos/Bramble Companion.app   (drag to /Applications)
+#   → src-tauri/target/release/bundle/dmg/Bramble Companion_<ver>_<arch>.dmg
 ```
 
-Launch the installed `strkd.app` like any app — its icon shows in the Dock and
+Launch the installed `Bramble Companion.app` like any app — its icon shows in the Dock and
 it also lives in the menu bar (the tray); closing the window only hides it, and
 clicking the Dock icon re-shows it (`Regular` activation policy + `Reopen`
 handler). **Quit via the tray → Quit** (`app.exit(0)`), which
@@ -263,5 +264,45 @@ strings, this is React — so this is the same contract reimplemented.
 Reduced motion is honoured by zeroing the duration tokens, and by switching off
 keyframe animations (the deploy wiggle) that don't read them.
 
-See [issues #18 and #19](https://github.com/starknet-innovation/strkd/issues/18)
+See [issues #18 and #19](https://github.com/starknet-innovation/bramble-companion/issues/18)
 and [`bramble-convergence.md`](../project/bramble-convergence.md) §5.5.
+
+## Upgrading from strkd
+
+The data directory is named after the bundle identifier, which changed from
+`org.starknet.strkd` to `org.starknet.bramble-companion` in 0.5.0. On macOS that
+is `~/Library/Application Support/<identifier>/`.
+
+On its first launch, Bramble Companion copies the old directory to the new one
+(`wallet_rpc::data_migration::migrate_legacy_data_dir`):
+
+- **When.** Only if the new directory is missing or empty and the old one holds
+  a `vault.bin`. A new directory that already holds anything is never touched.
+- **What.** Every regular file and directory: the vault and its backups,
+  `clients.json` (pairings and grants), `config.json`, `requests.db`,
+  `cli-token.json`, the `prover/` data, and `port.lock`. Carrying `port.lock`
+  keeps the service on the same port, so a paired client's saved URL still works.
+  Symlinks are skipped. A `migrated-from.txt` file records the source path.
+- **How.** The copy is built in `<new>.migrating` and renamed into place, so the
+  new directory is either absent or complete. A leftover staging directory from an
+  interrupted run is discarded and rebuilt.
+- **The old directory is left as it was.** It is the backup. Delete it by hand
+  once the new app has been checked; until then a strkd build can still open it,
+  and the two copies then drift apart.
+- **On failure the app does not start.** Starting with an empty directory would
+  show onboarding to someone who already has a wallet.
+
+Quit strkd before the first launch: a request log copied while strkd is writing
+to it may not open, and the old app would also be holding the port.
+
+Other things that change with the name:
+
+- macOS treats the app as new, so it asks for notification permission again, and
+  `strkd.app` stays in `/Applications` until deleted.
+- The CLI binary is `bramble-companion`. It reads the old data directory when the
+  new one does not exist, so it still works against a strkd app that has not been
+  upgraded. A `strkd` binary keeps looking in the old directory only.
+- `STRKD_*` environment variables are still read ([`prover.md`](./prover.md)).
+- Two strings keep the old name on purpose, because they are part of a format:
+  the STRK20 owner key tag `strkd.strk20.owner.v1` and the SNIP-12 domain
+  `strkd.Strk20Plan` ([`strk20.md`](./strk20.md)).

@@ -11,9 +11,15 @@ _Last updated: 2026-07-06_
 
 ## ▶ Resume here
 
+**Rename to Bramble Companion (2026-11-20).** The code and living docs are
+renamed; see the newest [progress-log](./progress-log.md) entry for what is left
+before release 0.5.0: the repository rename, a launch over a real 0.4.0 data dir,
+and the attestation check. The rest of this file predates the rename and has not
+been refreshed.
+
 **Recommended: run-verify end-to-end now** — the wallet is usable. On a machine
-with a display, set `STRKD_RPC_URL` to a Sepolia RPC endpoint, `cd desktop &&
-npm run tauri dev`, then: onboard → unlock → add account → from a second process
+with a display, `cd desktop && npm run tauri dev`, set a Sepolia RPC URL in the Settings tab,
+then: onboard → unlock → add account → from a second process
 `curl http://127.0.0.1:<port>/` for usage → pair → `companion_requestFunding`
 with `submit:true` and confirm the menu-bar approval + on-chain broadcast. This
 exercises the **node wire format**, which is the one thing not verified by
@@ -25,7 +31,7 @@ switchChain, watchAsset, declare; `addStarknetChain` intentionally skipped). The
 open item is the **funded-account live submit** to confirm the broadcast/declare
 wire format end-to-end. After that: the **bramble convergence** work
 ([plan](./bramble-convergence.md)). Privacy is **parked**, not next — see
-[#20](https://github.com/starknet-innovation/strkd/issues/20).
+[#20](https://github.com/starknet-innovation/bramble-companion/issues/20).
 
 **Declare fixed 2026-09-09 (#9).** Declares failed on-chain with `Account:
 invalid signature` because the wallet signed the caller's `class_hash`, while
@@ -164,7 +170,7 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
   Remaining: mainnet end-to-end (Starkscan / bramble gateway deposits, AVNU
   relay), open notes / invokes / shadow accounts. Per-network pool + testnet
   local screener (#57): Sepolia test-pool deposits are proved on-device; a
-  submitted deposit through strkd is still to be run.
+  submitted deposit through Bramble Companion is still to be run.
 - **Invoke end-to-end** — prove the computed invoke tx hash is accepted by a
   Sepolia node / matches a golden vector (belongs with the security-reviewed
   test plan).
@@ -183,7 +189,7 @@ Phases are defined in [spec §13](../../spec/wallet-companion-spec.md#13-phasing
 | Tests (core) | `cargo test` | ✅ 98 passed (21 core + 56 dispatch + 5 log + 2 persistence + 3 session + 2 clients + 5 transport-unit + 4 HTTP) |
 | Lint (core) | `cargo clippy --all-targets` | ✅ clean |
 | Desktop build | `cd desktop && npm run build` + `(cd src-tauri && cargo build)` | ✅ compiles; clippy clean. GUI **not run-verified** |
-| Installable bundle | `cd desktop && npm run tauri build` | ✅ produces `strkd.app` + `.dmg` (release) |
+| Installable bundle | `cd desktop && npm run tauri build` | ✅ produces `Bramble Companion.app` + `.dmg` (release) |
 
 ## Open decisions not yet made
 

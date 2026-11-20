@@ -3,8 +3,8 @@
 _Status: options A and C built (2026-11-13, PR for #49); option D is future work; option B
 rejected. The decisions are in [§13](#13-decisions-2026-11-13). Sections 1–12 are the analysis
 as drafted, kept for the record; where they differ from §13, §13 wins. Issue:
-[#49](https://github.com/starknet-innovation/strkd/issues/49). Related:
-[#48](https://github.com/starknet-innovation/strkd/issues/48) (external contract owners,
+[#49](https://github.com/starknet-innovation/bramble-companion/issues/49). Related:
+[#48](https://github.com/starknet-innovation/bramble-companion/issues/48) (external contract owners,
 plan/prove split)._
 
 Code references are to this repo as of the draft (line numbers may have moved since), and to
@@ -23,7 +23,7 @@ outgoing channel to R. The verifier would then use two pool views:
 - `channel_exists(marker)` authenticates the sender;
 - `get_note(note_id)` plus the amount hash recovers the amount.
 
-#49 also asks for the index and salt of a note strkd just created.
+#49 also asks for the index and salt of a note Bramble Companion just created.
 
 ## 2. Goals and non-goals
 
@@ -116,7 +116,7 @@ option D.
 | Returns | `ck` and the marker inputs | note id, pad, amount | `{recipient, token, index, note_id, salt}` per created note | nothing secret; the app receives a proven result |
 | Verifier can check sender and amount | Yes | **No** (unsound) | No: it only locates the note | Yes |
 | Discloses | the whole S→R channel, forever (§3.2) | — | the note's position (the index counts prior S→R notes of that token) | `(S, R, T, A)` of one note, to the app |
-| Work in strkd | small | — | small | large: `invoke` / compute actions, timing, a Cairo `privacy_compute` contract on the app side |
+| Work in Bramble Companion | small | — | small | large: `invoke` / compute actions, timing, a Cairo `privacy_compute` contract on the app side |
 | Works with any verifier | Yes | — | needs A or D | only apps that implement `privacy_compute` |
 
 **D in more detail.** The pool's `compute_and_invoke` action calls an arbitrary contract's
@@ -125,7 +125,7 @@ execution*. It then forwards only the result to a public `privacy_invoke_with_co
 call (`privacy/privacy.cairo:545-575`). The only restriction the pool places on the target is
 that it is non-zero (`privacy/actions.cairo:235-240`). An app's `privacy_compute` could take
 `ck, T, i` as private input, read `channel_exists` and `get_note` at the proof's base block,
-recompute the amount, and return `(S, R, T, A, note_id)`. strkd would derive `ck` itself, so
+recompute the amount, and return `(S, R, T, A, note_id)`. Bramble Companion would derive `ck` itself, so
 `ck` never leaves the machine (local proving, as for transfers today). Constraints:
 
 - The note must exist at the proving block. That block is head − 12
@@ -133,14 +133,14 @@ recompute the amount, and return `(S, R, T, A, note_id)`. strkd would derive `ck
   transfer, not the same batch.
 - Each verification costs one proof and one `apply_actions` (about 78M L2 gas, plus the pool fee;
   plan §2b).
-- strkd must support the `invoke` and compute actions, which are not implemented today
+- Bramble Companion must support the `invoke` and compute actions, which are not implemented today
   (`mod.rs:267-269`).
 
 ### Recommendation
 
 1. **Ship C now**, alongside the planned method. `wallet_strk20PrepareInvoke` and
    `wallet_strk20InvokeTransaction` return a `notes` array. The planner already holds every
-   field (`planner.rs:242-249`), and `note_id = H(ck, T, i)` is computed inside strkd. The
+   field (`planner.rs:242-249`), and `note_id = H(ck, T, i)` is computed inside Bramble Companion. The
    key itself is not returned.
 2. **Ship A as `companion_strk20ChannelKey`**, but scope it and word it as a channel
    disclosure, not a note disclosure (§5). It is the only option that works with an
@@ -202,7 +202,7 @@ it, because the locator holds no key.
 ## 7. Storing recently sent notes
 
 There is no need to persist locators to make option C work: they are returned in the
-response. To verify later, or to cover a lost response, strkd can rediscover the notes from
+response. To verify later, or to cover a lost response, Bramble Companion can rediscover the notes from
 chain state. `discover_channel` already finds each subchannel's `next_note_index`
 (`discovery.rs:171-212`), and the creating tx can be found from the `EncNoteCreated` event
 keyed by `note_id`.
@@ -273,10 +273,10 @@ like that method (`mod.rs:568-579`).
   refused.
 
 **Live, Sepolia, test seed only. Never real keys.** Extend
-`crates/wallet-rpc/examples/strk20_live.rs`. Use test-seed accounts #0 and #1 on strkd's
+`crates/wallet-rpc/examples/strk20_live.rs`. Use test-seed accounts #0 and #1 on Bramble Companion's
 Sepolia test pool. Send #0→#1 and read the locator. Call `companion_strk20ChannelKey`, then
 check `channel_exists(marker)` and `get_note(note_id)`, and decode the amount with a
-standalone verifier script (starknet.js only, no strkd code). Send a second note and confirm
+standalone verifier script (starknet.js only, no Bramble Companion code). Send a second note and confirm
 that the old key decodes it too. This step changes Sepolia state, so it needs explicit
 sign-off. No mainnet run.
 
@@ -286,8 +286,8 @@ sign-off. No mainnet run.
   `compute_and_invoke` action carrying `ck` as private data, let the app approve, then prove.
   The locator (C) is the natural output of #48's *plan* step as well. One `notes` schema
   should serve both.
-- **External contract owners.** If S is a contract that strkd drives (#48), S's `ck` is
-  derived from the viewing key strkd holds for it. The same method applies, and the
+- **External contract owners.** If S is a contract that Bramble Companion drives (#48), S's `ck` is
+  derived from the viewing key Bramble Companion holds for it. The same method applies, and the
   disclosure is just as broad. Who may approve that disclosure (the contract's logic, or the
   desktop user) is a #48 question.
 
@@ -302,7 +302,7 @@ sign-off. No mainnet run.
    grow beyond wallet-API 0.10.4's `{transaction_hash}` / `STRK20_CALL_AND_PROOF` without
    breaking bramble or other clients? Or does the locator go behind a `companion_` flag?
 4. Is a per-pair channel acceptable at all for the target apps, given that it cannot be
-   revoked? Should strkd warn when a recipient is an app contract and suggest D?
+   revoked? Should Bramble Companion warn when a recipient is an app contract and suggest D?
 5. Should option A be desktop-only (no agent access) until D exists?
 6. Does StarkWare's SDK plan a per-note viewing grant or auditor-style disclosure that would
    make D unnecessary? Check `starknet-privacy` upstream.

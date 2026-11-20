@@ -1,6 +1,6 @@
 # STRK20 (privacy pool)
 
-strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
+Bramble Companion's support for the Starknet privacy pool, on wallet-API 0.10.4's
 `wallet_strk20*` surface. The plan, decisions and phase-0 measurements are in
 [`project/strk20-plan.md`](../project/strk20-plan.md); this page describes the code.
 
@@ -9,10 +9,10 @@ strkd's support for the Starknet privacy pool, on wallet-API 0.10.4's
 | Piece | Path | What |
 |---|---|---|
 | Viewing key | `wallet-core::strk20_viewing_key` | Pool-scoped `user_sk`, bramble's derivation via krusty. Same seed → same notes in both wallets. |
-| Owner key | `wallet-core::strk20_owner_viewing_key` | The `user_sk` strkd holds for an external owner contract, derived from a controller account (#48). strkd-only. |
+| Owner key | `wallet-core::strk20_owner_viewing_key` | The `user_sk` Bramble Companion holds for an external owner contract, derived from a controller account (#48). Bramble Companion only. |
 | Owner records | `wallet-core::Strk20Owner`, `crates/wallet-rpc/src/strk20/owners.rs` | Enrolled owner contracts in the sealed registry, plus `companion_strk20AddOwner` / `ListOwners` / `RemoveOwner`. |
 | Plans | `crates/wallet-rpc/src/strk20/plan.rs` | `companion_strk20Plan` / `DiscardPlan`, the SNIP-12 `Strk20Plan` hash (`plan_hash`), and the in-memory `PlanStore` (#48). |
-| Prove | `crates/wallet-rpc/src/strk20/prove.rs` | `companion_strk20Prove`: the prove-time checks, the caller's signature (owners) or strkd's (accounts), and the unrecorded proving job (#48). |
+| Prove | `crates/wallet-rpc/src/strk20/prove.rs` | `companion_strk20Prove`: the prove-time checks, the caller's signature (owners) or Bramble Companion's (accounts), and the unrecorded proving job (#48). |
 | Note disclosure | `strk20::planner::NoteLocator`, `crates/wallet-rpc/src/strk20/channel.rs` | The `notes` locators the batch methods return, and `companion_strk20ChannelKey` (#49). |
 | Protocol client | `crates/strk20` | Pure Rust port of the wallet side of StarkWare's SDK: hashes, decryption, client actions, the proof invocation, discovery, planner, `apply_actions`. No I/O. |
 | RPC + desktop | `crates/wallet-rpc/src/strk20/` | The `wallet_strk20*` handlers and `companion_strk20Register`, the deposit provers (`remote.rs`), the AVNU private relay (`paymaster.rs`). |
@@ -28,7 +28,7 @@ call, so every method (register, balances, prepare, invoke, and the #48 plan
 and owner methods) reads, proves against and submits to the same pool, and the
 viewing key is derived for that pool. Callers can't choose it: a
 `pool_address` param only asserts the expected pool, and a mismatch is `114`
-before anything runs (a paired agent can't point strkd at an arbitrary
+before anything runs (a paired agent can't point Bramble Companion at an arbitrary
 contract). Approval prompts, including plan, prove and enrol, name the pool
 and flag a non-canonical one as `NON-CANONICAL pool 0x…, set in Settings →
 STRK20`. The local screener applies to the one-shot deposit methods only;
@@ -79,18 +79,18 @@ chain_id, 1)`, the screener's public key in the account slot, message
 `(depositor, issued_at)` (`packages/privacy/src/snip12.cairo`). The
 attestation is not bound to the proof. For a pool you deployed yourself, set
 its screener private key in Settings → STRK20 (Sepolia only): the deposit is
-proved on this machine and strkd signs the attestation right after proving,
+proved on this machine and Bramble Companion signs the attestation right after proving,
 dated at the latest block's timestamp. `strk20::screening` reproduces
 starknet-privacy's `fixtures/screening-vectors.json` exactly. Guards: refused
 on mainnet when saving and at deposit time; checked against the pool's
 `get_screener_public_key` before the prompt; never logged or returned (the
 settings `Debug` redacts it, the desktop reads it back as `<stored>`). It is
 stored unencrypted in the prover's `settings.json` (now `0600`), next to the
-API keys: it is a test key for a test pool, not wallet key material. strkd's
+API keys: it is a test key for a test pool, not wallet key material. Bramble Companion's
 Sepolia test pool `0x03016a46…6323` uses the public test key `0xCAFEBABE`.
 
 **Fees.** The pool charges a flat fee per `apply_actions` (`get_fee_amount`,
-in STRK: 2.5 STRK on mainnet in October 2026, 0 on strkd's Sepolia test pool).
+in STRK: 2.5 STRK on mainnet in October 2026, 0 on Bramble Companion's Sepolia test pool).
 Submissions from the account approve it alongside the deposits; the AVNU relay
 passes it on in its fee withdraw. A deposit is checked against the account's
 public balance before the screening prover is called. A submission from an
@@ -101,7 +101,7 @@ deposits, or fails with `INSUFFICIENT_BALANCE_FOR_BOUNDS` (`-32006`; for
 
 **Prover errors.** A local proving failure comes back as `163` (unknown error)
 with a `data.reason` (`PROVING_FAILED`, `INVALID_SIGNATURE`, `WIPED_ON_LOCK`) and
-a fixed message picked by the prefix strkd itself wrote
+a fixed message picked by the prefix Bramble Companion itself wrote
 (`strk20::safe_prover_error`): "the batch reverted…", "too large…", "RPC
 throttled…", and so on. The prover's own text, and so the revert reason, is
 never returned or logged: the virtual transaction carries the viewing key and
@@ -158,7 +158,7 @@ spend (`assert_valid_signature`, check 1). The design is in
 [`project/design-48-strk20-external-owner.md`](../project/design-48-strk20-external-owner.md).
 All three parts of phase 1 are built (enrolment, the plan step, the prove step):
 
-- **Owner key.** strkd signs
+- **Owner key.** Bramble Companion signs
   `starknet_keccak("strkd.strk20.owner.v1:<chain_id>:<pool>:<owner>")` with
   the controller account's key (RFC 6979) and folds `Poseidon(r, s)`, using
   krusty's `sign_stark_hash` and `fold_strk20_viewing_key`. The domain tag
@@ -180,7 +180,7 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   contract's code is trusted with the owner's viewing key and the channel keys
   of every batch: the pool passes the whole `compile_actions` call to
   `is_custom_signature_valid` during virtual execution, so a malicious contract
-  could leak them (in its revert text, which strkd withholds, or in its own
+  could leak them (in its revert text, which Bramble Companion withholds, or in its own
   storage writes and events, which stay in the virtual block). Enrol only
   contracts whose code you trust. The label keeps no control or Unicode format
   characters (bidi overrides and isolates, zero-width, BOM, tags:
@@ -258,7 +258,7 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   any batch with a `SetViewingKey` before the reveal prompt: no prompt, no
   actions, and the plan comes back as usual with `actions_revealed: false` and
   `reveal_refused: "REVEAL_UNSAFE_FOR_REGISTER"` (same shape as a refused
-  prompt; `reveal_refused` is set only when strkd refused). `plan::revealed` is
+  prompt; `reveal_refused` is set only when Bramble Companion refused). `plan::revealed` is
   the only path from stored actions to a result and re-applies the check.
   Design #48 §11.5.
 - **Plan store.** `PlanStore` lives inside the unlocked `WalletSession`, so any
@@ -277,8 +277,8 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   route the prompt named, and the
   prompt. Dropping a plan overwrites its felts (best effort, no `unsafe`).
   `companion_strk20DiscardPlan { plan_id }` drops one without a prompt.
-- **Accounts.** Plans work for strkd accounts too (no SRC5 check). For them
-  `owner` is the account, and strkd will sign at prove time.
+- **Accounts.** Plans work for Bramble Companion accounts too (no SRC5 check). For them
+  `owner` is the account, and Bramble Companion will sign at prove time.
 - **Prove (part 3).** `companion_strk20Prove { plan_id, block_number?,
   signature?, submit?: "none" | "account", submitter_address? }`. Every check
   runs before anything is queued, so a bad request fails at once with a
@@ -309,7 +309,7 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
      `submit: "account"` (§5.6). The account prompt names the submitter, the
      pool fee it pays, and the public link it makes to the owner.
   8. The pool nonce at `B`, `ProofInvocation::new` from the stored actions,
-     then the signature: an owner's is the caller's felts verbatim (strkd never
+     then the signature: an owner's is the caller's felts verbatim (Bramble Companion never
      calls `sign_hash_for` for an owner); an account's is
      `sign_hash_for(account, invocation.hash())`. The plan is taken (consumed)
      in the same session lock.
@@ -351,7 +351,7 @@ All three parts of phase 1 are built (enrolment, the plan step, the prove step):
   `Strk20Plan` approval-hash vector for contract owners (#48, design note
   §5.3). Checked in Rust (`tests/strk20_plan_vector.rs`), starknet.js
   (`conformance/verify.mjs`) and Cairo/OpenZeppelin.
-- Live on Sepolia, against strkd's test pool (mainnet class, test screener):
+- Live on Sepolia, against Bramble Companion's test pool (mainnet class, test screener):
   `crates/strk20/examples/sepolia_e2e.rs` (crate only) and
   `crates/wallet-rpc/examples/strk20_live.rs` (the RPC handlers; its
   `prepare-deposit` mode proves a locally screened deposit and only estimates
@@ -373,7 +373,7 @@ account that signs: [`project/design-48-strk20-external-owner.md`](../project/de
 The reference owner contract, with the approval check, the strict
 `is_valid_signature` fallback, tests and sncast steps, is
 [`contracts/strk20-owner-example`](../../contracts/strk20-owner-example/README.md).
-Not audited. The strkd side (enrolment, plan/prove) is not built yet.
+Not audited. The Bramble Companion side (enrolment, plan/prove) is not built yet.
 
 ## Not yet
 

@@ -6,7 +6,7 @@ enrolment, the owner viewing key, the generalised `Ctx` and `data.reason` (§11)
 (§11.1). Part 3 of 3 built (2026-11-13): `companion_strk20Prove`, unrecorded client-scoped proving
 jobs with retention, `submit: "none" | "account"` (§11.2). Phase 1 (§9) is code-complete; the
 Sepolia live run (§8) has not been done. Security-review fixes on part 3 (2026-11-13, §11.3).
-**Issue:** [#48](https://github.com/starknet-innovation/strkd/issues/48)
+**Issue:** [#48](https://github.com/starknet-innovation/bramble-companion/issues/48)
 **Relates to:** [`strk20-plan.md`](./strk20-plan.md), [`../code/strk20.md`](../code/strk20.md),
 [`../code/wallet-rpc.md`](../code/wallet-rpc.md), and the #49 note on channel-key disclosure
 (`design-49-strk20-channel-disclosure.md`, drafted in parallel).
@@ -30,18 +30,18 @@ deployed pool class has the same custom-validation path (§10).
      `0x2eb9faa4ce06e09879e93803798b87d22877b73964334356bf9e0d8cc22ded`
      (`selector!("is_custom_signature_valid")`, `utils.cairo:39`). Its
      `is_custom_signature_valid(calls, [], tx_info.signature)` returns `VALIDATED`.
-  2. `is_valid_signature(tx_hash, signature)`. This is what strkd accounts use today.
+  2. `is_valid_signature(tx_hash, signature)`. This is what Bramble Companion accounts use today.
   3. `is_valid_signature(SNIP-12 CallSet hash of calls, signature)`.
 - Before any of these checks, the pool has asserted that `calls` is a single call to itself, with
   selector `compile_actions` (`utils.cairo:355-371`). The owner therefore sees `user_sk` in the
   calldata, but only during virtual execution, which runs inside the prover.
 - `apply_actions` accepts a proof whose base block `B` satisfies
-  `B < current ≤ B + proof_validity_blocks` (`privacy.cairo:830-837`). On strkd's Sepolia pool,
+  `B < current ≤ B + proof_validity_blocks` (`privacy.cairo:830-837`). On Bramble Companion's Sepolia pool,
   `proof_validity_blocks` is 450.
 
-**strkd today** (`crates/wallet-rpc/src/strk20/mod.rs`). `prepare()` (`:369-457`) does all of this
+**Bramble Companion today** (`crates/wallet-rpc/src/strk20/mod.rs`). `prepare()` (`:369-457`) does all of this
 in one call:
-1. Resolves a strkd account from the caller's scope (`ctx()`, `:214-240`).
+1. Resolves a Bramble Companion account from the caller's scope (`ctx()`, `:214-240`).
 2. Derives `user_sk` from that account (`:247-249` → `session.rs:236-244` →
    `wallet-core/src/keys.rs:58-68`).
 3. Picks `B = head − PROVING_LAG (12)` (`:47`, `:379-380`).
@@ -60,14 +60,14 @@ contract has nowhere to approve them.
 
 | # | Decision |
 |---|---|
-| D1 | **Viewing key:** derived from the controller account's key and bound to the owner address (§3.2). Bramble compatibility is not required: only strkd sees these notes. |
+| D1 | **Viewing key:** derived from the controller account's key and bound to the owner address (§3.2). Bramble compatibility is not required: only Bramble Companion sees these notes. |
 | D2 | **Plans live in memory only:** 1 h by default, 24 h at most, wiped on lock and on restart. The format and API leave room to add persistence later without breaking changes (§5.4). |
 | D3 | **Disclosure:** a plan returns `plan_hash` and a human-readable summary. The full `client_actions` come back only with `reveal_actions: true`. That flag triggers its own explicit prompt about channel-key disclosure (§5.6). |
-| D4 | **Approval hash:** SNIP-12 typed data over strkd's own versioned struct `Strk20Plan`, verified in `is_custom_signature_valid` (§5.3). Owners must advertise SRC5. Owners without it are out of scope (§2.1). |
-| D5 | **Submission:** `submit: "none"` (default: return the call and proof) or `"account"` (a strkd account pays, and the prompt notes the public link). The AVNU relay comes later. |
+| D4 | **Approval hash:** SNIP-12 typed data over Bramble Companion's own versioned struct `Strk20Plan`, verified in `is_custom_signature_valid` (§5.3). Owners must advertise SRC5. Owners without it are out of scope (§2.1). |
+| D5 | **Submission:** `submit: "none"` (default: return the call and proof) or `"account"` (a Bramble Companion account pays, and the prompt notes the public link). The AVNU relay comes later. |
 | D6 | **Prompts:** enrolment always prompts, and a grant never covers it. A plan prompts like today's STRK20 calls, so a grant can cover it. Prove prompts only if the prover or submission route changed. `reveal_actions` always prompts. |
 | D7 | **Deposits for owners:** phase 3. |
-| D8 | **Owners registered with a key strkd didn't derive:** enrolment refuses with a clear error. There is no import path. |
+| D8 | **Owners registered with a key Bramble Companion didn't derive:** enrolment refuses with a clear error. There is no import path. |
 | D9 | **Prove is asynchronous.** It returns a `job_id`, polled through `companion_proveStatus`. Results have a TTL and are wiped on lock (§5.7). |
 | D10 | **Errors:** existing codes stay. Errors gain an optional machine-readable `data.reason` (§7). |
 
@@ -75,22 +75,22 @@ contract has nowhere to approve them.
 
 **Goals**
 - Register, transfer and withdraw for a deployed contract that advertises SRC5
-  `is_custom_signature_valid`. strkd holds the owner's viewing key, and the key never leaves strkd.
+  `is_custom_signature_valid`. Bramble Companion holds the owner's viewing key, and the key never leaves Bramble Companion.
 - The caller supplies the virtual tx's signature felts, and the contract reads them however it
   likes.
 - A plan step returns `plan_hash` without proving. A later prove step proves against a reference
   block at or after the owner's on-chain approval.
-- The plan/prove split also works for ordinary strkd accounts. For those, strkd signs at prove
+- The plan/prove split also works for ordinary Bramble Companion accounts. For those, Bramble Companion signs at prove
   time.
 
 **Non-goals**
 - **Owners without SRC5.** These would go through pool checks 2 or 3. Check 2 signs a tx hash that
-  contains `user_sk` and the pool nonce, so only strkd can compute it, and it can change between
+  contains `user_sk` and the pool nonce, so only Bramble Companion can compute it, and it can change between
   approval and proof. Check 3 hashes the `calls`, which also contain `user_sk`. Neither gives a
   hash that an approver can check without the key. Neither is the explicit, SRC5-gated interface
   the pool defines for contract owners.
 - Deposits for owners (D7). Importing viewing keys (D8). The AVNU relay (D5).
-- Writing or auditing owner contracts. This note gives strkd's side and a reference check.
+- Writing or auditing owner contracts. This note gives Bramble Companion's side and a reference check.
 - Open notes, `invoke`, and `subaccount_invoke`. They are still unsupported (`mod.rs:289`).
 
 ## 3. Owner model
@@ -147,8 +147,8 @@ user_sk = fold(sign_rfc6979(controller_sk, msg))
 4. Prompt. This always prompts and a grant never covers it, like `companion_requestGrant`. The
    prompt shows:
    - the full owner address, chain, pool and controller;
-   - "strkd will derive and hold a private key for this contract's private notes";
-   - "strkd cannot check who controls this contract; its own signature check decides every spend".
+   - "Bramble Companion will derive and hold a private key for this contract's private notes";
+   - "Bramble Companion cannot check who controls this contract; its own signature check decides every spend".
 5. Persist the record and return
    `{ owner_address, controller, pool, registered, viewing_public_key }`.
 
@@ -158,22 +158,22 @@ derived again.
 
 ## 4. Signature model
 
-- **Owners.** strkd does not sign for an owner. The virtual tx's `signature` is the caller's
+- **Owners.** Bramble Companion does not sign for an owner. The virtual tx's `signature` is the caller's
   `signature: [felt…]`, passed as given (`invocation.rs:95-116` takes a signature slice). It may be
   empty, for example when the contract only checks an on-chain approval.
 - **Timing.** The signature is not part of the V3 hash, so it is supplied at prove time.
-- **What strkd still controls:**
+- **What Bramble Companion still controls:**
   - whether the owner's key is used (enrolment, scope, plan prompt);
-  - the actions themselves, which strkd plans and never takes from the caller;
+  - the actions themselves, which Bramble Companion plans and never takes from the caller;
   - the bounds on the reference block;
   - where proving happens;
   - where the result goes.
-- **What strkd does not check:** whether the signature is valid. Only the contract can do that.
-- **Failing early.** SRC5 is checked at enrolment and again at `B`. strkd never dry-runs
+- **What Bramble Companion does not check:** whether the signature is valid. Only the contract can do that.
+- **Failing early.** SRC5 is checked at enrolment and again at `B`. Bramble Companion never dry-runs
   `is_custom_signature_valid` through the node: that would send `client_actions`, channel keys
   included, to the RPC provider. A rejected signature surfaces when the prover executes the
-  virtual tx, as `INVALID_SIGNATURE`, and strkd reports `OWNER_SIGNATURE_REJECTED`.
-- **strkd accounts.** For these, prove signs as today with `sign_hash_for(invocation.hash())`
+  virtual tx, as `INVALID_SIGNATURE`, and Bramble Companion reports `OWNER_SIGNATURE_REJECTED`.
+- **Bramble Companion accounts.** For these, prove signs as today with `sign_hash_for(invocation.hash())`
   (`mod.rs:436-438`). A caller-supplied `signature` is then a 114 error.
 
 ## 5. Plan/prove API
@@ -213,7 +213,7 @@ approved list cannot change.
 
 ### 5.3 Approval hash: SNIP-12 `Strk20Plan` (D4)
 
-The owner approves a SNIP-12 (revision 1) message hash, which strkd's existing
+The owner approves a SNIP-12 (revision 1) message hash, which Bramble Companion's existing
 `typed_data_message_hash` computes (`wallet-core/src/keys.rs:158`):
 
 ```
@@ -273,8 +273,8 @@ fn is_custom_signature_valid(self: @ContractState, calls: Span<Call>,
   `utils.cairo:399-419`). The contract must keep that function strict. A permissive one bypasses
   the approval.
 - **Test vector required.** A Rust↔Cairo SNIP-12 vector, also checked in starknet.js under
-  `conformance/`, is required before release. strkd's SNIP-12 digest has been wrong before (two
-  krusty bugs: prefix encoding and shortstring parsing; fixed in krusty #36 and strkd #8 for
+  `conformance/`, is required before release. Bramble Companion's SNIP-12 digest has been wrong before (two
+  krusty bugs: prefix encoding and shortstring parsing; fixed in krusty #36 and Bramble Companion #8 for
   issue #7).
 
 ### 5.4 Plan storage (D2)
@@ -371,7 +371,7 @@ These are design claims. Each needs verification before anyone relies on it.
     owner contract's code is therefore trusted with the owner's viewing key and channel keys**, by
     pool design. Enrol only contracts whose code you trust; the enrolment prompt says so.
   - Ways such a contract could try to leak them, and what stops each:
-    - Its revert text. strkd never returns, logs or stores the prover's text for STRK20 jobs, only
+    - Its revert text. Bramble Companion never returns, logs or stores the prover's text for STRK20 jobs, only
       a reason and a fixed message (§11.3).
     - Writes and events in the virtual block. They never reach L1 or L2 state.
     - An L2→L1 message. The pool's `apply_actions` accepts a proof only if its message hashes are
@@ -385,7 +385,7 @@ These are design claims. Each needs verification before anyone relies on it.
 - **Channel keys are off by default.** By default the caller gets only `plan_hash` and a summary.
   With `reveal_actions`, the cost is the irrevocable channel disclosure set out in #49.
 - **Approvers trust the summary unless actions are revealed.** Without `reveal_actions`, an
-  approver has only strkd's summary and cannot recompute `actions_hash`. With them, the approver
+  approver has only Bramble Companion's summary and cannot recompute `actions_hash`. With them, the approver
   can recompute it with `companion_typedDataHash` or an independent SNIP-12 tool.
 - **Replay.**
   - A proof is single-use: nullifiers and write-once slots make a second `apply_actions` revert.
@@ -393,12 +393,12 @@ These are design claims. Each needs verification before anyone relies on it.
     hash differently.
   - The contract cannot consume an approval from a view function, so it relies on the pool's
     single use. It may also expire approvals.
-- **Plan tampering.** Prove takes only a `plan_id`. strkd rebuilds the invocation from its own
+- **Plan tampering.** Prove takes only a `plan_id`. Bramble Companion rebuilds the invocation from its own
   stored plan and re-checks `plan_hash`. Plan ids are unguessable and bound to the client.
 - **Spoofed approval UX.**
   - Enrolment shows the full address and does not trust the label.
   - Summaries are built from the actions, not from caller text.
-  - strkd cannot stop an intermediary from showing the on-chain approver a different action list.
+  - Bramble Companion cannot stop an intermediary from showing the on-chain approver a different action list.
     Approvers who need certainty use `reveal_actions` and recompute the hash.
 - **Denial of service.** Plans and job results are capped, expire, and are wiped on lock. Each
   client can have only one plan per owner at a time. The cap is per client, so one client can't
@@ -508,16 +508,16 @@ maintainer decides, because it submits transactions:
   proved without submitting took 12.9 s. The rejection comes from executing the virtual tx, before
   stwo runs.
 - Verified live 2026-11-13: the native prover's error holds **both** spellings: the text
-  `INVALID_SIGNATURE` and its hex short string, after strkd's own "the transaction reverted while
+  `INVALID_SIGNATURE` and its hex short string, after Bramble Companion's own "the transaction reverted while
   it was proved" prefix. (This was read through a local, uncommitted check that wrote only three
-  booleans, because strkd no longer echoes prover output.) strkd reports
+  booleans, because Bramble Companion no longer echoes prover output.) Bramble Companion reports
   `error_reason: "OWNER_SIGNATURE_REJECTED"` with the fixed message "the pool's signature check
   failed (INVALID_SIGNATURE) when the prover executed the batch: the owner contract did not
   validate the batch at reference block `B` …".
 - Verified live 2026-11-13: **`get_tx_info().chain_id` inside the virtual OS is the real chain
   id.** The owner contract's `is_custom_signature_valid` builds the SNIP-12 domain from
   `tx_info.chain_id` and returns `VALIDATED` only for an approved hash. The only hashes approved were
-  ones strkd computed for `SN_SEPOLIA`. An approved register (`B = A + 1`) and an approved withdraw
+  ones Bramble Companion computed for `SN_SEPOLIA`. An approved register (`B = A + 1`) and an approved withdraw
   both proved, and the register was accepted on-chain. If the chain id inside the virtual OS were
   anything else, the contract would have computed a different hash, found it unapproved, and
   rejected both.
@@ -525,7 +525,7 @@ maintainer decides, because it submits transactions:
   (`crates/wallet-core/tests/fixtures/strk20-plan-vector.json`).
 - AVNU relay: quote lifetime and how to fix the fee withdraw at plan time (phase 2).
 - **Can an owner contract publish a secret through an L2→L1 message?** Checked against the deployed
-  class (starknet-privacy `4026da7`), 2026-11-13. **No, as far as the pool and strkd go.**
+  class (starknet-privacy `4026da7`), 2026-11-13. **No, as far as the pool and Bramble Companion go.**
   - In virtual execution, `__execute__` sends one message, the pool's own
     (`send_message_to_server`, `utils.cairo:439-447`: `[class_hash, ...server_actions]` to
     address 0). The owner contract can send more from `is_custom_signature_valid`.
@@ -533,11 +533,11 @@ maintainer decides, because it submits transactions:
     `tx_info.proof_facts` and asserts
     `message_to_l1_hashes == [compute_message_hash(actions, pool)]` (`:841-842`,
     `INVALID_PROOF_MSG`). One extra message makes the proof unusable. With `submit: "account"`, fee
-    estimation reverts and strkd broadcasts nothing.
+    estimation reverts and Bramble Companion broadcasts nothing.
   - `proof_facts` carries only message **hashes** (Poseidon over from, to and payload), never
     payloads. The viewing key and channel keys are full-entropy felts, so a hash of them gives
     nothing away.
-  - strkd uses only the pool's message: `remote::parse_result` (`remote.rs:256-260`) picks the
+  - Bramble Companion uses only the pool's message: `remote::parse_result` (`remote.rs:256-260`) picks the
     message whose `from_address` is the pool and builds `apply_actions` from its payload. The raw
     `l2_to_l1_messages` the prover returns stay in the job's background task and are dropped. A job
     result's `call` holds only the pool's payload.
@@ -562,12 +562,12 @@ section wins.
   known-answer vectors are in `wallet-core/tests/strk20.rs`. The message hashes were reproduced
   independently. The starknet.js conformance vector is still to do.
 - **`Ctx`.** It now carries a `Subject`: `Account` or `Owner(Strk20Owner)`. `ctx.account` is
-  always the strkd account whose key is used, which for an owner is its controller.
+  always the Bramble Companion account whose key is used, which for an owner is its controller.
   `ctx.viewing_key()` picks the derivation. `ctx.account_only(method)` refuses an owner on the
   existing one-shot methods with `-32601` until phase 2.
 - **Enrolment extras.** Two additions to §3.3:
   - `OWNER_ALREADY_ENROLLED` (-32006) when the owner is already enrolled in the caller's scope.
-  - Enrolling a strkd account address as an owner is a 114.
+  - Enrolling a Bramble Companion account address as an owner is a 114.
 
   Enrolment calls `supports_interface` with `starknet_call` at `latest`. A JSON-RPC error from the
   node (a revert, or no such entry point) counts as "not supported". A transport failure stays
@@ -605,8 +605,8 @@ above, this section wins.
 - **Registered state.** `register: true` on a subject that is already registered fails with
   `ALREADY_REGISTERED` (-32006, new). Transfers and withdrawals for an unregistered subject fail
   in the planner with 118, as today.
-- **Accounts.** Plans work for strkd accounts (§2.1). There is no SRC5 check, `owner` in the result
-  and in the typed data is the account address, and the prompt says strkd signs at prove time.
+- **Accounts.** Plans work for Bramble Companion accounts (§2.1). There is no SRC5 check, `owner` in the result
+  and in the typed data is the account address, and the prompt says Bramble Companion signs at prove time.
 - **Result.** Adds `subject` (`"owner"` or `"account"`), `controller`, `actions_hash` and, when
   `reveal_actions` was asked, `actions_revealed`. `expires_at` is Unix milliseconds, like a
   grant's. `summary` holds `description`, `register`, `transfers`, `withdrawals`, `action_count`,
@@ -638,7 +638,7 @@ above, this section wins.
   `call_and_proof` shape) or, after `submit: "account"`, `{ transaction_hash, submitter_address,
   call }`.
 - **Signature.** Owners must pass `signature` (`SIGNATURE_REQUIRED`, 114); `[]` is allowed and stays
-  empty. Accounts must not (`SIGNATURE_NOT_ALLOWED`, 114). At most 256 felts. strkd never calls
+  empty. Accounts must not (`SIGNATURE_NOT_ALLOWED`, 114). At most 256 felts. Bramble Companion never calls
   `sign_hash_for` for an owner.
 - **`B`.** Default `head − 12`. `BLOCK_TOO_RECENT` covers both an explicit `B > head − 12` and a
   default that is still below `plan_block`; the message gives the blocks to wait. There is no
@@ -687,12 +687,12 @@ above, this section wins.
 An independent review of `981c83e` found the items below; all are fixed on
 `feat/strk20-prove-48`. Where this section differs from §11.2, this section wins.
 
-- **Prover text never leaves strkd (medium).** A malicious owner contract could panic with
+- **Prover text never leaves Bramble Companion (medium).** A malicious owner contract could panic with
   `user_sk` or a channel key, encoded so that scrubbing misses it. That revert text used to reach
   `companion_proveStatus.error`, the one-shot methods' errors and the SQLite request log.
   - Now `strk20::safe_prover_error` turns every STRK20 prover error, on both the job and the
     one-shot `prepare()` path, into a reason plus fixed text.
-  - The text is picked by the **prefix** strkd itself wrote (`classify_prover_error`'s messages,
+  - The text is picked by the **prefix** Bramble Companion itself wrote (`classify_prover_error`'s messages,
     the prover crate's own), so nothing the contract chose decides what is shown. The only match
     inside the text is `INVALID_SIGNATURE`, and that only picks the reason.
   - Unreadable prover results also get fixed text.
@@ -710,7 +710,7 @@ An independent review of `981c83e` found the items below; all are fixed on
     SIGKILLs the CLI's process group (the runner too), and `WorkDir` removes the dir. `finish` never
     runs, and the job fails with `WIPED_ON_LOCK`. The one-shot `prove_unrecorded` is cancelled the
     same way.
-  - `build_prover_state` removes stale `strkd-prove-<pid>-*` dirs whose pid is dead.
+  - `build_prover_state` removes stale `bramble-companion-prove-<pid>-*` dirs whose pid is dead.
   - The doc on `enqueue_prove_unrecorded` states what stays exposed: the file is readable by the
     same OS user while the prove runs.
 - **Lock, then quick unlock, could still submit (low).** `submit_from` now takes a `SubmitGuard`
@@ -739,11 +739,11 @@ An independent review of `981c83e` found the items below; all are fixed on
     desktop's IPC feed still lists every job.
   - The example contract's README (PR #53) now says to revoke approvals after use, that
     third-party owner contracts must never accept controller signatures as plan approval, and that
-    the pool in its sncast example must match the pool strkd uses.
+    the pool in its sncast example must match the pool Bramble Companion uses.
 - **Empty owner signatures.** The native prover's preflight refused a transaction with an empty
   `signature` ("transaction is not signed"), so an owner plan proved with `signature: []` failed on
   the native backend (the stub prover in the dispatch tests didn't catch it). Fixed: `ProveRequest`
-  has `allow_empty_signature`, set only by strkd's own unrecorded STRK20 paths
+  has `allow_empty_signature`, set only by Bramble Companion's own unrecorded STRK20 paths
   (`prove_unrecorded`, `enqueue_prove_unrecorded`). The `signature` field must still be an array,
   so the prover still never signs. `companion_prove` (recorded jobs) keeps requiring a non-empty
   signature.
@@ -813,7 +813,7 @@ Added after phase 1. Where this section differs from D3, §5.6 or §11.1, this s
   (§11.1, #55); this keeps the same shape, so a caller that handles a refused prompt handles this
   too. Failing the whole call would make `register: true, reveal_actions: true` unusable for no
   gain: the plan itself discloses nothing. `reveal_refused` tells the two cases apart: it is set only
-  when strkd refused, never when the user did.
+  when Bramble Companion refused, never when the user did.
 - **Cost.** An approver can no longer recompute a register plan's `plan_hash` from revealed actions.
   A register plan has nothing to approve beyond "register this subject and open its self-channel",
   which the summary states; the batch's other values are fresh randomness.

@@ -8,6 +8,51 @@ Use the [entry template](#entry-template) at the bottom for every new entry.
 
 ---
 
+## 2026-11-20 — Renamed strkd to Bramble Companion
+
+**Did**
+- Renamed the product in code and living docs: desktop app, bundle identifier
+  (`org.starknet.bramble-companion`), CLI binary and crate (`bramble-companion`),
+  env prefix (`BRAMBLE_COMPANION_`), repository URLs, agent-facing usage text.
+- Added `wallet_rpc::data_migration`: on first launch the app copies the old data
+  dir (`org.starknet.strkd`) to the new one, staged and renamed into place. The
+  old dir is left untouched; a failed copy stops the launch.
+- `STRKD_*` env vars are still read when the new name is unset
+  (`prover::config::env_var`). The CLI falls back to the old data dir when it is
+  the only one present.
+- Renamed the feedback sentinel to `COMPANION-FEEDBACK`.
+
+**Decisions**
+- Not renamed, because they are format constants: the STRK20 owner key tag
+  `strkd.strk20.owner.v1` (changing it changes every owner's key) and the SNIP-12
+  domain `strkd.Strk20Plan` (owner contracts hard-code it). Sample domains inside
+  pinned test vectors also keep the old name.
+- Migrate the identifier instead of keeping the old one: installs are few now.
+- Dated records keep the old name: this log, `bramble-convergence.md`,
+  `strk20-plan.md`.
+
+**Verify**
+- `cargo test --locked && cargo clippy --locked --all-targets -- -D warnings`
+- `(cd conformance && node verify.mjs && node strk20.mjs)`
+- `cargo test -p wallet-rpc data_migration`
+
+**Next / Resume**
+- Rename the GitHub repository to `bramble-companion` **before** this merges: the
+  code now points at the new URLs (installer, attestations, issue links), and
+  GitHub redirects old → new only.
+- Not yet run: launching the built app over a real 0.4.0 data dir (migration,
+  unlock, an already-paired agent reconnecting). Do it before publishing 0.5.0.
+- Check that attestations on the existing releases still verify under the new
+  repository name.
+- The bramble repo mentions strkd in five files; update them there.
+
+**Notes / caveats**
+- Quit strkd before the first launch of the renamed app (see
+  `docs/code/desktop.md` → Upgrading from strkd).
+- The icon and visual identity are unchanged.
+
+---
+
 ## 2026-11-16 — STRK20: `reveal_actions` never reveals a register batch (#66)
 
 **Did**

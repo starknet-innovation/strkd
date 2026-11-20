@@ -8,7 +8,7 @@ doc describes the code, the spec describes the design.
 ## Workspace layout
 
 ```
-strkd/
+Bramble Companion/
 ├── Cargo.toml                 # workspace root; pins krusty-kms (rev 1e36829)
 ├── crates/
 │   ├── wallet-core/           # ✅ built — key mgmt, derivation, signing, vault
@@ -87,7 +87,7 @@ IPC only, never the loopback service.
   wallet-core ──signs──► signed tx ──► prover (no keys) ──► proof ──► broadcast
 ```
 
-This wallet/prover split mirrors the two repos it came from: strkd signs but
+This wallet/prover split mirrors the two repos it came from: Bramble Companion signs but
 never proved; `../dinner` proved but never signs. Merged, the same device can
 sign → prove → broadcast a SNIP-36 proof-carrying invoke without the secret ever
 leaving it.
@@ -96,7 +96,7 @@ leaving it.
 private virtual transaction ("Tx A") and hands it straight to the in-process
 prover. SNIP-36 is inherently two transactions, though — the on-chain verifier
 invoke ("Tx B", e.g. `verify_result(public_message)`) is broadcast separately via
-`wallet_addInvokeTransaction { proof_facts, proof, submit:true }`. strkd doesn't
+`wallet_addInvokeTransaction { proof_facts, proof, submit:true }`. Bramble Companion doesn't
 assemble Tx B: its calldata is decoded from the prover's L2→L1 message and is
 application-specific, so a generic wallet can't build it.
 
