@@ -34,6 +34,10 @@ use crate::log::now_unix_ms;
 /// The plan format. Bumped together with the SNIP-12 domain `version` (§5.3).
 pub const PLAN_VERSION: u64 = 1;
 /// SNIP-12 domain of the approval hash (§5.3).
+///
+/// Frozen: owner contracts hard-code this name to recompute the hash, so the
+/// `strkd` in it is a format constant, not the product's name, and does not
+/// follow a rename. The plan vector test below pins it.
 pub const PLAN_DOMAIN_NAME: &str = "strkd.Strk20Plan";
 pub const PLAN_DOMAIN_VERSION: &str = "1";
 /// Plan lifetime: 1 h by default, 24 h at most (D2).

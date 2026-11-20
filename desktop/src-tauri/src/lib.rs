@@ -1069,15 +1069,15 @@ pub fn run() {
             // Skipped if STRKD_SNIP36_BIN is already set; in dev (no bundle) this
             // is a no-op and NativeProver falls back to its sibling-checkout
             // default (only consulted when the backend is "native").
-            if std::env::var("STRKD_SNIP36_BIN").is_err() {
+            if prover::config::env_var("SNIP36_BIN").is_none() {
                 if let Ok(res) = app.path().resource_dir() {
                     // Tauri's exact resource layout varies by version/config, so
                     // try both the mapped dest and the glob-preserved path.
                     for prover_dir in [res.join("prover"), res.join("resources/prover")] {
                         let bin = prover_dir.join("snip36");
                         if bin.exists() {
-                            std::env::set_var("STRKD_SNIP36_BIN", &bin);
-                            std::env::set_var("STRKD_SNIP36_WORK_DIR", &prover_dir);
+                            std::env::set_var(prover::config::env_name("SNIP36_BIN"), &bin);
+                            std::env::set_var(prover::config::env_name("SNIP36_WORK_DIR"), &prover_dir);
                             break;
                         }
                     }

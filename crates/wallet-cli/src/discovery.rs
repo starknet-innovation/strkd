@@ -43,3 +43,17 @@ pub fn service_url() -> Result<String, String> {
         .ok_or("port.lock has no valid \"port\" field")?;
     Ok(format!("http://127.0.0.1:{port}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The CLI finds the app through its data dir, which Tauri names after the
+    /// bundle identifier. The two are set in different files, so check they agree.
+    #[test]
+    fn app_identifier_matches_the_desktop_bundle() {
+        let conf: Value =
+            serde_json::from_str(include_str!("../../../desktop/src-tauri/tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], APP_IDENTIFIER);
+    }
+}

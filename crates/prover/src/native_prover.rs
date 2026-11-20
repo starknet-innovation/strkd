@@ -132,11 +132,9 @@ impl NativeProver {
     pub fn new(settings: Arc<SettingsStore>) -> Self {
         let home = std::env::var("HOME").unwrap_or_default();
         let default_repo = format!("{home}/Workshop/snip-36-prover-backend");
-        fn var(k: &str, d: &str) -> String {
-            std::env::var(k).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| d.to_string())
-        }
-        let bin = var("STRKD_SNIP36_BIN", &format!("{default_repo}/target/release/snip36"));
-        let work_dir = var("STRKD_SNIP36_WORK_DIR", &default_repo);
+        let bin = crate::config::env_var("SNIP36_BIN")
+            .unwrap_or_else(|| format!("{default_repo}/target/release/snip36"));
+        let work_dir = crate::config::env_var("SNIP36_WORK_DIR").unwrap_or(default_repo);
         NativeProver {
             settings,
             bin: PathBuf::from(bin),
@@ -152,8 +150,9 @@ impl Prover for NativeProver {
     async fn prove(&self, req: ProveRequest) -> Result<ProveResult, String> {
         if !self.bin.exists() {
             return Err(format!(
-                "snip36 binary not found at {} (set STRKD_SNIP36_BIN)",
-                self.bin.display()
+                "snip36 binary not found at {} (set {})",
+                self.bin.display(),
+                crate::config::env_name("SNIP36_BIN")
             ));
         }
         let inp = snip36::preflight(&self.settings, &self.http, &req).await?;
@@ -196,7 +195,7 @@ impl Prover for NativeProver {
             cmd.arg("--port").arg(port.to_string());
         }
 
-        let result = run_and_parse(cmd, &dir, "is STRKD_SNIP36_BIN correct?").await;
+        let result = run_and_parse(cmd, &dir, &format!("is {} correct?", crate::config::env_name("SNIP36_BIN"))).await;
         drop(work);
         result
     }

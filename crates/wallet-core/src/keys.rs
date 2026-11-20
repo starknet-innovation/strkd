@@ -70,6 +70,9 @@ pub fn strk20_viewing_key(
 
 /// Domain tag of [`strk20_owner_viewing_key`]. Bumping it changes every owner's
 /// key, so it is part of the format.
+///
+/// Frozen: the `strkd` in it is a format constant, not the product's name, and
+/// does not follow a rename. `tests/strk20.rs` pins the hashes it produces.
 pub const STRK20_OWNER_KEY_TAG: &str = "strkd.strk20.owner.v1";
 
 /// The hash a controller key signs to derive an owner's STRK20 viewing key:

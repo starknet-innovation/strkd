@@ -347,8 +347,7 @@ pub(crate) async fn run_and_parse(
     dir: &std::path::Path,
     launch_hint: &str,
 ) -> Result<ProveResult, String> {
-    let secs: u64 = std::env::var("STRKD_PROVE_TIMEOUT_SECS")
-        .ok()
+    let secs: u64 = crate::config::env_var("PROVE_TIMEOUT_SECS")
         .and_then(|s| s.parse().ok())
         .unwrap_or(900);
 
